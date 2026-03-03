@@ -130,7 +130,7 @@ swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 When adding new features:
 
 - Write tests for business logic in `StenoKit/Tests/`
-- Use protocol-based test doubles (see `Adapters.swift` and `InsertionTransports.swift`)
+- Use protocol-based test doubles (see `Sources/StenoKitTestSupport/Adapters.swift` and `InsertionTransports.swift`)
 - No UI tests — SwiftUI views are tested manually
 
 ## XcodeGen Workflow

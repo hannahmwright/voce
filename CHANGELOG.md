@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-03-03
+
+### Added
+- Added `Steno/Steno.entitlements` and wired entitlements via `project.yml` for microphone access and DYLD environment behavior needed by local `whisper.cpp` builds.
+- Added `StenoKitTestSupport` as a dedicated package target for test doubles used by `StenoKitTests`.
+
+### Changed
+- Updated insertion transport internals to use private event source state, async pacing (`Task.sleep`), and best-effort caret restoration after accessibility insertion.
+- Updated permission and window behavior paths to be more predictable on macOS 13/14+, including safer main-window targeting and refreshed input-monitoring recheck flow.
+- Moved persistent storage fallbacks for preferences/history to `~/Library/Application Support` (instead of temp storage) and reduced path visibility in logs.
+- Updated app activation and SwiftUI `onChange` call sites to align with modern macOS APIs.
+
+### Fixed
+- Audio capture now surfaces recorder preparation/encoding failures and cleans temporary files on early failure paths.
+- MediaRemote bridge teardown now drains callback queue before unloading framework handles.
+- Overlay status-dot color transitions now animate through Core Animation transactions and respect live accessibility display option updates.
+- Improved lock/continuation safety documentation in cancellation-sensitive concurrency paths.
+
+### Removed
+- Removed dead `TokenEstimator` utility.
+- Removed production-exposed test adapter definitions from `StenoKit` main target and relocated them to `StenoKitTestSupport`.
+
 ## [0.1.5] - 2026-02-28
 
 ### Added
