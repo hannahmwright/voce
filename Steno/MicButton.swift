@@ -10,6 +10,27 @@ struct MicButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        Group {
+            if #available(macOS 14.0, *) {
+                micButton
+                    .onChange(of: isRecording) { _, recording in
+                        glowAnimating = recording
+                    }
+            } else {
+                micButton
+                    .onChange(of: isRecording) { recording in
+                        glowAnimating = recording
+                    }
+            }
+        }
+        .onAppear {
+            if isRecording {
+                glowAnimating = true
+            }
+        }
+    }
+
+    private var micButton: some View {
         Button(action: onTap) {
             ZStack {
                 // Glow ring (visible only when recording)
@@ -67,14 +88,6 @@ struct MicButton: View {
         .accessibilityLabel(micAccessibilityLabel)
         .accessibilityHint(micAccessibilityHint)
         .accessibilityValue(micAccessibilityValue)
-        .onChange(of: isRecording) { recording in
-            glowAnimating = recording
-        }
-        .onAppear {
-            if isRecording {
-                glowAnimating = true
-            }
-        }
     }
 
     private var micAccessibilityLabel: String {

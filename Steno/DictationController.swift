@@ -178,6 +178,10 @@ final class DictationController: ObservableObject {
     func requestInputMonitoringPermission() {
         _ = PermissionDiagnostics.requestInputMonitoringPermission()
         refreshPermissionStatuses()
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            refreshPermissionStatuses()
+        }
     }
 
     func revealCurrentAppInFinder() {

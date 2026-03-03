@@ -7,6 +7,31 @@ struct RecordTab: View {
     @State private var showErrorBanner = false
 
     var body: some View {
+        Group {
+            if #available(macOS 14.0, *) {
+                content
+                    .onChange(of: controller.lastError) { _, _ in
+                        animateErrorBannerUpdate()
+                    }
+                    .onChange(of: controller.hotkeyRegistrationMessage) { _, _ in
+                        animateErrorBannerUpdate()
+                    }
+            } else {
+                content
+                    .onChange(of: controller.lastError) { _ in
+                        animateErrorBannerUpdate()
+                    }
+                    .onChange(of: controller.hotkeyRegistrationMessage) { _ in
+                        animateErrorBannerUpdate()
+                    }
+            }
+        }
+        .onAppear {
+            showErrorBanner = hasError
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             // Error/warning banner
             if showErrorBanner {
@@ -70,18 +95,11 @@ struct RecordTab: View {
                 )
         }
         .padding(.vertical, StenoDesign.lg)
-        .onAppear {
+    }
+
+    private func animateErrorBannerUpdate() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal)) {
             showErrorBanner = hasError
-        }
-        .onChange(of: controller.lastError) { _ in
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal)) {
-                showErrorBanner = hasError
-            }
-        }
-        .onChange(of: controller.hotkeyRegistrationMessage) { _ in
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal)) {
-                showErrorBanner = hasError
-            }
         }
     }
 

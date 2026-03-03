@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import StenoKit
 
@@ -36,7 +37,7 @@ struct ContentView: View {
                 Spacer()
 
                 Button {
-                    NSApp.keyWindow?.orderOut(nil)
+                    appMainWindow()?.orderOut(nil)
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: StenoDesign.iconMD))
@@ -86,7 +87,12 @@ struct ContentView: View {
             await controller.refreshHistory()
         }
         .onAppear {
-            NSApp.windows.first?.setFrameAutosaveName("StenoMainWindow")
+            appMainWindow()?.setFrameAutosaveName("StenoMainWindow")
         }
+    }
+
+    private func appMainWindow() -> NSWindow? {
+        NSApp.windows.first { !($0 is NSPanel) && $0.canBecomeMain }
+            ?? NSApp.windows.first { !($0 is NSPanel) }
     }
 }

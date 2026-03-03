@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -33,7 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
-            sender.windows.first?.makeKeyAndOrderFront(nil)
+            if let reopenWindow = sender.windows.first(where: { !($0 is NSPanel) && $0.canBecomeMain }) {
+                reopenWindow.makeKeyAndOrderFront(nil)
+            }
         }
         return true
     }

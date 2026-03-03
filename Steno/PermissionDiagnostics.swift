@@ -45,19 +45,20 @@ struct PermissionDiagnostics {
             return true
         }
         _ = CGRequestListenEventAccess()
-        return CGPreflightListenEventAccess()
+        // The request call may return before user action. Check preflight later.
+        return false
     }
 
     static func openAccessibilitySettings() {
-        openSettingsURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        openPrivacySecuritySettings()
     }
 
     static func openMicrophoneSettings() {
-        openSettingsURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        openPrivacySecuritySettings()
     }
 
     static func openInputMonitoringSettings() {
-        openSettingsURL("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+        openPrivacySecuritySettings()
     }
 
     static func revealCurrentAppInFinder() {
@@ -66,6 +67,10 @@ struct PermissionDiagnostics {
 
     static func currentAppBundlePath() -> String {
         Bundle.main.bundleURL.path
+    }
+
+    private static func openPrivacySecuritySettings() {
+        openSettingsURL("x-apple.systempreferences:com.apple.settings.PrivacySecurity")
     }
 
     private static func openSettingsURL(_ value: String) {
