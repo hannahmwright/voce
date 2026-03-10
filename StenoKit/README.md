@@ -6,7 +6,7 @@ This package implements the core architecture for a local-first dictation workfl
 - macOS hotkey monitor (`MacHotkeyMonitor`) for `Option` hold and configurable function-key toggle
 - macOS recording overlay presenter (`MacOverlayPresenter`)
 - macOS audio capture service (`MacAudioCaptureService`)
-- local `whisper.cpp` transcription adapter (`WhisperCLITranscriptionEngine`)
+- `TranscriptionEngine` protocol (app target provides Moonshine implementation)
 - rule-based local transcript cleanup (`RuleBasedCleanupEngine`)
 - Transcript history + recovery (`HistoryStore`)
 - `pasteLast()` recovery flow for wrong-text-box insertion issues

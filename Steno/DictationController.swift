@@ -133,7 +133,7 @@ final class DictationController: ObservableObject {
 
         applyPreferencesLocally(loaded)
         refreshPermissionStatuses()
-        validateWhisperPaths()
+        validateEngineConfiguration()
         await rebuildRuntime()
         await refreshHistory()
         overlay.prepareWindow()
@@ -515,7 +515,7 @@ final class DictationController: ObservableObject {
             launchAtLoginWarning = error.localizedDescription
         }
 
-        status = "Running local transcription + local cleanup."
+        status = "Running Moonshine local transcription + local cleanup."
     }
 
     private func fallbackWarningText(from outcome: CleanupOutcome?) -> String? {
@@ -525,16 +525,10 @@ final class DictationController: ObservableObject {
         return outcome.warning ?? "Primary cleanup unavailable, used local fallback."
     }
 
-    private func validateWhisperPaths() {
-        let cliExists = FileManager.default.fileExists(atPath: preferences.dictation.whisperCLIPath)
-        let modelExists = FileManager.default.fileExists(atPath: preferences.dictation.modelPath)
-
-        if !cliExists && !modelExists {
-            status = "whisper-cli and model not found. Check Settings \u{2192} Engine."
-        } else if !cliExists {
-            status = "whisper-cli not found. Check Settings \u{2192} Engine."
-        } else if !modelExists {
-            status = "Model file not found. Check Settings \u{2192} Engine."
+    private func validateEngineConfiguration() {
+        guard MoonshineModelDownloader.isModelReady(preset: preferences.dictation.modelArch) else {
+            status = "Moonshine model not downloaded. Check Settings \u{2192} Engine."
+            return
         }
     }
 
@@ -575,14 +569,11 @@ private struct DictationRuntimeFactory {
         SnippetService(snippets: snapshot.snippets)
     }
 
-    func makeTranscriptionEngine() -> WhisperCLITranscriptionEngine {
-        let whisperCLIPath = URL(fileURLWithPath: snapshot.dictation.whisperCLIPath)
-        let modelPath = URL(fileURLWithPath: snapshot.dictation.modelPath)
-        return WhisperCLITranscriptionEngine(
+    func makeTranscriptionEngine() -> MoonshineTranscriptionEngine {
+        MoonshineTranscriptionEngine(
             config: .init(
-                whisperCLIPath: whisperCLIPath,
-                modelPath: modelPath,
-                additionalArguments: ["-t", "\(snapshot.dictation.threadCount)"]
+                modelDirectoryPath: snapshot.dictation.modelDirectoryPath,
+                modelArch: snapshot.dictation.modelArch
             )
         )
     }

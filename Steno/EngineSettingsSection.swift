@@ -7,64 +7,99 @@ struct EngineSettingsSection: View {
     @State private var testResult: String?
     @State private var testResultIsError = false
     @State private var isTesting = false
+    @StateObject private var downloader = MoonshineModelDownloader()
 
     var body: some View {
         settingsCard("Engine") {
-            TextField("whisper-cli path", text: $preferences.dictation.whisperCLIPath)
-                .textFieldStyle(.roundedBorder)
-            if let error = whisperCLIPathError {
-                Text(error)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.error)
-            }
-
-            TextField("Model path", text: $preferences.dictation.modelPath)
-                .textFieldStyle(.roundedBorder)
-            if let error = modelPathError {
-                Text(error)
-                    .font(StenoDesign.caption())
-                    .foregroundStyle(StenoDesign.error)
-            }
-
-            Stepper(value: $preferences.dictation.threadCount, in: 1...16) {
-                Text("Thread count: \(preferences.dictation.threadCount)")
-            }
-
-            HStack(spacing: StenoDesign.sm) {
-                Button {
-                    runTestSetup()
-                } label: {
-                    if isTesting {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
-                    } else {
-                        Text("Test Setup")
-                    }
+            Picker("Model", selection: $preferences.dictation.modelArch) {
+                ForEach(MoonshineModelPreset.allCases) { preset in
+                    Text(preset.displayName).tag(preset)
                 }
-                .buttonStyle(.bordered)
-                .disabled(isTesting || whisperCLIPathError != nil || modelPathError != nil)
-                .accessibilityLabel("Test whisper setup")
+            }
+            .pickerStyle(.menu)
+            .onChange(of: preferences.dictation.modelArch) { newArch in
+                preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
+            }
 
-                if let result = testResult {
-                    Text(result)
+            if MoonshineModelDownloader.isModelReady(preset: preferences.dictation.modelArch) {
+                modelReadySection
+            } else {
+                modelDownloadSection
+            }
+        }
+    }
+
+    private var modelReadySection: some View {
+        HStack(spacing: StenoDesign.sm) {
+            Button {
+                runTestSetup()
+            } label: {
+                if isTesting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: StenoDesign.iconMD, height: StenoDesign.iconMD)
+                } else {
+                    Text("Test Setup")
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(isTesting)
+            .accessibilityLabel("Test Moonshine setup")
+
+            if let result = testResult {
+                Text(result)
+                    .font(StenoDesign.caption())
+                    .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
+            } else {
+                HStack(spacing: StenoDesign.xs) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(StenoDesign.success)
+                    Text("Model ready")
                         .font(StenoDesign.caption())
-                        .foregroundStyle(testResultIsError ? StenoDesign.error : StenoDesign.success)
+                        .foregroundStyle(StenoDesign.success)
                 }
             }
         }
     }
 
-    private var whisperCLIPathError: String? {
-        let path = preferences.dictation.whisperCLIPath
-        guard !path.isEmpty else { return nil }
-        return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
-    }
-
-    private var modelPathError: String? {
-        let path = preferences.dictation.modelPath
-        guard !path.isEmpty else { return nil }
-        return FileManager.default.fileExists(atPath: path) ? nil : "File not found at this path"
+    private var modelDownloadSection: some View {
+        VStack(alignment: .leading, spacing: StenoDesign.sm) {
+            switch downloader.status {
+            case .idle, .failed:
+                if case .failed(let message) = downloader.status {
+                    Text(message)
+                        .font(StenoDesign.caption())
+                        .foregroundStyle(StenoDesign.error)
+                }
+                Button("Download Model") {
+                    downloader.download(preset: preferences.dictation.modelArch)
+                }
+                .buttonStyle(.bordered)
+            case .downloading:
+                ProgressView(value: downloader.overallProgress)
+                    .progressViewStyle(.linear)
+                HStack {
+                    Text("\(Int(downloader.overallProgress * 100))%")
+                        .font(StenoDesign.caption())
+                        .foregroundStyle(StenoDesign.textSecondary)
+                    Spacer()
+                    Button("Cancel") {
+                        downloader.cancel()
+                    }
+                    .font(StenoDesign.caption())
+                    .buttonStyle(.plain)
+                    .foregroundStyle(StenoDesign.textSecondary)
+                }
+            case .completed:
+                HStack(spacing: StenoDesign.xs) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(StenoDesign.success)
+                    Text("Download complete")
+                        .font(StenoDesign.caption())
+                        .foregroundStyle(StenoDesign.success)
+                }
+            }
+        }
     }
 
     private func runTestSetup() {
@@ -72,7 +107,6 @@ struct EngineSettingsSection: View {
         testResult = nil
 
         Task {
-            // Check microphone permission
             let micStatus = PermissionDiagnostics.microphoneStatus()
             guard micStatus == .granted else {
                 await MainActor.run {
@@ -83,42 +117,35 @@ struct EngineSettingsSection: View {
                 return
             }
 
-            // Test whisper-cli with --help
-            let cliPath = preferences.dictation.whisperCLIPath
-
             do {
-                let result = try await ProcessRunner.run(
-                    executableURL: URL(fileURLWithPath: cliPath),
-                    arguments: ["--help"],
-                    standardOutput: FileHandle.nullDevice,
-                    standardError: FileHandle.nullDevice
-                )
-                let success = result.terminationStatus == 0
+                let modelDirectoryPath = preferences.dictation.modelDirectoryPath
+                let modelArch = preferences.dictation.modelArch
+                try await Task.detached(priority: .userInitiated) {
+                    try MoonshineTranscriptionEngine.preflightCheck(
+                        modelDirectoryPath: modelDirectoryPath,
+                        modelArch: modelArch
+                    )
+                }.value
+
                 await MainActor.run {
-                    if success {
-                        testResult = "whisper-cli is working."
-                        testResultIsError = false
-                        // Auto-clear success after 3 seconds
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            if testResult == "whisper-cli is working." {
-                                testResult = nil
-                            }
+                    testResult = "Moonshine model is ready."
+                    testResultIsError = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        if testResult == "Moonshine model is ready." {
+                            testResult = nil
                         }
-                    } else {
-                        testResult = "whisper-cli exited with code \(result.terminationStatus)."
-                        testResultIsError = true
                     }
                     isTesting = false
                 }
             } catch is CancellationError {
                 await MainActor.run {
-                    testResult = "whisper-cli test cancelled."
+                    testResult = "Moonshine test cancelled."
                     testResultIsError = true
                     isTesting = false
                 }
             } catch {
                 await MainActor.run {
-                    testResult = "Failed to run whisper-cli: \(error.localizedDescription)"
+                    testResult = "Failed to load Moonshine model: \(error.localizedDescription)"
                     testResultIsError = true
                     isTesting = false
                 }

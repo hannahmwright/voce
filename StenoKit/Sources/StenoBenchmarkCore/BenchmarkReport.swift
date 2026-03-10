@@ -12,7 +12,7 @@ public enum BenchmarkReportError: Error, LocalizedError {
 }
 
 public enum BenchmarkReportRenderer {
-    public static let rawLabel = "Raw ASR (whisper-cli)"
+    public static let rawLabel = "Raw ASR"
     public static let pipelineLabel = "Steno post-processing output"
 
     public static func render(
@@ -31,8 +31,8 @@ public enum BenchmarkReportRenderer {
         markdown.append("- Manifest schema: `\(manifest.schemaVersion)`")
         markdown.append("- Scoring normalization: `\(manifest.scoring.normalization.version)`")
         markdown.append("- Samples: \(manifest.samples.count)")
-        markdown.append("- Whisper model path: `\(raw.whisperConfiguration.modelPath)`")
-        markdown.append("- Whisper CLI path: `\(raw.whisperConfiguration.whisperCLIPath)`")
+        markdown.append("- Transcription engine: `\(raw.transcriptionConfiguration.modelName)`")
+        markdown.append("- Model path: `\(raw.transcriptionConfiguration.modelDirectoryPath)`")
         markdown.append("- Cleanup profile: `\(pipeline.profile.name)` (`\(pipeline.profile.fillerPolicy.rawValue)`, `\(pipeline.profile.structureMode.rawValue)`)")
         markdown.append("- Lexicon entries in pipeline run: \(pipeline.lexiconEntryCount)")
         markdown.append("")

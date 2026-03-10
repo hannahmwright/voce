@@ -64,9 +64,9 @@ func pipelineRunComputesExpectedSummaries() async {
         benchmarkName: "Fixture Benchmark",
         manifestSchemaVersion: manifest.schemaVersion,
         normalizationPolicy: manifest.scoring.normalization,
-        whisperConfiguration: .init(
-            whisperCLIPath: "/tmp/whisper-cli",
-            modelPath: "/tmp/model.bin"
+        transcriptionConfiguration: .init(
+            modelDirectoryPath: "/tmp/models",
+            modelName: "moonshine-base"
         ),
         summary: .init(
             totalSamples: 1,

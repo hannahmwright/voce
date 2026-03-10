@@ -5,8 +5,8 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var currentStep: OnboardingStep = .welcome
-    @State private var whisperCLIPath = ""
-    @State private var modelPath = ""
+    @State private var modelArch: MoonshineModelPreset = .smallStreaming
+    @StateObject private var downloader = MoonshineModelDownloader()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,8 +22,8 @@ struct OnboardingView: View {
                     welcomeStep
                 case .permissions:
                     permissionsStep
-                case .whisperSetup:
-                    whisperSetupStep
+                case .modelSetup:
+                    modelSetupStep
                 case .featureTour:
                     featureTourStep
                 }
@@ -50,8 +50,7 @@ struct OnboardingView: View {
             value: currentStep
         )
         .onAppear {
-            whisperCLIPath = controller.preferences.dictation.whisperCLIPath
-            modelPath = controller.preferences.dictation.modelPath
+            modelArch = controller.preferences.dictation.modelArch
         }
     }
 
@@ -108,7 +107,7 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
                 featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio and transcript cleanup stay on your Mac.")
-                featureRow(icon: "bolt", title: "Fast", detail: "Whisper.cpp transcribes locally in seconds.")
+                featureRow(icon: "bolt", title: "Fast", detail: "Moonshine transcribes locally with low-latency models.")
                 featureRow(icon: "text.cursor", title: "Works across apps", detail: "Types or pastes into editors, terminals, and most text fields.")
             }
             .cardStyle()
@@ -192,40 +191,46 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Step 3: Whisper Setup
+    // MARK: - Step 3: Model Setup
 
-    private var whisperSetupStep: some View {
+    private var modelSetupStep: some View {
         VStack(spacing: StenoDesign.lg) {
             Spacer()
 
             VStack(spacing: StenoDesign.sm) {
-                Text("Local Transcription Setup")
+                Text("Moonshine Model")
                     .font(StenoDesign.heading1())
                     .foregroundStyle(StenoDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Confirm the paths to your local whisper-cli binary and model file.")
+                Text("Choose a model size and Steno will download it automatically.")
                     .font(StenoDesign.subheadline())
                     .foregroundStyle(StenoDesign.textSecondary)
             }
 
             VStack(alignment: .leading, spacing: StenoDesign.md) {
                 VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                    Text("whisper-cli path")
+                    Text("Model")
                         .font(StenoDesign.bodyEmphasis())
                         .foregroundStyle(StenoDesign.textPrimary)
-                    TextField("Path to whisper-cli binary", text: $whisperCLIPath)
-                        .textFieldStyle(.roundedBorder)
-                    pathValidationLabel(valid: whisperCLIPathValid)
+                    Picker("Model", selection: $modelArch) {
+                        Text("Tiny Streaming (~50 MB)").tag(MoonshineModelPreset.tinyStreaming)
+                        Text("Small Streaming (~160 MB)").tag(MoonshineModelPreset.smallStreaming)
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(isDownloading)
                 }
 
-                VStack(alignment: .leading, spacing: StenoDesign.xs) {
-                    Text("Model path")
-                        .font(StenoDesign.bodyEmphasis())
-                        .foregroundStyle(StenoDesign.textPrimary)
-                    TextField("Path to model file", text: $modelPath)
-                        .textFieldStyle(.roundedBorder)
-                    pathValidationLabel(valid: modelPathValid)
+                if MoonshineModelDownloader.isModelReady(preset: modelArch) {
+                    HStack(spacing: StenoDesign.xs) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(StenoDesign.success)
+                        Text("Model ready")
+                            .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.success)
+                    }
+                } else {
+                    downloadSection
                 }
             }
             .cardStyle()
@@ -234,23 +239,68 @@ struct OnboardingView: View {
         }
     }
 
-    private var whisperCLIPathValid: Bool {
-        FileManager.default.fileExists(atPath: whisperCLIPath)
-    }
-
-    private var modelPathValid: Bool {
-        FileManager.default.fileExists(atPath: modelPath)
-    }
-
-    private func pathValidationLabel(valid: Bool) -> some View {
-        HStack(spacing: StenoDesign.xs) {
-            Image(systemName: valid ? "checkmark.circle.fill" : "xmark.circle.fill")
-                .font(StenoDesign.caption())
-                .foregroundStyle(valid ? StenoDesign.success : StenoDesign.error)
-            Text(valid ? "File found" : "File not found")
-                .font(StenoDesign.caption())
-                .foregroundStyle(valid ? StenoDesign.success : StenoDesign.error)
+    private var downloadSection: some View {
+        VStack(alignment: .leading, spacing: StenoDesign.sm) {
+            switch downloader.status {
+            case .idle:
+                Button("Download Model") {
+                    downloader.download(preset: modelArch)
+                }
+                .buttonStyle(.bordered)
+            case .downloading:
+                VStack(alignment: .leading, spacing: StenoDesign.xs) {
+                    ProgressView(value: downloader.overallProgress)
+                        .progressViewStyle(.linear)
+                    HStack {
+                        Text(downloadStatusText)
+                            .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.textSecondary)
+                        Spacer()
+                        Button("Cancel") {
+                            downloader.cancel()
+                        }
+                        .font(StenoDesign.caption())
+                        .buttonStyle(.plain)
+                        .foregroundStyle(StenoDesign.textSecondary)
+                    }
+                }
+            case .completed:
+                HStack(spacing: StenoDesign.xs) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(StenoDesign.success)
+                    Text("Download complete")
+                        .font(StenoDesign.caption())
+                        .foregroundStyle(StenoDesign.success)
+                }
+            case .failed(let message):
+                VStack(alignment: .leading, spacing: StenoDesign.xs) {
+                    HStack(spacing: StenoDesign.xs) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(StenoDesign.error)
+                        Text(message)
+                            .font(StenoDesign.caption())
+                            .foregroundStyle(StenoDesign.error)
+                    }
+                    Button("Retry") {
+                        downloader.download(preset: modelArch)
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
         }
+    }
+
+    private var downloadStatusText: String {
+        if case .downloading(let fileIndex, let fileCount, _) = downloader.status {
+            let percent = Int(downloader.overallProgress * 100)
+            return "Downloading file \(fileIndex + 1) of \(fileCount) (\(percent)%)"
+        }
+        return ""
+    }
+
+    private var isDownloading: Bool {
+        if case .downloading = downloader.status { return true }
+        return false
     }
 
     // MARK: - Step 4: Feature Tour
@@ -352,8 +402,8 @@ struct OnboardingView: View {
             return true
         case .permissions:
             return controller.microphonePermissionStatus == .granted
-        case .whisperSetup:
-            return whisperCLIPathValid && modelPathValid
+        case .modelSetup:
+            return MoonshineModelDownloader.isModelReady(preset: modelArch)
         case .featureTour:
             return true
         }
@@ -363,7 +413,7 @@ struct OnboardingView: View {
         switch currentStep {
         case .welcome, .featureTour:
             return false
-        case .permissions, .whisperSetup:
+        case .permissions, .modelSetup:
             return true
         }
     }
@@ -379,12 +429,12 @@ struct OnboardingView: View {
     }
 
     private func completeOnboarding() {
-        // Save paths if changed
-        if whisperCLIPath != controller.preferences.dictation.whisperCLIPath {
-            controller.preferences.dictation.whisperCLIPath = whisperCLIPath
+        let modelDir = MoonshineModelPaths.defaultModelDirectoryPath(for: modelArch)
+        if modelDir != controller.preferences.dictation.modelDirectoryPath {
+            controller.preferences.dictation.modelDirectoryPath = modelDir
         }
-        if modelPath != controller.preferences.dictation.modelPath {
-            controller.preferences.dictation.modelPath = modelPath
+        if modelArch != controller.preferences.dictation.modelArch {
+            controller.preferences.dictation.modelArch = modelArch
         }
 
         controller.completeOnboarding()
@@ -396,6 +446,6 @@ struct OnboardingView: View {
 private enum OnboardingStep: Int, CaseIterable {
     case welcome = 0
     case permissions = 1
-    case whisperSetup = 2
+    case modelSetup = 2
     case featureTour = 3
 }

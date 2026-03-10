@@ -11,7 +11,6 @@ Before you begin, ensure you have:
 - macOS 13.0 or later
 - Xcode 26 or later (Swift 6.2+)
 - XcodeGen installed (`brew install xcodegen`)
-- CMake installed (`brew install cmake`)
 
 ## First-Time Setup
 
@@ -21,32 +20,16 @@ Before you begin, ensure you have:
    cd steno
    ```
 
-2. Build whisper.cpp:
-   ```bash
-   git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
-   cd vendor/whisper.cpp
-   git checkout v1.8.3
-   cmake -B build && cmake --build build --config Release
-   cd ../..
-   ```
-
-3. Download a transcription model:
-   ```bash
-   cd vendor/whisper.cpp
-   ./models/download-ggml-model.sh small.en
-   cd ../..
-   ```
-
-4. Generate the local Xcode project:
+2. Generate the local Xcode project:
    ```bash
    xcodegen generate
    ```
 
-5. Open your local `Steno.xcodeproj` in Xcode.
+3. Open your local `Steno.xcodeproj` in Xcode.
 
-6. In Xcode, set your own Apple Developer Team in Signing & Capabilities.
+4. In Xcode, set your own Apple Developer Team in Signing & Capabilities.
 
-7. Build and run (Cmd+R).
+5. Build and run (Cmd+R). The onboarding wizard will download the Moonshine transcription model automatically.
 
 ## Code Style
 

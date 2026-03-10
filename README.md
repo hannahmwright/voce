@@ -2,7 +2,7 @@
 
 Fast macOS voice-to-text with smart app-aware insertion and optional text cleanup.
 
-Steno is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with `whisper.cpp`, fast hotkeys, and reliable text output across apps.
+Steno is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with [Moonshine](https://github.com/moonshine-ai/moonshine), fast hotkeys, and reliable text output across apps.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 
@@ -13,7 +13,8 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 ## What Steno Does
 
-- High-accuracy local transcription with `whisper.cpp` (audio never leaves your Mac)
+- High-accuracy local transcription with Moonshine (audio never leaves your Mac)
+- Automatic model download on first launch (~160 MB for the recommended model)
 - Smart app-aware paste (target-aware insertion): terminals prefer paste, editors use direct typing or accessibility insertion
 - Local transcript cleanup (no cloud dependency)
 - Global hotkeys: Option hold-to-talk and configurable hands-free toggle
@@ -40,8 +41,6 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 - macOS 13.0+
 - Xcode 26+ (Swift 6.2+)
 - XcodeGen (`brew install xcodegen`)
-- whisper.cpp built locally
-- CMake (`brew install cmake`)
 
 ## Quick Setup
 
@@ -51,35 +50,18 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
    cd steno
    ```
 
-2. Build whisper.cpp:
-   ```bash
-   git clone https://github.com/ggerganov/whisper.cpp vendor/whisper.cpp
-   cd vendor/whisper.cpp
-   git checkout v1.8.3
-   cmake -B build && cmake --build build --config Release
-   cd ../..
-   ```
-
-3. Download a transcription model:
-   ```bash
-   cd vendor/whisper.cpp
-   ./models/download-ggml-model.sh small.en
-   cd ../..
-   ```
-
-4. Generate the local Xcode project (generated from `project.yml`, not tracked in git):
+2. Generate the local Xcode project (generated from `project.yml`, not tracked in git):
    ```bash
    xcodegen generate
    ```
 
-5. Open your local `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
+3. Open your local `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
 
-6. Build and run (Cmd+R).
+4. Build and run (Cmd+R).
 
-7. Grant required permissions when prompted:
-   - Microphone: record your voice
-   - Accessibility: let Steno type or paste into the active app
-   - Input Monitoring: let Steno detect global hotkeys
+5. The onboarding wizard will guide you through:
+   - Granting permissions (Microphone, Accessibility, Input Monitoring)
+   - Downloading the Moonshine transcription model (~160 MB)
 
 ## Usage
 
@@ -127,7 +109,6 @@ swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 ## Known Limitations
 
 - macOS only (no Windows/Linux desktop target yet)
-- Setup currently expects local whisper.cpp build and model download
 - Full end-to-end behavior depends on user-granted macOS permissions
 - Cleanup runs locally only
 

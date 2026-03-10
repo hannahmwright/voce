@@ -14,16 +14,22 @@ public enum BenchmarkRunnerError: Error, LocalizedError {
 
 public struct RawRunConfiguration: Sendable {
     public var manifestPath: String
-    public var whisperConfiguration: BenchmarkWhisperConfiguration
+    public var transcriptionEngine: any TranscriptionEngine
+    public var transcriptionLabel: String
+    public var modelDirectoryPath: String
     public var defaultLanguageHint: String?
 
     public init(
         manifestPath: String,
-        whisperConfiguration: BenchmarkWhisperConfiguration,
+        transcriptionEngine: any TranscriptionEngine,
+        transcriptionLabel: String,
+        modelDirectoryPath: String,
         defaultLanguageHint: String? = nil
     ) {
         self.manifestPath = manifestPath
-        self.whisperConfiguration = whisperConfiguration
+        self.transcriptionEngine = transcriptionEngine
+        self.transcriptionLabel = transcriptionLabel
+        self.modelDirectoryPath = modelDirectoryPath
         self.defaultLanguageHint = defaultLanguageHint
     }
 }
@@ -44,13 +50,7 @@ public enum BenchmarkRunner {
         configuration: RawRunConfiguration
     ) async -> RawEngineOutput {
         let normalizer = TextNormalizer(policy: manifest.scoring.normalization)
-        let engine = WhisperCLITranscriptionEngine(
-            config: .init(
-                whisperCLIPath: URL(fileURLWithPath: configuration.whisperConfiguration.whisperCLIPath),
-                modelPath: URL(fileURLWithPath: configuration.whisperConfiguration.modelPath),
-                additionalArguments: configuration.whisperConfiguration.additionalArguments
-            )
-        )
+        let engine = configuration.transcriptionEngine
 
         var sampleResults: [RawEngineSampleResult] = []
         sampleResults.reserveCapacity(manifest.samples.count)
@@ -114,7 +114,10 @@ public enum BenchmarkRunner {
             benchmarkName: manifest.benchmarkName,
             manifestSchemaVersion: manifest.schemaVersion,
             normalizationPolicy: manifest.scoring.normalization,
-            whisperConfiguration: configuration.whisperConfiguration,
+            transcriptionConfiguration: BenchmarkTranscriptionConfiguration(
+                modelDirectoryPath: configuration.modelDirectoryPath,
+                modelName: configuration.transcriptionLabel
+            ),
             summary: aggregateRaw(sampleResults),
             datasetBreakdown: aggregateRawByDataset(sampleResults),
             samples: sampleResults

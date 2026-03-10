@@ -38,9 +38,56 @@ struct AppPreferences: Codable, Sendable, Equatable {
     }
 
     struct Dictation: Codable, Sendable, Equatable {
-        var whisperCLIPath: String
-        var modelPath: String
-        var threadCount: Int
+        var modelDirectoryPath: String
+        var modelArch: MoonshineModelPreset
+
+        init(
+            modelDirectoryPath: String,
+            modelArch: MoonshineModelPreset = .smallStreaming
+        ) {
+            self.modelDirectoryPath = modelDirectoryPath
+            self.modelArch = modelArch
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case modelDirectoryPath
+            case modelArch
+            case modelPath
+            case whisperCLIPath
+            case threadCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let defaultModelArch: MoonshineModelPreset = .smallStreaming
+            let defaultPath = MoonshineModelPaths.defaultModelDirectoryPath(for: defaultModelArch)
+
+            let decodedPath = try container.decodeIfPresent(String.self, forKey: .modelDirectoryPath)
+            let legacyPath = try container.decodeIfPresent(String.self, forKey: .modelPath)
+            let resolvedPath: String
+
+            if let decodedPath, !decodedPath.isEmpty {
+                resolvedPath = decodedPath
+            } else if let legacyPath, !legacyPath.isEmpty {
+                var isDirectory: ObjCBool = false
+                if FileManager.default.fileExists(atPath: legacyPath, isDirectory: &isDirectory), isDirectory.boolValue {
+                    resolvedPath = legacyPath
+                } else {
+                    resolvedPath = defaultPath
+                }
+            } else {
+                resolvedPath = defaultPath
+            }
+
+            modelDirectoryPath = resolvedPath
+            modelArch = try container.decodeIfPresent(MoonshineModelPreset.self, forKey: .modelArch) ?? defaultModelArch
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(modelDirectoryPath, forKey: .modelDirectoryPath)
+            try container.encode(modelArch, forKey: .modelArch)
+        }
     }
 
     struct Insertion: Codable, Sendable, Equatable {
@@ -84,10 +131,6 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var snippets: [Snippet]
 
     static var `default`: AppPreferences {
-        let vendorRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("vendor/whisper.cpp", isDirectory: true)
-            .path
-
         return AppPreferences(
             general: .init(
                 launchAtLoginEnabled: false,
@@ -99,9 +142,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 handsFreeGlobalKeyCode: 79
             ),
             dictation: .init(
-                whisperCLIPath: "\(vendorRoot)/build/bin/whisper-cli",
-                modelPath: "\(vendorRoot)/models/ggml-small.en.bin",
-                threadCount: 6
+                modelDirectoryPath: MoonshineModelPaths.defaultModelDirectoryPath(for: .smallStreaming),
+                modelArch: .smallStreaming
             ),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
@@ -136,6 +178,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
 
         insertion.orderedMethods = normalized
-        dictation.threadCount = max(1, min(16, dictation.threadCount))
+        if dictation.modelDirectoryPath.isEmpty {
+            dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: dictation.modelArch)
+        }
     }
 }

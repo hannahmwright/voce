@@ -132,19 +132,16 @@ public struct BenchmarkRuntimeMetadata: Sendable, Codable {
     }
 }
 
-public struct BenchmarkWhisperConfiguration: Sendable, Codable {
-    public var whisperCLIPath: String
-    public var modelPath: String
-    public var additionalArguments: [String]
+public struct BenchmarkTranscriptionConfiguration: Sendable, Codable {
+    public var modelDirectoryPath: String
+    public var modelName: String
 
     public init(
-        whisperCLIPath: String,
-        modelPath: String,
-        additionalArguments: [String] = []
+        modelDirectoryPath: String,
+        modelName: String
     ) {
-        self.whisperCLIPath = whisperCLIPath
-        self.modelPath = modelPath
-        self.additionalArguments = additionalArguments
+        self.modelDirectoryPath = modelDirectoryPath
+        self.modelName = modelName
     }
 }
 
@@ -262,7 +259,7 @@ public struct RawEngineOutput: Sendable, Codable {
     public var runtime: BenchmarkRuntimeMetadata
     public var manifestSchemaVersion: String
     public var normalizationPolicy: NormalizationPolicy
-    public var whisperConfiguration: BenchmarkWhisperConfiguration
+    public var transcriptionConfiguration: BenchmarkTranscriptionConfiguration
     public var summary: RawEngineAggregate
     public var datasetBreakdown: [String: RawEngineAggregate]
     public var samples: [RawEngineSampleResult]
@@ -273,7 +270,7 @@ public struct RawEngineOutput: Sendable, Codable {
         runtime: BenchmarkRuntimeMetadata = BenchmarkRuntimeMetadata(),
         manifestSchemaVersion: String,
         normalizationPolicy: NormalizationPolicy,
-        whisperConfiguration: BenchmarkWhisperConfiguration,
+        transcriptionConfiguration: BenchmarkTranscriptionConfiguration,
         summary: RawEngineAggregate,
         datasetBreakdown: [String: RawEngineAggregate],
         samples: [RawEngineSampleResult]
@@ -283,7 +280,7 @@ public struct RawEngineOutput: Sendable, Codable {
         self.runtime = runtime
         self.manifestSchemaVersion = manifestSchemaVersion
         self.normalizationPolicy = normalizationPolicy
-        self.whisperConfiguration = whisperConfiguration
+        self.transcriptionConfiguration = transcriptionConfiguration
         self.summary = summary
         self.datasetBreakdown = datasetBreakdown
         self.samples = samples

@@ -75,38 +75,9 @@ enum StenoBenchmarkCLI {
     }
 
     private static func runRaw(_ command: ParsedCommand) async throws {
-        let manifestPath = try command.required("manifest")
-        let outputPath = try command.required("output")
-        let whisperCLIPath = try command.required("whisper-cli")
-        let modelPath = try command.required("model")
-        let defaultLanguage = command.optional("default-language")
-        var extraArguments = command.values("extra-arg")
-
-        if let threadsText = command.optional("threads") {
-            guard let threads = Int(threadsText), threads > 0 else {
-                throw CLIError.invalidValue(argument: "threads", value: threadsText)
-            }
-            extraArguments.append(contentsOf: ["-t", "\(threads)"])
-        }
-
-        let manifest = try BenchmarkIO.loadManifest(at: manifestPath)
-        let rawOutput = await BenchmarkRunner.runRaw(
-            manifest: manifest,
-            configuration: RawRunConfiguration(
-                manifestPath: manifestPath,
-                whisperConfiguration: BenchmarkWhisperConfiguration(
-                    whisperCLIPath: whisperCLIPath,
-                    modelPath: modelPath,
-                    additionalArguments: extraArguments
-                ),
-                defaultLanguageHint: defaultLanguage
-            )
-        )
-
-        try BenchmarkIO.saveRawOutput(rawOutput, to: outputPath)
-        print(
-            "Raw benchmark saved to \(outputPath) — samples=\(rawOutput.summary.totalSamples), failureRate=\(formatPercent(rawOutput.summary.failureRate)), WER=\(formatDecimal(rawOutput.summary.wer))"
-        )
+        // TODO: Update to accept --model-dir and --model-arch and create a MoonshineTranscriptionEngine.
+        // MoonshineTranscriptionEngine lives in the app target and cannot be imported here yet.
+        fatalError("Benchmark CLI not yet updated for Moonshine")
     }
 
     private static func runPipeline(_ command: ParsedCommand) async throws {
@@ -202,69 +173,9 @@ enum StenoBenchmarkCLI {
     }
 
     private static func runAll(_ command: ParsedCommand) async throws {
-        let manifestPath = try command.required("manifest")
-        let rawOutputPath = try command.required("raw-output")
-        let pipelineOutputPath = try command.required("pipeline-output")
-        let macSanityPath = try command.required("mac-sanity")
-        let reportOutputPath = try command.required("report-output")
-        let whisperCLIPath = try command.required("whisper-cli")
-        let modelPath = try command.required("model")
-
-        let defaultLanguage = command.optional("default-language")
-        var extraArguments = command.values("extra-arg")
-        if let threadsText = command.optional("threads") {
-            guard let threads = Int(threadsText), threads > 0 else {
-                throw CLIError.invalidValue(argument: "threads", value: threadsText)
-            }
-            extraArguments.append(contentsOf: ["-t", "\(threads)"])
-        }
-
-        let manifest = try BenchmarkIO.loadManifest(at: manifestPath)
-        let rawOutput = await BenchmarkRunner.runRaw(
-            manifest: manifest,
-            configuration: RawRunConfiguration(
-                manifestPath: manifestPath,
-                whisperConfiguration: BenchmarkWhisperConfiguration(
-                    whisperCLIPath: whisperCLIPath,
-                    modelPath: modelPath,
-                    additionalArguments: extraArguments
-                ),
-                defaultLanguageHint: defaultLanguage
-            )
-        )
-        try BenchmarkIO.saveRawOutput(rawOutput, to: rawOutputPath)
-
-        let profile = try parseProfile(command)
-        let lexicon = try parseLexicon(command)
-        let pipelineOutput = await BenchmarkRunner.runPipeline(
-            manifest: manifest,
-            rawOutput: rawOutput,
-            configuration: PipelineRunConfiguration(profile: profile, lexicon: lexicon)
-        )
-        try BenchmarkIO.savePipelineOutput(pipelineOutput, to: pipelineOutputPath)
-
-        let macSanity: MacSanityChecklist
-        if FileManager.default.fileExists(atPath: macSanityPath) {
-            macSanity = try BenchmarkIO.loadMacSanityChecklist(at: macSanityPath)
-        } else {
-            macSanity = BenchmarkRunner.defaultMacSanityChecklist()
-            try BenchmarkIO.saveMacSanityChecklist(macSanity, to: macSanityPath)
-        }
-
-        let report = BenchmarkReportRenderer.render(
-            manifest: manifest,
-            raw: rawOutput,
-            pipeline: pipelineOutput,
-            macSanity: macSanity
-        )
-        try BenchmarkReportRenderer.validateRequiredLabels(in: report)
-        try BenchmarkIO.saveReport(report, to: reportOutputPath)
-
-        print("Run complete.")
-        print("- Raw results: \(rawOutputPath)")
-        print("- Pipeline results: \(pipelineOutputPath)")
-        print("- Mac sanity: \(macSanityPath)")
-        print("- Report: \(reportOutputPath)")
+        // TODO: Update to create a MoonshineTranscriptionEngine for the raw run.
+        // MoonshineTranscriptionEngine lives in the app target and cannot be imported here yet.
+        fatalError("Benchmark CLI not yet updated for Moonshine")
     }
 
     private static func parseProfile(_ command: ParsedCommand) throws -> StyleProfile {
@@ -351,11 +262,10 @@ enum StenoBenchmarkCLI {
           run-raw
             --manifest <path>
             --output <path>
-            --whisper-cli <path>
-            --model <path>
-            [--threads <int>]
-            [--extra-arg <arg>] (repeatable)
+            --model-dir <path>
+            --model-arch <name>
             [--default-language <code>]
+            (NOTE: not yet updated for Moonshine)
 
           run-pipeline
             --manifest <path>
@@ -393,10 +303,8 @@ enum StenoBenchmarkCLI {
             --pipeline-output <path>
             --mac-sanity <path>
             --report-output <path>
-            --whisper-cli <path>
-            --model <path>
-            [--threads <int>]
-            [--extra-arg <arg>] (repeatable)
+            --model-dir <path>
+            --model-arch <name>
             [--default-language <code>]
             [--lexicon <path>]
             [--profile-name <name>]
@@ -404,6 +312,7 @@ enum StenoBenchmarkCLI {
             [--structure-mode natural|paragraph|bullets|email|command]
             [--filler-policy minimal|balanced|aggressive]
             [--command-policy passthrough|transform]
+            (NOTE: not yet updated for Moonshine)
         """
     }
 
