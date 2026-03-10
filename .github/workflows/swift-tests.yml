@@ -23,9 +23,9 @@ jobs:
 
       - name: Verify generated Xcode project is not tracked
         run: |
-          tracked_project_files="$(git ls-files 'Steno.xcodeproj/*')"
+          tracked_project_files="$(git ls-files 'Murmur.xcodeproj/*')"
           if [ -n "$tracked_project_files" ]; then
-            echo "Steno.xcodeproj must remain generated-only and untracked."
+            echo "Murmur.xcodeproj must remain generated-only and untracked."
             echo "$tracked_project_files"
             exit 1
           fi
@@ -50,18 +50,18 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Run StenoKit tests
+      - name: Run MurmurKit tests
         env:
-          CLANG_MODULE_CACHE_PATH: /tmp/steno-clang-cache
-          SWIFT_MODULECACHE_PATH: /tmp/steno-swift-cache
+          CLANG_MODULE_CACHE_PATH: /tmp/murmur-clang-cache
+          SWIFT_MODULECACHE_PATH: /tmp/murmur-swift-cache
         run: |
-          cd StenoKit
+          cd MurmurKit
           swift test
 
       - name: Build macOS app (no signing)
         run: |
           xcodebuild build \
-            -project Steno.xcodeproj \
-            -scheme Steno \
+            -project Murmur.xcodeproj \
+            -scheme Murmur \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO

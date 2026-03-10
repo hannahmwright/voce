@@ -46,11 +46,11 @@ Steno follows strict conventions to maintain code quality and consistency.
 ### Design System
 
 - **Never hardcode fonts, shadows, spacing, or colors**
-- Use `StenoDesign` tokens for all UI elements:
-  - Typography: `StenoDesign.heading1()`, `StenoDesign.body()`, etc.
+- Use `MurmurDesign` tokens for all UI elements:
+  - Typography: `MurmurDesign.heading1()`, `MurmurDesign.body()`, etc.
   - Shadows: `.shadowStyle(.sm)`, `.shadowStyle(.md)`, `.shadowStyle(.lg)`
-  - Spacing: `StenoDesign.spacingXs`, `StenoDesign.spacingSm`, etc.
-  - Colors: `StenoDesign.adaptive(light:dark:)` for light/dark mode support
+  - Spacing: `MurmurDesign.spacingXs`, `MurmurDesign.spacingSm`, etc.
+  - Colors: `MurmurDesign.adaptive(light:dark:)` for light/dark mode support
 - Use component helpers from `DesignSystem.swift` (e.g., `CopyButtonView`, `PressableButtonStyle`)
 
 ### Accessibility
@@ -69,13 +69,13 @@ Every animation must respect Reduce Motion:
 @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
 // Conditional animation
-.animation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal), value: state)
+.animation(reduceMotion ? nil : .easeInOut(duration: MurmurDesign.animationNormal), value: state)
 
 // Conditional transition
 .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
 
 // Conditional withAnimation
-withAnimation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNormal)) {
+withAnimation(reduceMotion ? nil : .easeInOut(duration: MurmurDesign.animationNormal)) {
     // state changes
 }
 ```
@@ -85,35 +85,35 @@ withAnimation(reduceMotion ? nil : .easeInOut(duration: StenoDesign.animationNor
 - No force unwraps (`as!`, `try!`) — handle errors explicitly
 - No singletons (`static let shared`) — use dependency injection
 - No `print()` statements — use structured logging if needed
-- Protocol-first design: define protocols in `StenoKit/Sources/StenoKit/Protocols/`, implementations in `Services/`
+- Protocol-first design: define protocols in `MurmurKit/Sources/MurmurKit/Protocols/`, implementations in `Services/`
 - Test doubles go in `Sources/` (not `Tests/`) for reusability
 
 ## Testing
 
-Steno uses Swift Testing (not XCTest) with tests in `StenoKit/Tests/`.
+Steno uses Swift Testing (not XCTest) with tests in `MurmurKit/Tests/`.
 
 Run all tests:
 
 ```bash
-cd StenoKit
-CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
+cd MurmurKit
+CLANG_MODULE_CACHE_PATH=/tmp/murmur-clang-cache \
+SWIFT_MODULECACHE_PATH=/tmp/murmur-swift-cache \
 swift test
 ```
 
 Run a single test by function name:
 
 ```bash
-cd StenoKit
-CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
+cd MurmurKit
+CLANG_MODULE_CACHE_PATH=/tmp/murmur-clang-cache \
+SWIFT_MODULECACHE_PATH=/tmp/murmur-swift-cache \
 swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 ```
 
 When adding new features:
 
-- Write tests for business logic in `StenoKit/Tests/`
-- Use protocol-based test doubles (see `Sources/StenoKitTestSupport/Adapters.swift` and `InsertionTransports.swift`)
+- Write tests for business logic in `MurmurKit/Tests/`
+- Use protocol-based test doubles (see `Sources/MurmurKitTestSupport/Adapters.swift` and `InsertionTransports.swift`)
 - No UI tests — SwiftUI views are tested manually
 
 ## XcodeGen Workflow
@@ -150,8 +150,8 @@ Do not change signing settings without understanding TCC implications.
 Before submitting a PR:
 
 - [ ] All code builds without warnings
-- [ ] Tests pass (`swift test` in `StenoKit/`)
-- [ ] UI uses `StenoDesign` tokens (no hardcoded fonts/shadows/spacing)
+- [ ] Tests pass (`swift test` in `MurmurKit/`)
+- [ ] UI uses `MurmurDesign` tokens (no hardcoded fonts/shadows/spacing)
 - [ ] Accessibility labels added to all interactive elements
 - [ ] Animations respect `accessibilityReduceMotion`
 - [ ] No force unwraps, no singletons, no `print()` statements
@@ -165,7 +165,7 @@ Before submitting a PR:
 
 Key architectural concepts:
 
-- Two-layer structure (`StenoKit/` pure Swift package + `Steno/` app target)
+- Two-layer structure (`MurmurKit/` pure Swift package + `Steno/` app target)
 - Session lifecycle and recording state machine
 - Hotkey mechanism (CGEventTap for function keys, NSEvent for Option key)
 - Insertion chain (target-aware routing)

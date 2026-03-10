@@ -81,7 +81,7 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 Steno uses a two-layer design:
 
-- **`StenoKit/`**: pure Swift package with business logic, protocols, models, and services (no UI)
+- **`MurmurKit/`**: pure Swift package with business logic, protocols, models, and services (no UI)
 - **`Steno/`**: SwiftUI app target with views, `DictationController` orchestration, and settings persistence
 
 Key patterns: protocol-first dependency injection, actor isolation, no singletons, `Sendable` value types.
@@ -91,18 +91,18 @@ Key patterns: protocol-first dependency injection, actor isolation, no singleton
 Run the core package tests from the repository root:
 
 ```bash
-cd StenoKit
-CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
+cd MurmurKit
+CLANG_MODULE_CACHE_PATH=/tmp/murmur-clang-cache \
+SWIFT_MODULECACHE_PATH=/tmp/murmur-swift-cache \
 swift test
 ```
 
 Run a single test by function name:
 
 ```bash
-cd StenoKit
-CLANG_MODULE_CACHE_PATH=/tmp/steno-clang-cache \
-SWIFT_MODULECACHE_PATH=/tmp/steno-swift-cache \
+cd MurmurKit
+CLANG_MODULE_CACHE_PATH=/tmp/murmur-clang-cache \
+SWIFT_MODULECACHE_PATH=/tmp/murmur-swift-cache \
 swift test --filter sessionCoordinatorLocalFallbackOnPrimaryFailure
 ```
 
