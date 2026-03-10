@@ -39,6 +39,7 @@ final class DictationController: ObservableObject {
     private var activeRecordingMode: RecordingMode?
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
+    private var activeStreamingSession: MoonshineStreamingSession?
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
@@ -110,6 +111,8 @@ final class DictationController: ObservableObject {
         overlay.hide()
         activeStartTask?.cancel()
         activeStartTask = nil
+        activeStreamingSession?.cancel()
+        activeStreamingSession = nil
         if let token = activeMediaToken {
             mediaInterruption.endInterruption(token: token)
             activeMediaToken = nil
@@ -354,8 +357,27 @@ final class DictationController: ObservableObject {
                     activeMediaToken = await mediaInterruption.beginInterruption()
                 }
 
-                currentSessionID = try await coordinator.startPressToTalk(appContext: capturedContext)
+                // Register session for streaming (no file-based capture needed).
+                let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
+                currentSessionID = sessionID
+
+                // Start streaming transcription with live partial updates.
+                let streamConfig = MoonshineStreamingSession.Configuration(
+                    modelDirectoryPath: preferences.dictation.modelDirectoryPath,
+                    modelArch: preferences.dictation.modelArch
+                )
+                let session = MoonshineStreamingSession(config: streamConfig) { [weak self] partialText in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.isRecording else { return }
+                        self.overlay.show(state: .liveTranscript(
+                            text: partialText,
+                            handsFree: mode == .handsFree
+                        ))
+                    }
+                }
+                try session.start()
+                activeStreamingSession = session
             } catch {
                 if let token = activeMediaToken {
                     mediaInterruption.endInterruption(token: token)
@@ -368,6 +390,7 @@ final class DictationController: ObservableObject {
                 handsFreeOn = false
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
+                activeStreamingSession = nil
                 recordingStateMachine.markTranscriptionFailed()
                 status = "Failed to start"
                 lastError = error.localizedDescription
@@ -381,6 +404,10 @@ final class DictationController: ObservableObject {
     private func stopSession(mode: RecordingMode) {
         let pendingStart = activeStartTask
         activeStartTask = nil
+
+        // Capture streaming session before clearing state.
+        let streamingSession = activeStreamingSession
+        activeStreamingSession = nil
 
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
@@ -397,6 +424,7 @@ final class DictationController: ObservableObject {
             await pendingStart?.value
 
             guard let coordinator, let sessionID = currentSessionID else {
+                streamingSession?.cancel()
                 recordingStateMachine.markTranscriptionFailed()
                 status = "No active recording session."
                 return
@@ -408,12 +436,18 @@ final class DictationController: ObservableObject {
                 activeMediaToken = nil
             }
 
-            status = "Transcribing..."
+            status = "Finalising..."
             lastError = ""
             overlay.show(state: .transcribing)
 
             do {
-                let result = try await coordinator.stopPressToTalk(sessionID: sessionID)
+                // Stop the streaming session to get the final transcript.
+                let rawTranscript = streamingSession?.stop() ?? RawTranscript(text: "")
+                let result = try await coordinator.processStreamingTranscript(
+                    rawTranscript,
+                    sessionID: sessionID
+                )
+
                 lastTranscript = result.insertedText
                 switch result.status {
                 case .inserted:

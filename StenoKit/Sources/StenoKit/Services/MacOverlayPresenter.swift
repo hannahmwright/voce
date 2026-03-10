@@ -60,6 +60,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             animateDotColor(Self.dotBlue)
             startDotPulse()
 
+        case .liveTranscript(let text, _):
+            stopTimer()
+            let display = text.count > 80 ? "..." + text.suffix(77) : text
+            textField?.stringValue = display
+            animateDotColor(Self.dotBlue)
+            startDotPulse()
+
         case .transcribing:
             stopTimer()
             stopDotPulse()

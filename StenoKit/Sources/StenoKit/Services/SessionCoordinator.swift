@@ -65,6 +65,13 @@ public actor SessionCoordinator {
         return sessionID
     }
 
+    /// Registers a session for streaming transcription (audio capture managed externally).
+    public func registerStreamingSession(appContext: AppContext) -> SessionID {
+        let sessionID = SessionID()
+        activeSessions[sessionID] = ActiveSession(appContext: appContext, startedAt: Date())
+        return sessionID
+    }
+
     public func stopPressToTalk(sessionID: SessionID, languageHints: [String] = ["en-US"]) async throws -> InsertResult {
         // Remove session before the first await so actor reentrancy cannot process
         // the same session twice while transcription/cleanup are in flight.
@@ -74,8 +81,24 @@ public actor SessionCoordinator {
 
         let audioURL = try await captureService.endCapture(sessionID: sessionID)
         defer { try? FileManager.default.removeItem(at: audioURL) }
-        var rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
+        let rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
 
+        return try await finaliseTranscript(rawTranscript, active: active)
+    }
+
+    /// Accepts a pre-built transcript (e.g. from streaming) and runs cleanup, insertion, and history.
+    public func processStreamingTranscript(
+        _ rawTranscript: RawTranscript,
+        sessionID: SessionID
+    ) async throws -> InsertResult {
+        guard let active = activeSessions.removeValue(forKey: sessionID) else {
+            throw SessionCoordinatorError.sessionNotFound
+        }
+        return try await finaliseTranscript(rawTranscript, active: active)
+    }
+
+    private func finaliseTranscript(_ raw: RawTranscript, active: ActiveSession) async throws -> InsertResult {
+        var rawTranscript = raw
         rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
 
         let profile = await styleProfileService.resolve(for: active.appContext)
@@ -95,7 +118,6 @@ public actor SessionCoordinator {
             appBundleID: active.appContext.bundleIdentifier,
             rawText: rawTranscript.text,
             cleanText: cleanupResult.transcript.text,
-            // Audio artifacts are ephemeral; do not persist paths that are deleted on return.
             audioURL: nil,
             insertionStatus: insertResult.status
         )

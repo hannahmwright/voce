@@ -9,6 +9,7 @@ public enum HotkeyRegistrationStatus: Sendable, Equatable {
 /// The current state displayed in the floating status overlay.
 public enum OverlayState: Sendable, Equatable {
     case listening(handsFree: Bool, elapsedSeconds: Int)
+    case liveTranscript(text: String, handsFree: Bool)
     case transcribing
     case inserted
     case copiedOnly
