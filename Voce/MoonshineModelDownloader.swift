@@ -93,13 +93,21 @@ final class MoonshineModelDownloader: ObservableObject {
         await MainActor.run { status = .completed }
     }
 
+    /// URLSession configured with generous timeouts for large model files.
+    private nonisolated static let downloadSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300   // 5 min per stalled request
+        config.timeoutIntervalForResource = 1800 // 30 min total per file
+        return URLSession(configuration: config)
+    }()
+
     private nonisolated func downloadFile(
         from remoteURL: URL,
         to localURL: URL,
         fileIndex: Int,
         fileCount: Int
     ) async throws {
-        let (tempDownloadURL, response) = try await URLSession.shared.download(from: remoteURL)
+        let (tempDownloadURL, response) = try await Self.downloadSession.download(from: remoteURL)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
