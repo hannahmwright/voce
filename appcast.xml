@@ -3,6 +3,30 @@
   <channel>
     <title>Murmur</title>
     <item>
+      <title>Version 0.3.0</title>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Murmur 0.3.0</h2>
+        <ul>
+          <li>Voice commands: say "period", "new line", "delete that" and more — plus custom commands</li>
+          <li>Context-aware filler removal: "you know the answer" is kept, filler "you know" is removed</li>
+          <li>Adaptive learning engine that improves accuracy the more you use it</li>
+          <li>Auto-lexicon: corrections you make repeatedly get learned automatically</li>
+          <li>Snippet suggestions: frequently repeated phrases are suggested as shortcuts</li>
+          <li>Per-app style suggestions: Murmur learns your dictation style in each app</li>
+          <li>Vocabulary-biased ranking: your common words and jargon are prioritized</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 10 Mar 2026 22:30:00 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/murmur/releases/download/v0.3.0/Murmur-0.3.0.dmg"
+        type="application/octet-stream"
+        length="28033895"
+      />
+    </item>
+    <item>
       <title>Version 0.2.0</title>
       <sparkle:version>1</sparkle:version>
       <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
