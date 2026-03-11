@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.8</title>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.4.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.8</h2>
+        <ul>
+          <li>Fixes the disabled "Check for Updates" state by shipping the correct Sparkle configuration in the app bundle</li>
+          <li>Enables automatic background update checks by default</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 11 Mar 2026 22:09:32 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.8/Voce-0.4.8.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="gby5MUGkVV94qa+96+D5bNbOjb3iTabtKgnbyGyQdzbNAIITBVEBJjffln1GG/3VZYUPsE61Mc9KL54m+pJmCA=="
+        length="37506857"
+      />
+    </item>
+    <item>
       <title>Version 0.4.7</title>
       <sparkle:version>10</sparkle:version>
       <sparkle:shortVersionString>0.4.7</sparkle:shortVersionString>

@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-03-11
+
+### Fixed
+- Restored the Sparkle updater configuration in the shipped app bundle by moving update keys into a real Info.plist, which fixes the disabled "Check for Updates" state.
+- The updater now starts eagerly and publishes its availability state correctly to the settings UI.
+
+### Changed
+- Voce now enables automatic background update checks by default while still leaving automatic download/install disabled.
+
 ## [0.4.7] - 2026-03-11
 
 ### Fixed

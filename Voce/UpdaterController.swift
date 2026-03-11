@@ -5,22 +5,49 @@ import SwiftUI
 final class UpdaterController: NSObject, ObservableObject {
     private static let fallbackFeedURLString = "https://raw.githubusercontent.com/hannahmwright/voce/main/appcast.xml"
 
-    private lazy var updaterController = SPUStandardUpdaterController(
-        startingUpdater: true,
-        updaterDelegate: self,
-        userDriverDelegate: nil
-    )
+    @Published private(set) var canCheckForUpdates = false
+    @Published private(set) var automaticallyChecksForUpdates = false
 
-    var canCheckForUpdates: Bool {
-        updaterController.updater.canCheckForUpdates
-    }
+    private var updaterController: SPUStandardUpdaterController!
+    private var updaterObservations: [NSKeyValueObservation] = []
 
     override init() {
         super.init()
+        updaterController = SPUStandardUpdaterController(
+            startingUpdater: false,
+            updaterDelegate: self,
+            userDriverDelegate: nil
+        )
+        bindUpdaterState()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.updaterController.startUpdater()
+            self.refreshUpdaterState()
+        }
     }
 
     func checkForUpdates() {
-        updaterController.updater.checkForUpdates()
+        updaterController.checkForUpdates(nil)
+    }
+
+    private func bindUpdaterState() {
+        updaterObservations = [
+            updaterController.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] _, _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshUpdaterState()
+                }
+            },
+            updaterController.updater.observe(\.automaticallyChecksForUpdates, options: [.initial, .new]) { [weak self] _, _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshUpdaterState()
+                }
+            }
+        ]
+    }
+
+    private func refreshUpdaterState() {
+        canCheckForUpdates = updaterController.updater.canCheckForUpdates
+        automaticallyChecksForUpdates = updaterController.updater.automaticallyChecksForUpdates
     }
 }
 
