@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-03-11
+
+### Fixed
+- Final live Moonshine transcripts now wait for captured audio to drain and for the transcript to stabilize before insertion, reducing clipped endings when you release the push-to-talk key.
+- Buffers that overlap key release are trimmed to the release point instead of being treated as all-or-nothing, so the final phrase is less likely to be cut off.
+
 ## [0.4.6] - 2026-03-11
 
 ### Fixed

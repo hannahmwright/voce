@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.7</title>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>0.4.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.7</h2>
+        <ul>
+          <li>Improves live dictation stop handling so the final words are less likely to be clipped when you release push-to-talk</li>
+          <li>Waits for captured audio and final transcript updates to settle before insertion</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 11 Mar 2026 22:02:52 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.7/Voce-0.4.7.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="3hdJmXFk46IK2jeDem03tY+EnZUeudlxISO29/DiA+8Vbho0wIi8dWsWHkpRNhtkqY1MPuu71Wvf0ERzJljjAw=="
+        length="37505692"
+      />
+    </item>
+    <item>
       <title>Version 0.4.6</title>
       <sparkle:version>9</sparkle:version>
       <sparkle:shortVersionString>0.4.6</sparkle:shortVersionString>
