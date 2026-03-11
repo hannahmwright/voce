@@ -23,9 +23,9 @@ jobs:
 
       - name: Verify generated Xcode project is not tracked
         run: |
-          tracked_project_files="$(git ls-files 'Murmur.xcodeproj/*')"
+          tracked_project_files="$(git ls-files 'Voce.xcodeproj/*')"
           if [ -n "$tracked_project_files" ]; then
-            echo "Murmur.xcodeproj must remain generated-only and untracked."
+            echo "Voce.xcodeproj must remain generated-only and untracked."
             echo "$tracked_project_files"
             exit 1
           fi
@@ -50,18 +50,18 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Run MurmurKit tests
+      - name: Run VoceKit tests
         env:
-          CLANG_MODULE_CACHE_PATH: /tmp/murmur-clang-cache
-          SWIFT_MODULECACHE_PATH: /tmp/murmur-swift-cache
+          CLANG_MODULE_CACHE_PATH: /tmp/voce-clang-cache
+          SWIFT_MODULECACHE_PATH: /tmp/voce-swift-cache
         run: |
-          cd MurmurKit
+          cd VoceKit
           swift test
 
       - name: Build macOS app (no signing)
         run: |
           xcodebuild build \
-            -project Murmur.xcodeproj \
-            -scheme Murmur \
+            -project Voce.xcodeproj \
+            -scheme Voce \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO

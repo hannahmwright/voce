@@ -1,0 +1,24 @@
+{
+  "originHash" : "8ac095e0ffa21833c799b236acbf31d4d08dd496261862918e45a794a37d04ae",
+  "pins" : [
+    {
+      "identity" : "moonshine-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/moonshine-ai/moonshine-swift.git",
+      "state" : {
+        "revision" : "1b99ab3a0c981bf8b761d519e3f638fb820a5490",
+        "version" : "0.0.49"
+      }
+    },
+    {
+      "identity" : "sparkle",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/sparkle-project/Sparkle.git",
+      "state" : {
+        "revision" : "21d8df80440b1ca3b65fa82e40782f1e5a9e6ba2",
+        "version" : "2.9.0"
+      }
+    }
+  ],
+  "version" : 3
+}

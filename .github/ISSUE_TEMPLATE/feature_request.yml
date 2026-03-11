@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a feature for Murmur
+description: Suggest a feature for Voce
 labels: ["enhancement"]
 body:
   - type: textarea
