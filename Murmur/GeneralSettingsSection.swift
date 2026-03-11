@@ -3,6 +3,7 @@ import SwiftUI
 struct GeneralSettingsSection: View {
     @Binding var preferences: AppPreferences
     let launchAtLoginWarning: String
+    @EnvironmentObject private var updaterController: UpdaterController
 
     var body: some View {
         settingsCard("General") {
@@ -18,6 +19,11 @@ struct GeneralSettingsSection: View {
                 preferences.general.showOnboarding = true
             }
             .buttonStyle(.bordered)
+            Button("Check for Updates") {
+                updaterController.checkForUpdates()
+            }
+            .buttonStyle(.bordered)
+            .disabled(!updaterController.canCheckForUpdates)
         }
     }
 }

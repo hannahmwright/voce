@@ -1,10 +1,12 @@
 import AppKit
+import Sparkle
 import SwiftUI
 
 @main
 struct MurmurApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var controller = DictationController()
+    @StateObject private var updaterController = UpdaterController()
 
     var body: some Scene {
         WindowGroup("Murmur") {
@@ -17,6 +19,7 @@ struct MurmurApp: App {
                 } else {
                     ContentView()
                         .environmentObject(controller)
+                        .environmentObject(updaterController)
                 }
             }
         }

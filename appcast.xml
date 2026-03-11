@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Murmur</title>
+    <item>
+      <title>Version 0.2.0</title>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Murmur 0.2.0</h2>
+        <ul>
+          <li>Replaced Whisper backend with Moonshine for faster, smaller, local transcription</li>
+          <li>Live streaming transcription — see text appear in the overlay as you speak</li>
+          <li>Automatic model download from Moonshine CDN on first launch</li>
+          <li>Added Sparkle for automatic update checking</li>
+        </ul>
+      ]]></description>
+      <pubDate>Mon, 10 Mar 2026 20:00:00 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/murmur/releases/download/v0.2.0/Murmur-0.2.0.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="HTpk6+xoXyVvTm4RWcymrWA7OdvF2fmNKdEfHpAuQpv/f+o5tr+AnCRTnmwo3Go4ksjPMbEeYFiX/JM/yBhgCA=="
+        length="30506406"
+      />
+    </item>
+  </channel>
+</rss>
