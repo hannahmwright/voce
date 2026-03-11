@@ -9,6 +9,7 @@ enum MoonshineTranscriptionError: Error, LocalizedError {
     case missingModelFiles([String])
     case failedToReadAudio(String)
     case unsupportedAudioFormat
+    case emptyLiveTranscript
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ enum MoonshineTranscriptionError: Error, LocalizedError {
             return "Failed to read audio for Moonshine transcription: \(details)"
         case .unsupportedAudioFormat:
             return "Audio conversion to 16 kHz mono failed"
+        case .emptyLiveTranscript:
+            return "No speech was captured from the microphone"
         }
     }
 }

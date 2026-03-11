@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-03-11
+
+### Fixed
+- Reworked live Moonshine microphone streaming to feed audio to the stream immediately instead of batching it through the custom timer queue, matching Moonshine's upstream mic transcriber more closely.
+- Empty live captures now fail with a visible microphone/transcription error instead of silently creating blank transcript history entries.
+
 ## [0.4.2] - 2026-03-11
 
 ### Fixed
