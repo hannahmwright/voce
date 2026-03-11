@@ -17,13 +17,15 @@ final class MoonshineModelDownloader: ObservableObject {
 
     private var downloadTask: Task<Void, Never>?
 
-    /// URLSession with generous timeouts for large model files.
     private nonisolated static let session: URLSession = {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 600   // 10 min if connection stalls
-        config.timeoutIntervalForResource = 3600 // 1 hour max per file
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
         return URLSession(configuration: config)
     }()
+
+    /// 5 MB per chunk — small enough to never stall, large enough to be efficient.
+    private nonisolated static let chunkSize: Int64 = 5 * 1_024 * 1_024
 
     /// Overall progress from 0.0 to 1.0 across all files.
     var overallProgress: Double {
@@ -87,31 +89,13 @@ final class MoonshineModelDownloader: ObservableObject {
             let remoteURL = baseURL.appendingPathComponent(fileName)
             let localURL = destinationURL.appendingPathComponent(fileName)
 
-            var lastError: Error?
-            let maxRetries = 3
-
-            for attempt in 0...maxRetries {
-                if attempt > 0 {
-                    let delay = UInt64(pow(2.0, Double(attempt))) * 1_000_000_000
-                    try? await Task.sleep(nanoseconds: delay)
-                    await MainActor.run {
-                        status = .downloading(fileIndex: index, fileCount: missing.count, fileProgress: 0)
-                    }
-                }
-                do {
-                    try await downloadFile(from: remoteURL, to: localURL, fileIndex: index, fileCount: missing.count)
-                    lastError = nil
-                    break
-                } catch is CancellationError {
-                    await MainActor.run { status = .idle }
-                    return
-                } catch {
-                    lastError = error
-                }
-            }
-
-            if let lastError {
-                await MainActor.run { status = .failed("Failed to download \(fileName): \(lastError.localizedDescription)") }
+            do {
+                try await downloadFile(from: remoteURL, to: localURL, fileIndex: index, fileCount: missing.count)
+            } catch is CancellationError {
+                await MainActor.run { status = .idle }
+                return
+            } catch {
+                await MainActor.run { status = .failed("Failed to download \(fileName): \(error.localizedDescription)") }
                 return
             }
         }
@@ -119,58 +103,85 @@ final class MoonshineModelDownloader: ObservableObject {
         await MainActor.run { status = .completed }
     }
 
-    /// Downloads a single file using streamed bytes with chunked disk writes.
-    /// Runs entirely off the main thread; only hops to MainActor for progress updates.
+    /// Downloads a file using chunked HTTP Range requests.
+    /// Each chunk is a simple URLSession.data call — no streaming, no delegates, no deadlocks.
+    /// Retries each chunk up to 3 times on failure.
     private nonisolated func downloadFile(
         from remoteURL: URL,
         to localURL: URL,
         fileIndex: Int,
         fileCount: Int
     ) async throws {
-        let (asyncBytes, response) = try await Self.session.bytes(from: remoteURL)
+        // First, get the file size with a HEAD request.
+        var headRequest = URLRequest(url: remoteURL)
+        headRequest.httpMethod = "HEAD"
+        let (_, headResponse) = try await Self.session.data(for: headRequest)
 
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+        guard let httpResponse = headResponse as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            let code = (headResponse as? HTTPURLResponse)?.statusCode ?? -1
             throw DownloadError.httpError(code)
         }
 
-        let expectedLength = httpResponse.expectedContentLength
-        let tempURL = localURL.appendingPathExtension("download")
+        let totalSize = httpResponse.expectedContentLength
+        guard totalSize > 0 else {
+            throw DownloadError.unknownFileSize
+        }
 
+        let tempURL = localURL.appendingPathExtension("download")
         try? FileManager.default.removeItem(at: tempURL)
         FileManager.default.createFile(atPath: tempURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: tempURL)
 
-        var bytesReceived: Int64 = 0
-        let chunkSize = 1_024 * 1_024 // 1 MB chunks
-        var buffer = Data()
-        buffer.reserveCapacity(chunkSize)
-        var lastProgressUpdate = CFAbsoluteTimeGetCurrent()
+        var offset: Int64 = 0
+        let chunk = Self.chunkSize
 
-        for try await byte in asyncBytes {
+        while offset < totalSize {
             try Task.checkCancellation()
-            buffer.append(byte)
-            bytesReceived += 1
 
-            if buffer.count >= chunkSize {
-                handle.write(buffer)
-                buffer.removeAll(keepingCapacity: true)
+            let end = min(offset + chunk - 1, totalSize - 1)
 
-                // Update progress at most every 0.15s
-                let now = CFAbsoluteTimeGetCurrent()
-                if expectedLength > 0, now - lastProgressUpdate >= 0.15 {
-                    lastProgressUpdate = now
-                    let progress = min(Double(bytesReceived) / Double(expectedLength), 1.0)
-                    await MainActor.run {
-                        status = .downloading(fileIndex: fileIndex, fileCount: fileCount, fileProgress: progress)
-                    }
+            // Retry each chunk up to 3 times.
+            var chunkData: Data?
+            var lastError: Error?
+
+            for attempt in 0..<3 {
+                if attempt > 0 {
+                    try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
                 }
+                do {
+                    var request = URLRequest(url: remoteURL)
+                    request.setValue("bytes=\(offset)-\(end)", forHTTPHeaderField: "Range")
+                    let (data, response) = try await Self.session.data(for: request)
+
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    guard statusCode == 206 || statusCode == 200 else {
+                        throw DownloadError.httpError(statusCode)
+                    }
+                    chunkData = data
+                    lastError = nil
+                    break
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    lastError = error
+                }
+            }
+
+            guard let data = chunkData else {
+                handle.closeFile()
+                try? FileManager.default.removeItem(at: tempURL)
+                throw lastError!
+            }
+
+            handle.write(data)
+            offset += Int64(data.count)
+
+            let progress = min(Double(offset) / Double(totalSize), 1.0)
+            await MainActor.run {
+                status = .downloading(fileIndex: fileIndex, fileCount: fileCount, fileProgress: progress)
             }
         }
 
-        if !buffer.isEmpty {
-            handle.write(buffer)
-        }
         handle.closeFile()
 
         // Atomic move into place.
@@ -184,11 +195,14 @@ final class MoonshineModelDownloader: ObservableObject {
 
     private enum DownloadError: LocalizedError {
         case httpError(Int)
+        case unknownFileSize
 
         var errorDescription: String? {
             switch self {
             case .httpError(let code):
                 return "Server returned HTTP \(code)"
+            case .unknownFileSize:
+                return "Could not determine file size"
             }
         }
     }
