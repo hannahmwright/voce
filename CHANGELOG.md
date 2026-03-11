@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-03-11
+
+### Fixed
+- Sparkle update checks now provide the appcast URL via `SPUUpdaterDelegate` as a runtime fallback, so "Check for Updates" works even when the generated `Info.plist` omits `SUFeedURL`.
+
 ## [0.4.1] - 2026-03-11
 
 ### Fixed
