@@ -163,7 +163,7 @@ struct OnboardingView: View {
 
                 PermissionStatusCard(
                     title: "Accessibility",
-                    description: "Lets Steno type or paste into the app you're using.",
+                    description: "Lets Voce type or paste into the app you're using.",
                     status: controller.accessibilityPermissionStatus,
                     onRequest: { controller.requestAccessibilityPermission() },
                     onOpenSettings: { controller.openAccessibilitySettings() }
@@ -171,7 +171,7 @@ struct OnboardingView: View {
 
                 PermissionStatusCard(
                     title: "Input Monitoring",
-                    description: "Lets Steno detect global hotkeys while other apps are focused.",
+                    description: "Lets Voce detect global hotkeys while other apps are focused.",
                     status: controller.inputMonitoringPermissionStatus,
                     onRequest: { controller.requestInputMonitoringPermission() },
                     onOpenSettings: { controller.openInputMonitoringSettings() }
@@ -203,7 +203,7 @@ struct OnboardingView: View {
                     .foregroundStyle(VoceDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Choose a model size and Steno will download it automatically.")
+                Text("Choose a model size and Voce will download it automatically.")
                     .font(VoceDesign.subheadline())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
@@ -381,7 +381,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(VoceDesign.accent)
-                .accessibilityLabel("Finish onboarding and start using Steno")
+                .accessibilityLabel("Finish onboarding and start using Voce")
             } else {
                 Button("Continue") {
                     goForward()

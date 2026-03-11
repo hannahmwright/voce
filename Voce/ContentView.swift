@@ -87,7 +87,7 @@ struct ContentView: View {
             await controller.refreshHistory()
         }
         .onAppear {
-            appMainWindow()?.setFrameAutosaveName("StenoMainWindow")
+            appMainWindow()?.setFrameAutosaveName("VoceMainWindow")
         }
     }
 

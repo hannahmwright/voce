@@ -420,7 +420,7 @@ func cancelledBeginInterruptionDoesNotSendMediaKey() async {
 
 @Test("MediaRemote probe runner ignores callbacks after timeout")
 func mediaRemoteProbeRunnerIgnoresLateCallbacks() async {
-    let callbackQueue = DispatchQueue(label: "StenoTests.MediaRemote.Callback")
+    let callbackQueue = DispatchQueue(label: "VoceTests.MediaRemote.Callback")
     callbackQueue.suspend()
     var resumedCallbackQueue = false
     defer {
@@ -431,7 +431,7 @@ func mediaRemoteProbeRunnerIgnoresLateCallbacks() async {
 
     let runner = MediaRemoteAsyncProbeRunner(
         timeout: .milliseconds(20),
-        timeoutQueue: DispatchQueue(label: "StenoTests.MediaRemote.Timeout")
+        timeoutQueue: DispatchQueue(label: "VoceTests.MediaRemote.Timeout")
     )
 
     let value = await runner.run { callback in

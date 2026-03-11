@@ -358,7 +358,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
 
     init(
         frameworkPath: String = "/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote",
-        callbackQueue: DispatchQueue = DispatchQueue(label: "Steno.MediaRemote.Callback", qos: .userInitiated),
+        callbackQueue: DispatchQueue = DispatchQueue(label: "Voce.MediaRemote.Callback", qos: .userInitiated),
         probeRunner: MediaRemoteAsyncProbeRunner = MediaRemoteAsyncProbeRunner()
     ) {
         self.callbackQueue = callbackQueue
@@ -538,7 +538,7 @@ struct MediaRemoteAsyncProbeRunner {
 
     init(
         timeout: DispatchTimeInterval = .milliseconds(250),
-        timeoutQueue: DispatchQueue = DispatchQueue(label: "Steno.MediaRemote.Timeout", qos: .userInitiated)
+        timeoutQueue: DispatchQueue = DispatchQueue(label: "Voce.MediaRemote.Timeout", qos: .userInitiated)
     ) {
         self.timeout = timeout
         self.timeoutQueue = timeoutQueue

@@ -13,7 +13,7 @@ public enum BenchmarkReportError: Error, LocalizedError {
 
 public enum BenchmarkReportRenderer {
     public static let rawLabel = "Raw ASR"
-    public static let pipelineLabel = "Steno post-processing output"
+    public static let pipelineLabel = "Voce post-processing output"
 
     public static func render(
         manifest: BenchmarkManifest,

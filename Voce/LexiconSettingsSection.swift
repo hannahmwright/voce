@@ -14,7 +14,7 @@ struct LexiconSettingsSection: View {
             subtitle: "Auto-fix words that speech recognition gets wrong"
         ) {
             if preferences.lexiconEntries.isEmpty {
-                Text("No corrections yet. Example: \u{201C}stenoh\u{201D} \u{2192} \u{201C}Steno\u{201D}")
+                Text("No corrections yet. Example: \u{201C}voceh\u{201D} \u{2192} \u{201C}Voce\u{201D}")
                     .foregroundStyle(VoceDesign.textSecondary)
             } else {
                 ForEach(preferences.lexiconEntries.indices, id: \.self) { index in

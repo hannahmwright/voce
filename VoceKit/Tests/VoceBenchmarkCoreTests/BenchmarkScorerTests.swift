@@ -55,7 +55,7 @@ func pipelineRunComputesExpectedSummaries() async {
                 id: "sample-1",
                 dataset: "fixture",
                 audioPath: "audio.wav",
-                referenceText: "Steno testing"
+                referenceText: "Voce testing"
             )
         ]
     )
@@ -87,7 +87,7 @@ func pipelineRunComputesExpectedSummaries() async {
                 id: "sample-1",
                 dataset: "fixture",
                 audioPath: "audio.wav",
-                referenceText: "Steno testing",
+                referenceText: "Voce testing",
                 hypothesisText: "um voceh testing",
                 languageHint: "en",
                 status: .success,

@@ -6,7 +6,7 @@ struct InsertionSettingsSection: View {
 
     var body: some View {
         settingsCard("Text Output (Insertion)") {
-            Text("Choose how Steno inserts text. Drag to set priority. Backup paste via clipboard is always kept.")
+            Text("Choose how Voce inserts text. Drag to set priority. Backup paste via clipboard is always kept.")
                 .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
 

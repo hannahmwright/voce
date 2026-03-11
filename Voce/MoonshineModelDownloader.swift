@@ -50,29 +50,31 @@ final class MoonshineModelDownloader: ObservableObject {
         status = .idle
     }
 
-    private func performDownload(preset: MoonshineModelPreset) async {
+    private nonisolated func performDownload(preset: MoonshineModelPreset) async {
         let destinationDir = MoonshineModelPaths.defaultModelDirectoryPath(for: preset)
         let destinationURL = URL(fileURLWithPath: destinationDir, isDirectory: true)
 
         do {
             try FileManager.default.createDirectory(at: destinationURL, withIntermediateDirectories: true)
         } catch {
-            status = .failed("Failed to create model directory: \(error.localizedDescription)")
+            await MainActor.run { status = .failed("Failed to create model directory: \(error.localizedDescription)") }
             return
         }
 
         let missing = MoonshineModelPaths.missingFiles(in: destinationDir, preset: preset)
         guard !missing.isEmpty else {
-            status = .completed
+            await MainActor.run { status = .completed }
             return
         }
 
         let baseURL = Self.cdnBaseURL(for: preset)
 
         for (index, fileName) in missing.enumerated() {
-            if Task.isCancelled { status = .idle; return }
+            if Task.isCancelled { await MainActor.run { status = .idle }; return }
 
-            status = .downloading(fileIndex: index, fileCount: missing.count, fileProgress: 0)
+            await MainActor.run {
+                status = .downloading(fileIndex: index, fileCount: missing.count, fileProgress: 0)
+            }
 
             let remoteURL = baseURL.appendingPathComponent(fileName)
             let localURL = destinationURL.appendingPathComponent(fileName)
@@ -80,70 +82,48 @@ final class MoonshineModelDownloader: ObservableObject {
             do {
                 try await downloadFile(from: remoteURL, to: localURL, fileIndex: index, fileCount: missing.count)
             } catch is CancellationError {
-                status = .idle
+                await MainActor.run { status = .idle }
                 return
             } catch {
-                status = .failed("Failed to download \(fileName): \(error.localizedDescription)")
+                await MainActor.run { status = .failed("Failed to download \(fileName): \(error.localizedDescription)") }
                 return
             }
         }
 
-        status = .completed
+        await MainActor.run { status = .completed }
     }
 
-    private func downloadFile(
+    private nonisolated func downloadFile(
         from remoteURL: URL,
         to localURL: URL,
         fileIndex: Int,
         fileCount: Int
     ) async throws {
-        let (asyncBytes, response) = try await URLSession.shared.bytes(from: remoteURL)
+        let (tempDownloadURL, response) = try await URLSession.shared.download(from: remoteURL)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw DownloadError.httpError(code)
         }
 
-        let expectedLength = httpResponse.expectedContentLength
+        try Task.checkCancellation()
+
         let tempURL = localURL.appendingPathExtension("download")
 
-        // Clean up any partial download from a previous attempt.
+        // Move the URLSession temp file to our staging location.
         try? FileManager.default.removeItem(at: tempURL)
+        try FileManager.default.moveItem(at: tempDownloadURL, to: tempURL)
 
-        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: tempURL)
-
-        var bytesReceived: Int64 = 0
-        var buffer = Data()
-        buffer.reserveCapacity(256 * 1_024)
-
-        for try await byte in asyncBytes {
-            try Task.checkCancellation()
-            buffer.append(byte)
-            bytesReceived += 1
-
-            if buffer.count >= 256 * 1_024 {
-                handle.write(buffer)
-                buffer.removeAll(keepingCapacity: true)
-
-                if expectedLength > 0 {
-                    let fileProgress = Double(bytesReceived) / Double(expectedLength)
-                    status = .downloading(fileIndex: fileIndex, fileCount: fileCount, fileProgress: min(fileProgress, 1.0))
-                }
-            }
+        await MainActor.run {
+            status = .downloading(fileIndex: fileIndex, fileCount: fileCount, fileProgress: 1.0)
         }
-
-        if !buffer.isEmpty {
-            handle.write(buffer)
-        }
-        handle.closeFile()
 
         // Atomic move into place.
         try? FileManager.default.removeItem(at: localURL)
         try FileManager.default.moveItem(at: tempURL, to: localURL)
     }
 
-    private static func cdnBaseURL(for preset: MoonshineModelPreset) -> URL {
+    private nonisolated static func cdnBaseURL(for preset: MoonshineModelPreset) -> URL {
         // Pattern: https://download.moonshine.ai/model/{directoryName}/quantized/
         URL(string: "https://download.moonshine.ai/model/\(preset.directoryName)/quantized/")!
     }

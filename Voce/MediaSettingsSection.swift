@@ -9,7 +9,7 @@ struct MediaSettingsSection: View {
                    isOn: $preferences.media.pauseDuringPressToTalk)
             Toggle("Pause music/video during hands-free dictation",
                    isOn: $preferences.media.pauseDuringHandsFree)
-            Text("Steno only sends play/pause when playback is clearly active.")
+            Text("Voce only sends play/pause when playback is clearly active.")
                 .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
         }
