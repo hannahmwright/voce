@@ -3,6 +3,28 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.11</title>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>0.4.11</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.11</h2>
+        <ul>
+          <li>Added a scenic frosted-glass app shell with refreshed record-screen visuals and updated app icon artwork</li>
+          <li>Added click-to-capture hands-free hotkey selection with support for modifier-style keys like Globe/Fn</li>
+          <li>Reworked settings into a sidebar layout with clearer model guidance and more actionable permission deep links</li>
+          <li>Hardened long live dictation by bounding the Moonshine audio backlog and surfacing an explicit overload stop message</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 17 Mar 2026 19:18:34 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.11/Voce-0.4.11.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="KUzD5te6/KMZAfClIlGMrq5zUszLf45dNWZSbyJCi+zy9cCv20p4LjymspR+dM0Gz2oR+M48eLCG/rhGVwTjAg=="
+        length="34188361"
+      />
+    </item>
+    <item>
       <title>Version 0.4.10</title>
       <sparkle:version>13</sparkle:version>
       <sparkle:shortVersionString>0.4.10</sparkle:shortVersionString>
