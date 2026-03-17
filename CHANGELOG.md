@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-03-17
+
+### Changed
+- Settings now save automatically as soon as changes are made, so there is no separate `Save & Apply` step to miss.
+- Removed the manual save button from the settings screen and clarified that changes persist immediately.
+
 ## [0.4.12] - 2026-03-17
 
 ### Fixed

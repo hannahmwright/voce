@@ -17,7 +17,14 @@ struct SettingsView: View {
             preferencesDraft = controller.preferences
         }
         .onChange(of: controller.preferences) { newValue in
-            preferencesDraft = newValue
+            if newValue != preferencesDraft {
+                preferencesDraft = newValue
+            }
+        }
+        .onChange(of: preferencesDraft) { newValue in
+            if normalizedPreferences(newValue) != controller.preferences {
+                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
+            }
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: selectedGroup)
     }
@@ -73,17 +80,6 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: VoceDesign.sm) {
                     groupContent(selectedGroup)
-
-                    HStack(spacing: VoceDesign.sm) {
-                        Button("Save & Apply") {
-                            controller.applySettingsDraft(preferences: preferencesDraft)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(VoceDesign.accent)
-
-                        Spacer()
-                    }
-                    .padding(.top, VoceDesign.sm)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, VoceDesign.xs)
@@ -127,6 +123,10 @@ struct SettingsView: View {
             Text(selectedGroup.description)
                 .font(VoceDesign.subheadline())
                 .foregroundStyle(VoceDesign.textSecondary)
+
+            Text("Changes save automatically.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
         }
         .padding(.bottom, VoceDesign.xs)
     }
@@ -159,6 +159,12 @@ struct SettingsView: View {
                 launchAtLoginWarning: controller.launchAtLoginWarning
             )
         }
+    }
+
+    private func normalizedPreferences(_ preferences: AppPreferences) -> AppPreferences {
+        var snapshot = preferences
+        snapshot.normalize()
+        return snapshot
     }
 }
 

@@ -161,31 +161,25 @@ final class DictationController: ObservableObject {
         hasBootstrapped = true
     }
 
-    func savePreferences() {
+    func savePreferences(announceImmediateSave: Bool = true) {
         var snapshot = preferences
         snapshot.normalize()
         preferences = snapshot
 
         Task {
             await preferencesStore.save(snapshot)
-            await MainActor.run {
-                status = "Settings saved."
-            }
-            await rebuildRuntimeOrDefer()
+            await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
         }
     }
 
-    func applySettingsDraft(preferences draft: AppPreferences) {
+    func applySettingsDraft(preferences draft: AppPreferences, announceImmediateSave: Bool = true) {
         var snapshot = draft
         snapshot.normalize()
         preferences = snapshot
 
         Task {
             await preferencesStore.save(snapshot)
-            await MainActor.run {
-                status = "Settings saved."
-            }
-            await rebuildRuntimeOrDefer()
+            await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
         }
     }
 
@@ -673,8 +667,11 @@ final class DictationController: ObservableObject {
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
     }
 
-    private func rebuildRuntimeOrDefer() async {
+    private func rebuildRuntimeOrDefer(announceImmediateSave: Bool) async {
         if recordingStateMachine.state == .idle {
+            if announceImmediateSave {
+                status = "Settings saved."
+            }
             await rebuildRuntime()
         } else {
             pendingRuntimeRebuild = true
