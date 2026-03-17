@@ -12,7 +12,7 @@ enum MoonshineModelPreset: String, CaseIterable, Codable, Identifiable, Sendable
     var id: String { rawValue }
 
     static var voceSupportedOptions: [MoonshineModelPreset] {
-        [.tinyStreaming, .baseStreaming, .smallStreaming, .mediumStreaming]
+        [.tinyStreaming, .smallStreaming, .mediumStreaming]
     }
 
     var displayName: String {
@@ -185,9 +185,9 @@ enum MoonshineModelPreset: String, CaseIterable, Codable, Identifiable, Sendable
         switch self {
         case .tiny:
             return .tinyStreaming
-        case .base:
-            return .baseStreaming
-        case .tinyStreaming, .baseStreaming, .smallStreaming, .mediumStreaming:
+        case .base, .baseStreaming:
+            return .smallStreaming
+        case .tinyStreaming, .smallStreaming, .mediumStreaming:
             return self
         }
     }

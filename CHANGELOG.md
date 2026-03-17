@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-03-17
+
+### Fixed
+- Removed the broken `Base Streaming` Moonshine preset from Voce's supported model picker, because its upstream CDN files now return `404`.
+- Migrated saved `Base` and `Base Streaming` selections to `Small Streaming` so existing installs recover automatically instead of continuing to fail model downloads.
+
 ## [0.4.11] - 2026-03-17
 
 ### Added
