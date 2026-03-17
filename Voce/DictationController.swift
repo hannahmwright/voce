@@ -246,9 +246,10 @@ final class DictationController: ObservableObject {
         // If permissions changed while app was running, reinstall monitors/hotkeys.
         if recordingStateMachine.state == .idle {
             hotkey.stop()
-            hotkey.start()
             hotkey.isOptionPressToTalkEnabled = preferences.hotkeys.optionPressToTalkEnabled
-            hotkey.globalToggleKeyCode = preferences.hotkeys.handsFreeGlobalKeyCode
+            hotkey.pressToTalkModifier = preferences.hotkeys.pressToTalkModifier
+            hotkey.globalToggleHotkey = preferences.hotkeys.handsFreeGlobalHotkey
+            hotkey.start()
         }
     }
 
@@ -496,15 +497,23 @@ final class DictationController: ObservableObject {
                     modelArch: preferences.dictation.modelArch,
                     keepModelWarm: preferences.dictation.keepModelWarm
                 )
-                let session = MoonshineStreamingSession(config: streamConfig) { [weak self] partialText in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.isRecording else { return }
-                        self.overlay.show(state: .liveTranscript(
-                            text: partialText,
-                            handsFree: mode == .handsFree
-                        ))
+                let session = MoonshineStreamingSession(
+                    config: streamConfig,
+                    onPartialText: { [weak self] partialText in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isRecording else { return }
+                            self.overlay.show(state: .liveTranscript(
+                                text: partialText,
+                                handsFree: mode == .handsFree
+                            ))
+                        }
+                    },
+                    onTerminalError: { [weak self] error in
+                        Task { @MainActor [weak self] in
+                            self?.handleStreamingFailure(error)
+                        }
                     }
-                }
+                )
                 try session.start()
                 activeStreamingSession = session
             } catch {
@@ -527,6 +536,45 @@ final class DictationController: ObservableObject {
                 dismissOverlaySoon()
             }
             activeStartTask = nil
+        }
+    }
+
+    private func handleStreamingFailure(_ error: Error) {
+        guard let session = activeStreamingSession else { return }
+
+        let pendingStart = activeStartTask
+        activeStartTask = nil
+        activeStreamingSession = nil
+
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recordingElapsed = 0
+        isRecording = false
+        handsFreeOn = false
+        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
+        activeRecordingMode = nil
+
+        Task {
+            await pendingStart?.value
+
+            session.cancel()
+
+            if let sessionID = currentSessionID, let coordinator {
+                await coordinator.cancel(sessionID: sessionID)
+            }
+            currentSessionID = nil
+
+            if let token = activeMediaToken {
+                mediaInterruption.endInterruption(token: token)
+                activeMediaToken = nil
+            }
+
+            recordingStateMachine.markTranscriptionFailed()
+            status = streamingFailureStatusMessage(for: error)
+            lastError = error.localizedDescription
+            overlay.show(state: .failure(message: error.localizedDescription))
+            dismissOverlaySoon()
+            await applyDeferredRebuildIfNeeded()
         }
     }
 
@@ -620,7 +668,8 @@ final class DictationController: ObservableObject {
     private func applyPreferencesLocally(_ newValue: AppPreferences) {
         preferences = newValue
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
-        hotkey.globalToggleKeyCode = newValue.hotkeys.handsFreeGlobalKeyCode
+        hotkey.pressToTalkModifier = newValue.hotkeys.pressToTalkModifier
+        hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
     }
 
@@ -745,6 +794,14 @@ final class DictationController: ObservableObject {
         }
 
         return "Transcript copied to clipboard. Paste with Cmd+V."
+    }
+
+    private func streamingFailureStatusMessage(for error: Error) -> String {
+        if case MoonshineTranscriptionError.liveCaptureOverloaded = error {
+            return "System overloaded. Recording stopped, please try again."
+        }
+
+        return "Recording stopped"
     }
 }
 

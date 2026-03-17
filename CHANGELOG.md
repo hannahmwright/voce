@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-03-17
+
+### Added
+- Added a scenic frosted-glass app shell, refreshed record-screen background treatment, and updated macOS app icon artwork.
+- Added click-to-capture global hands-free hotkey selection, including support for modifier-style keys such as Globe/Fn.
+
+### Changed
+- Reorganized settings into a sidebar-based layout with clearer grouping and switch-style toggles.
+- Simplified the transcription model picker to show only supported streaming models with more helpful guidance.
+- Improved permission guidance with smaller, more actionable messaging and direct deep links to the relevant macOS privacy panes.
+
+### Fixed
+- Bounded live Moonshine microphone backlog growth so long dictation sessions cannot queue unbounded audio in memory when the stream falls behind real time.
+- Coalesced queued live-audio chunks before feeding Moonshine, which reduces `addAudio(...)` call pressure during sustained speech.
+- Live dictation now stops immediately and shows a clear failure message when the system falls too far behind to keep up with microphone streaming.
+- Made hold-to-talk configuration more flexible so `Option` is no longer effectively reserved, reducing collisions with common system shortcuts.
+
 ## [0.4.10] - 2026-03-12
 
 ### Fixed

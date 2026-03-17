@@ -12,14 +12,16 @@ struct EngineSettingsSection: View {
     var body: some View {
         settingsCard("Engine") {
             Picker("Model", selection: $preferences.dictation.modelArch) {
-                ForEach(MoonshineModelPreset.allCases) { preset in
-                    Text(preset.displayName).tag(preset)
+                ForEach(MoonshineModelPreset.voceSupportedOptions) { preset in
+                    Text(preset.pickerLabel).tag(preset)
                 }
             }
             .pickerStyle(.menu)
             .onChange(of: preferences.dictation.modelArch) { newArch in
                 preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
             }
+
+            selectedModelSummary(for: preferences.dictation.modelArch)
 
             Toggle("Keep model warmed in memory", isOn: $preferences.dictation.keepModelWarm)
             Text("Faster recording start, higher idle memory use.")
@@ -32,6 +34,43 @@ struct EngineSettingsSection: View {
                 modelDownloadSection
             }
         }
+    }
+
+    @ViewBuilder
+    private func selectedModelSummary(for preset: MoonshineModelPreset) -> some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            HStack(spacing: VoceDesign.xs) {
+                Text(preset.pickerTitle)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                if let badge = preset.recommendationBadge {
+                    Text(badge)
+                        .font(VoceDesign.label())
+                        .foregroundStyle(VoceDesign.accent)
+                        .padding(.horizontal, VoceDesign.sm)
+                        .padding(.vertical, VoceDesign.xxs)
+                        .background(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
+                        .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                Text(preset.approxDownloadSize)
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            Text(preset.selectionSummary)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textPrimary)
+
+            Text(preset.selectionFootnote)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+        .padding(VoceDesign.md)
+        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
     }
 
     private var modelReadySection: some View {

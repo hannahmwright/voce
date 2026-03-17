@@ -10,6 +10,7 @@ enum MoonshineTranscriptionError: Error, LocalizedError {
     case failedToReadAudio(String)
     case unsupportedAudioFormat
     case emptyLiveTranscript
+    case liveCaptureOverloaded(bufferedDuration: TimeInterval, maximumBufferedDuration: TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +26,12 @@ enum MoonshineTranscriptionError: Error, LocalizedError {
             return "Audio conversion to 16 kHz mono failed"
         case .emptyLiveTranscript:
             return "No speech was captured from the microphone"
+        case .liveCaptureOverloaded(let bufferedDuration, let maximumBufferedDuration):
+            return String(
+                format: "Live transcription fell behind by %.1f seconds of queued audio (limit %.1f s). Try a shorter dictation or close heavy apps.",
+                bufferedDuration,
+                maximumBufferedDuration
+            )
         }
     }
 }

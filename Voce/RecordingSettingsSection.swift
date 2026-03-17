@@ -7,22 +7,30 @@ struct RecordingSettingsSection: View {
 
     var body: some View {
         settingsCard("Recording") {
-            Toggle("Enable Option hold-to-talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
+            Toggle("Enable hold-to-talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
 
-            Picker("Global hands-free key", selection: handsFreeKeyBinding) {
-                Text("Disabled").tag(nil as UInt16?)
-                Text("F13").tag(105 as UInt16?)
-                Text("F14").tag(107 as UInt16?)
-                Text("F15").tag(113 as UInt16?)
-                Text("F16").tag(106 as UInt16?)
-                Text("F17").tag(64 as UInt16?)
-                Text("F18").tag(79 as UInt16?)
-                Text("F19").tag(80 as UInt16?)
-                Text("F20").tag(90 as UInt16?)
+            if preferences.hotkeys.optionPressToTalkEnabled {
+                Picker("Hold-to-talk key", selection: $preferences.hotkeys.pressToTalkModifier) {
+                    ForEach(PressToTalkModifier.allCases, id: \.self) { modifier in
+                        Text(modifier.displayName).tag(modifier)
+                    }
+                }
+                .pickerStyle(.menu)
+
+                Text("Choose a modifier key you do not already use for other shortcuts.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
             }
-            .pickerStyle(.menu)
 
-            Text("Works from any app. Map your Siri/mic key to this in VIA.")
+            VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                Text("Global hands-free key")
+                    .font(VoceDesign.callout())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                HotkeyRecorderField(hotkey: handsFreeKeyBinding)
+            }
+
+            Text("Click the field, then press the key or modifier you want. This works well for unknown mic or Globe/Fn keys too.")
                 .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
 
@@ -34,10 +42,10 @@ struct RecordingSettingsSection: View {
         }
     }
 
-    private var handsFreeKeyBinding: Binding<UInt16?> {
+    private var handsFreeKeyBinding: Binding<HandsFreeHotkey?> {
         Binding(
-            get: { preferences.hotkeys.handsFreeGlobalKeyCode },
-            set: { preferences.hotkeys.handsFreeGlobalKeyCode = $0 }
+            get: { preferences.hotkeys.handsFreeGlobalHotkey },
+            set: { preferences.hotkeys.handsFreeGlobalHotkey = $0 }
         )
     }
 }

@@ -11,6 +11,10 @@ enum MoonshineModelPreset: String, CaseIterable, Codable, Identifiable, Sendable
 
     var id: String { rawValue }
 
+    static var voceSupportedOptions: [MoonshineModelPreset] {
+        [.tinyStreaming, .baseStreaming, .smallStreaming, .mediumStreaming]
+    }
+
     var displayName: String {
         switch self {
         case .tiny:
@@ -76,6 +80,115 @@ enum MoonshineModelPreset: String, CaseIterable, Codable, Identifiable, Sendable
             return .smallStreaming
         case .mediumStreaming:
             return .mediumStreaming
+        }
+    }
+
+    var isVoceSupported: Bool {
+        Self.voceSupportedOptions.contains(self)
+    }
+
+    var pickerTitle: String {
+        switch self {
+        case .tinyStreaming:
+            return "Tiny Streaming"
+        case .baseStreaming:
+            return "Base Streaming"
+        case .smallStreaming:
+            return "Small Streaming"
+        case .mediumStreaming:
+            return "Medium Streaming"
+        case .tiny:
+            return "Tiny"
+        case .base:
+            return "Base"
+        }
+    }
+
+    var pickerLabel: String {
+        switch self {
+        case .tinyStreaming:
+            return "Tiny Streaming - Lightest"
+        case .baseStreaming:
+            return "Base Streaming - Balanced"
+        case .smallStreaming:
+            return "Small Streaming - Recommended"
+        case .mediumStreaming:
+            return "Medium Streaming - Best Accuracy"
+        case .tiny:
+            return "Tiny"
+        case .base:
+            return "Base"
+        }
+    }
+
+    var approxDownloadSize: String {
+        switch self {
+        case .tinyStreaming:
+            return "~50 MB"
+        case .baseStreaming:
+            return "~95 MB"
+        case .smallStreaming:
+            return "~160 MB"
+        case .mediumStreaming:
+            return "~320 MB"
+        case .tiny:
+            return "~40 MB"
+        case .base:
+            return "~80 MB"
+        }
+    }
+
+    var selectionSummary: String {
+        switch self {
+        case .tinyStreaming:
+            return "Fastest and lightest. Best for older Macs or if you want the smallest memory footprint."
+        case .baseStreaming:
+            return "A middle-ground option with a bit more accuracy than Tiny, while staying fairly light."
+        case .smallStreaming:
+            return "The best default for most people. Good live accuracy without getting too heavy."
+        case .mediumStreaming:
+            return "Highest accuracy in Voce's live lineup, but it uses the most CPU and memory."
+        case .tiny, .base:
+            return "Legacy non-streaming preset."
+        }
+    }
+
+    var selectionFootnote: String {
+        switch self {
+        case .tinyStreaming:
+            return "Choose this if speed and low resource use matter most."
+        case .baseStreaming:
+            return "Choose this if you want a balanced step up from Tiny."
+        case .smallStreaming:
+            return "Choose this if you want the safest all-around recommendation."
+        case .mediumStreaming:
+            return "Choose this if your Mac has plenty of headroom and you want the strongest live transcription."
+        case .tiny, .base:
+            return "Not recommended in Voce."
+        }
+    }
+
+    var recommendationBadge: String? {
+        switch self {
+        case .smallStreaming:
+            return "Recommended"
+        case .tinyStreaming:
+            return "Lightest"
+        case .mediumStreaming:
+            return "Most accurate"
+        case .baseStreaming, .tiny, .base:
+            return nil
+        }
+    }
+
+    var normalizedForVoce: MoonshineModelPreset {
+        switch self {
+        case .tiny:
+            return .tinyStreaming
+        case .base:
+            return .baseStreaming
+        case .tinyStreaming, .baseStreaming, .smallStreaming, .mediumStreaming:
+            return self
         }
     }
 }

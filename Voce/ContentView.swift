@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import VoceKit
 
@@ -22,78 +21,61 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Glass header bar
-            HStack(spacing: VoceDesign.md) {
-                Text("Voce")
-                    .font(VoceDesign.heading1())
-                    .foregroundStyle(VoceDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
+        ZStack {
+            VoceWindowBackdrop()
 
-                Spacer()
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Voce")
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .padding(.leading, 48)
+                        .accessibilityAddTraits(.isHeader)
 
-                // Glass tab bar
-                HStack(spacing: VoceDesign.xxs) {
-                    ForEach(VoceTab.allCases, id: \.self) { tab in
-                        tabButton(tab)
+                    Spacer()
+                }
+                .padding(.top, 22)
+                .padding(.horizontal, VoceDesign.lg)
+                .padding(.bottom, VoceDesign.md)
+                .overlay {
+                    HStack(spacing: VoceDesign.xxs) {
+                        ForEach(VoceTab.allCases, id: \.self) { tab in
+                            tabButton(tab)
+                        }
                     }
+                    .padding(VoceDesign.xs)
+                    .glassBackground(cornerRadius: VoceDesign.radiusPill)
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.36), lineWidth: VoceDesign.borderThin)
+                    )
                 }
-                .padding(VoceDesign.xs)
-                .glassBackground(cornerRadius: VoceDesign.radiusPill)
-
-                Spacer()
-
-                Button {
-                    appMainWindow()?.orderOut(nil)
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: VoceDesign.iconSM, weight: .medium))
-                        .foregroundStyle(VoceDesign.textSecondary)
-                        .frame(width: VoceDesign.xl, height: VoceDesign.xl)
+                .background {
+                    RoundedRectangle(cornerRadius: 34, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(.ultraThinMaterial.opacity(0.18))
                 }
-                .buttonStyle(.plain)
-                .help("Hide Window")
-                .accessibilityLabel("Hide Window")
-            }
-            .padding(.horizontal, VoceDesign.lg)
-            .padding(.vertical, VoceDesign.sm)
-            .background {
-                Rectangle()
-                    .fill(VoceDesign.surfaceSolid.opacity(0.96))
-                    .overlay(.regularMaterial.opacity(0.28))
-            }
 
-            // Tab content
-            ZStack {
-                RecordTab()
-                    .tabContentVisibility(selectedTab == .record)
+                ZStack {
+                    RecordTab()
+                        .tabContentVisibility(selectedTab == .record)
 
-                HistoryTab()
-                    .tabContentVisibility(selectedTab == .history)
+                    HistoryTab()
+                        .tabContentVisibility(selectedTab == .history)
 
-                SettingsView()
-                    .tabContentVisibility(selectedTab == .settings)
-            }
-            .animation(
-                reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
-                value: selectedTab
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, VoceDesign.lg)
-        }
-        .background {
-            ZStack {
-                VoceDesign.windowBackground
-                LinearGradient(
-                    colors: [
-                        VoceDesign.skyBlue.opacity(0.10),
-                        Color.clear,
-                        VoceDesign.wheat.opacity(0.08)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
+                    SettingsView()
+                        .tabContentVisibility(selectedTab == .settings)
+                }
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
+                    value: selectedTab
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, VoceDesign.lg)
+                .padding(.bottom, VoceDesign.lg)
             }
+            .windowGlassPanel(cornerRadius: 38)
+            .padding(VoceDesign.sm)
         }
         .frame(
             minWidth: VoceDesign.windowMinWidth,
@@ -103,9 +85,6 @@ struct ContentView: View {
         )
         .task {
             await controller.refreshHistory()
-        }
-        .onAppear {
-            appMainWindow()?.setFrameAutosaveName("VoceMainWindow")
         }
     }
 
@@ -136,11 +115,6 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(tab.rawValue)
         .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
-    }
-
-    private func appMainWindow() -> NSWindow? {
-        NSApp.windows.first { !($0 is NSPanel) && $0.canBecomeMain }
-            ?? NSApp.windows.first { !($0 is NSPanel) }
     }
 }
 

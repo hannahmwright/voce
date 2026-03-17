@@ -2,6 +2,28 @@ import SwiftUI
 import VoceKit
 
 struct RecordTab: View {
+    private enum PermissionCalloutKind {
+        case accessibility
+        case microphone
+        case inputMonitoring
+
+        var icon: String {
+            switch self {
+            case .accessibility: return "hand.raised.fill"
+            case .microphone: return "mic.fill"
+            case .inputMonitoring: return "keyboard.fill"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .accessibility: return "Enable Accessibility"
+            case .microphone: return "Allow Microphone Access"
+            case .inputMonitoring: return "Enable Input Monitoring"
+            }
+        }
+    }
+
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var showErrorBanner = false
@@ -35,15 +57,18 @@ struct RecordTab: View {
         VStack(spacing: 0) {
             // Error/warning banner
             if showErrorBanner {
-                errorBanner
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(errorBannerAccessibilityLabel)
-                    .padding(.bottom, VoceDesign.md)
-                    .transition(
-                        reduceMotion
-                            ? .opacity
-                            : .move(edge: .top).combined(with: .opacity)
-                    )
+                HStack {
+                    errorBanner
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(errorBannerAccessibilityLabel)
+                    Spacer(minLength: 0)
+                }
+                .padding(.bottom, VoceDesign.md)
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .move(edge: .top).combined(with: .opacity)
+                )
             }
 
             Spacer()
@@ -94,7 +119,24 @@ struct RecordTab: View {
                 lastTranscriptCard
             }
         }
-        .padding(.vertical, VoceDesign.lg)
+        .frame(maxWidth: 560, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, VoceDesign.xl)
+        .padding(.vertical, VoceDesign.xxl)
+        .background {
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.18))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(0.44))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.34), lineWidth: VoceDesign.borderThin)
+                )
+                .shadowStyle(.lg)
+        }
+        .padding(VoceDesign.lg)
         .animation(
             reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
             value: controller.lastTranscript
@@ -129,59 +171,172 @@ struct RecordTab: View {
             || combined.contains("input monitoring")
     }
 
+    private var activeErrorMessage: String {
+        let parts = [controller.hotkeyRegistrationMessage, controller.lastError]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return parts.joined(separator: " ")
+    }
+
+    private var permissionCalloutKind: PermissionCalloutKind? {
+        let combined = activeErrorMessage.lowercased()
+
+        if combined.contains("accessibility")
+            || controller.accessibilityPermissionStatus == .denied
+        {
+            return .accessibility
+        }
+
+        if combined.contains("input monitoring")
+            || controller.inputMonitoringPermissionStatus == .denied
+        {
+            return .inputMonitoring
+        }
+
+        if combined.contains("microphone")
+            || controller.microphonePermissionStatus == .denied
+        {
+            return .microphone
+        }
+
+        return nil
+    }
+
+    private var permissionCalloutMessage: String {
+        guard let kind = permissionCalloutKind else { return "" }
+
+        switch kind {
+        case .accessibility:
+            return "Voce needs Accessibility access to type into apps and support the global hotkey."
+        case .microphone:
+            return "Voce needs microphone access before it can start live dictation."
+        case .inputMonitoring:
+            return "Input Monitoring lets Voce hear your global hotkey while other apps are focused."
+        }
+    }
+
+    private var permissionButtonTitle: String {
+        guard let kind = permissionCalloutKind else { return "Open Settings" }
+
+        switch kind {
+        case .microphone:
+            return controller.microphonePermissionStatus == .unknown ? "Allow Microphone" : "Open Settings"
+        case .accessibility, .inputMonitoring:
+            return "Open Settings"
+        }
+    }
+
     // MARK: - Error Banner
 
     private var errorBanner: some View {
-        HStack(spacing: VoceDesign.sm) {
-            RoundedRectangle(cornerRadius: VoceDesign.radiusTiny)
-                .fill(VoceDesign.error)
-                .frame(width: VoceDesign.borderHeavy)
+        Group {
+            if isPermissionRelated, let kind = permissionCalloutKind {
+                permissionBanner(kind)
+            } else {
+                genericErrorBanner
+            }
+        }
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+
+    private func permissionBanner(_ kind: PermissionCalloutKind) -> some View {
+        HStack(alignment: .top, spacing: VoceDesign.md) {
+            Image(systemName: kind.icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VoceDesign.accent)
+                .frame(width: 30, height: 30)
+                .background(Color.white.opacity(0.55))
+                .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                if !controller.hotkeyRegistrationMessage.isEmpty {
-                    Text(controller.hotkeyRegistrationMessage)
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.error)
-                }
-                if !controller.lastError.isEmpty {
-                    Text(controller.lastError)
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.error)
-                }
-                if isPermissionRelated {
-                    Button {
-                        PermissionDiagnostics.openAccessibilitySettings()
-                    } label: {
-                        Text("Open Settings")
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(VoceDesign.accent)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open system settings for permissions")
-                }
-            }
+                Text(kind.title)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
 
-            Spacer()
-
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal)) {
-                    controller.clearErrors()
-                    showErrorBanner = false
-                }
-            } label: {
-                Image(systemName: "xmark.circle.fill")
+                Text(permissionCalloutMessage)
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button(permissionButtonTitle) {
+                    handlePermissionAction(kind)
+                }
+                .buttonStyle(.plain)
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(VoceDesign.accent)
+                .padding(.top, VoceDesign.xxs)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Dismiss error")
+
+            Spacer(minLength: 0)
+
+            dismissErrorButton
         }
         .padding(VoceDesign.md)
-        .glassBackground(cornerRadius: VoceDesign.radiusSmall)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surfaceSecondary.opacity(0.66))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .fill(.regularMaterial.opacity(0.34))
+                )
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
-                .stroke(VoceDesign.errorBorder, lineWidth: VoceDesign.borderNormal)
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(Color.white.opacity(0.34), lineWidth: VoceDesign.borderThin)
         )
+    }
+
+    private var genericErrorBanner: some View {
+        HStack(alignment: .top, spacing: VoceDesign.md) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(VoceDesign.error)
+
+            Text(activeErrorMessage)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+
+            dismissErrorButton
+        }
+        .padding(VoceDesign.md)
+        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
+                .stroke(VoceDesign.errorBorder, lineWidth: VoceDesign.borderThin)
+        )
+    }
+
+    private var dismissErrorButton: some View {
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal)) {
+                controller.clearErrors()
+                showErrorBanner = false
+            }
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Dismiss error")
+    }
+
+    private func handlePermissionAction(_ kind: PermissionCalloutKind) {
+        switch kind {
+        case .accessibility:
+            controller.openAccessibilitySettings()
+        case .microphone:
+            if controller.microphonePermissionStatus == .unknown {
+                controller.requestMicrophonePermission()
+            } else {
+                controller.openMicrophoneSettings()
+            }
+        case .inputMonitoring:
+            controller.openInputMonitoringSettings()
+        }
     }
 
     // MARK: - Empty Hint
@@ -209,23 +364,23 @@ struct RecordTab: View {
         HStack(spacing: VoceDesign.sm) {
             let hotkeys = controller.preferences.hotkeys
             if hotkeys.optionPressToTalkEnabled {
-                keyBadge("Option")
+                keyBadge(hotkeys.pressToTalkModifier.displayName)
                 Text("hold to dictate")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
-            if hotkeys.optionPressToTalkEnabled, hotkeys.handsFreeGlobalKeyCode != nil {
+            if hotkeys.optionPressToTalkEnabled, hotkeys.handsFreeGlobalHotkey != nil {
                 Text("or")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary.opacity(0.6))
             }
-            if let keyCode = hotkeys.handsFreeGlobalKeyCode {
-                keyBadge(keyLabel(for: keyCode))
+            if let hotkey = hotkeys.handsFreeGlobalHotkey {
+                keyBadge(keyLabel(for: hotkey))
                 Text("hands-free")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
-            if !hotkeys.optionPressToTalkEnabled && hotkeys.handsFreeGlobalKeyCode == nil {
+            if !hotkeys.optionPressToTalkEnabled && hotkeys.handsFreeGlobalHotkey == nil {
                 Text("Set up a hotkey in Settings")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
@@ -291,18 +446,8 @@ struct RecordTab: View {
 
     // MARK: - Helpers
 
-    private func keyLabel(for keyCode: UInt16) -> String {
-        switch keyCode {
-        case 79: return "F18"
-        case 80: return "F19"
-        case 90: return "F20"
-        case 105: return "F13"
-        case 107: return "F14"
-        case 113: return "F15"
-        case 106: return "F16"
-        case 64: return "F17"
-        default: return "F\(keyCode)"
-        }
+    private func keyLabel(for hotkey: HandsFreeHotkey) -> String {
+        hotkeyDisplayName(for: hotkey)
     }
 
     private func formatElapsedTime(_ interval: TimeInterval) -> String {

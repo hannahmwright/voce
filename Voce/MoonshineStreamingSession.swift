@@ -11,6 +11,8 @@ import VoceKit
 /// stream without an intermediate batching timer.
 final class MoonshineStreamingSession: @unchecked Sendable {
     private static let audioDrainTimeout: TimeInterval = 0.35
+    private static let maxBufferedAudioDuration: TimeInterval = 4.0
+    private static let targetDrainBatchDuration: TimeInterval = 0.35
     private static let captureBoundaryWaitTimeout: TimeInterval = 1.35
     private static let captureBoundaryPollInterval: TimeInterval = 0.01
     private static let finalTranscriptSettleWindow: TimeInterval = 1.5
@@ -32,8 +34,11 @@ final class MoonshineStreamingSession: @unchecked Sendable {
 
     private let config: Configuration
     private let onPartialText: @Sendable (String) -> Void
+    private let onTerminalError: @Sendable (Error) -> Void
     private let captureStopState: CaptureStopState
     private let diagnostics = StreamingStopDiagnostics()
+    private let pendingAudioBacklog: BufferedAudioBacklog
+    private let terminalErrorNotifier = TerminalErrorNotifier()
 
     // Accessed only on processingQueue.
     private let processingQueue = DispatchQueue(label: "voce.moonshine-stream", qos: .userInitiated)
@@ -47,10 +52,19 @@ final class MoonshineStreamingSession: @unchecked Sendable {
     private var audioEngine: AVAudioEngine?
     private var uncachedTranscriber: Transcriber?
 
-    init(config: Configuration, onPartialText: @escaping @Sendable (String) -> Void) {
+    init(
+        config: Configuration,
+        onPartialText: @escaping @Sendable (String) -> Void,
+        onTerminalError: @escaping @Sendable (Error) -> Void = { _ in }
+    ) {
         self.config = config
         self.onPartialText = onPartialText
+        self.onTerminalError = onTerminalError
         self.captureStopState = CaptureStopState(configuration: Self.tailPolicyConfiguration)
+        self.pendingAudioBacklog = BufferedAudioBacklog(
+            maxBufferedDuration: Self.maxBufferedAudioDuration,
+            targetBatchDuration: Self.targetDrainBatchDuration
+        )
     }
 
     /// Starts audio capture and streaming transcription.
@@ -83,6 +97,8 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             self.isStopped = false
         }
         captureStopState.reset()
+        pendingAudioBacklog.reset()
+        terminalErrorNotifier.reset()
 
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
@@ -169,23 +185,35 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             }
             guard !trimmed.samples.isEmpty else { return }
 
-            self.audioDrainGroup.enter()
-            self.captureStopState.incrementPendingAudioBuffers()
-            self.processingQueue.async { [weak self] in
-                defer {
-                    self?.captureStopState.decrementPendingAudioBuffers()
-                    self?.audioDrainGroup.leave()
+            let enqueueResult = self.pendingAudioBacklog.enqueue(
+                samples: trimmed.samples,
+                sampleRate: trimmed.sampleRate
+            )
+            switch enqueueResult {
+            case .accepted(let shouldScheduleDrain, _):
+                self.audioDrainGroup.enter()
+                self.captureStopState.incrementPendingAudioBuffers()
+                if shouldScheduleDrain {
+                    self.processingQueue.async { [weak self] in
+                        self?.drainPendingAudio()
+                    }
                 }
-                guard let self, !self.isStopped else { return }
-
-                do {
-                    try self.stream?.addAudio(
-                        trimmed.samples,
-                        sampleRate: Int32(trimmed.sampleRate.rounded())
+            case .rejected(let bufferedDuration, _):
+                let error = MoonshineTranscriptionError.liveCaptureOverloaded(
+                    bufferedDuration: bufferedDuration,
+                    maximumBufferedDuration: Self.maxBufferedAudioDuration
+                )
+                self.latestStreamError = error
+                self.captureStopState.requestStop(at: bufferTiming.startTime)
+                self.diagnostics.record(
+                    String(
+                        format: "audio backlog overflow buffered=%.3f limit=%.3f autoStopAt=%.3f",
+                        bufferedDuration,
+                        Self.maxBufferedAudioDuration,
+                        bufferTiming.startTime
                     )
-                } catch {
-                    self.latestStreamError = error
-                }
+                )
+                self.notifyTerminalErrorOnce(error)
             }
         }
 
@@ -431,6 +459,28 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         }
     }
 
+    private func drainPendingAudio() {
+        while let batch = pendingAudioBacklog.dequeueBatch() {
+            defer {
+                for _ in 0..<batch.chunkCount {
+                    captureStopState.decrementPendingAudioBuffers()
+                    audioDrainGroup.leave()
+                }
+            }
+
+            guard !isStopped else { continue }
+
+            do {
+                try stream?.addAudio(
+                    batch.samples,
+                    sampleRate: Int32(batch.sampleRate.rounded())
+                )
+            } catch {
+                latestStreamError = error
+            }
+        }
+    }
+
     private func bufferTiming(
         frameLength: AVAudioFrameCount,
         sampleRate: Double,
@@ -530,6 +580,14 @@ final class MoonshineStreamingSession: @unchecked Sendable {
 
     private func currentCaptureTime() -> TimeInterval {
         AVAudioTime.seconds(forHostTime: mach_absolute_time())
+    }
+
+    private func notifyTerminalErrorOnce(_ error: Error) {
+        guard terminalErrorNotifier.shouldNotify else { return }
+
+        DispatchQueue.main.async { [onTerminalError] in
+            onTerminalError(error)
+        }
     }
 
     private func ensureMicrophonePermission() throws {
@@ -669,5 +727,25 @@ private final class StreamingStopDiagnostics: @unchecked Sendable {
         } catch {
             return
         }
+    }
+}
+
+private final class TerminalErrorNotifier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasNotified = false
+
+    func reset() {
+        lock.lock()
+        hasNotified = false
+        lock.unlock()
+    }
+
+    var shouldNotify: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !hasNotified else { return false }
+        hasNotified = true
+        return true
     }
 }

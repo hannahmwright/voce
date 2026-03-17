@@ -23,17 +23,44 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
     struct Hotkeys: Codable, Sendable, Equatable {
         var optionPressToTalkEnabled: Bool
-        var handsFreeGlobalKeyCode: UInt16?
+        var pressToTalkModifier: PressToTalkModifier
+        var handsFreeGlobalHotkey: HandsFreeHotkey?
 
-        init(optionPressToTalkEnabled: Bool, handsFreeGlobalKeyCode: UInt16? = 79) {
+        enum CodingKeys: String, CodingKey {
+            case optionPressToTalkEnabled
+            case pressToTalkModifier
+            case handsFreeGlobalHotkey
+            case handsFreeGlobalKeyCode
+        }
+
+        init(
+            optionPressToTalkEnabled: Bool,
+            pressToTalkModifier: PressToTalkModifier = .option,
+            handsFreeGlobalHotkey: HandsFreeHotkey? = .keyCode(79)
+        ) {
             self.optionPressToTalkEnabled = optionPressToTalkEnabled
-            self.handsFreeGlobalKeyCode = handsFreeGlobalKeyCode
+            self.pressToTalkModifier = pressToTalkModifier
+            self.handsFreeGlobalHotkey = handsFreeGlobalHotkey
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             optionPressToTalkEnabled = try container.decodeIfPresent(Bool.self, forKey: .optionPressToTalkEnabled) ?? true
-            handsFreeGlobalKeyCode = try container.decodeIfPresent(UInt16.self, forKey: .handsFreeGlobalKeyCode) ?? 79
+            pressToTalkModifier = try container.decodeIfPresent(PressToTalkModifier.self, forKey: .pressToTalkModifier) ?? .option
+            if let hotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeGlobalHotkey) {
+                handsFreeGlobalHotkey = hotkey
+            } else if let legacyKeyCode = try container.decodeIfPresent(UInt16.self, forKey: .handsFreeGlobalKeyCode) {
+                handsFreeGlobalHotkey = .keyCode(legacyKeyCode)
+            } else {
+                handsFreeGlobalHotkey = .keyCode(79)
+            }
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(optionPressToTalkEnabled, forKey: .optionPressToTalkEnabled)
+            try container.encode(pressToTalkModifier, forKey: .pressToTalkModifier)
+            try container.encodeIfPresent(handsFreeGlobalHotkey, forKey: .handsFreeGlobalHotkey)
         }
     }
 
@@ -146,7 +173,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             ),
             hotkeys: .init(
                 optionPressToTalkEnabled: true,
-                handsFreeGlobalKeyCode: 79
+                pressToTalkModifier: .option,
+                handsFreeGlobalHotkey: .keyCode(79)
             ),
             dictation: .init(
                 modelDirectoryPath: MoonshineModelPaths.defaultModelDirectoryPath(for: .smallStreaming),
@@ -187,8 +215,16 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
 
         insertion.orderedMethods = normalized
+        let originalArch = dictation.modelArch
+        let normalizedArch = originalArch.normalizedForVoce
+        if normalizedArch != originalArch {
+            dictation.modelArch = normalizedArch
+            dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: normalizedArch)
+            return
+        }
+
         if dictation.modelDirectoryPath.isEmpty {
-            dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: dictation.modelArch)
+            dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: normalizedArch)
         }
     }
 }

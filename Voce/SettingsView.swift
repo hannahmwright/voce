@@ -4,34 +4,131 @@ import VoceKit
 struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
     @State private var preferencesDraft: AppPreferences = .default
-    @State private var expandedGroup: SettingsGroup? = .setup
+    @State private var selectedGroup: SettingsGroup = .setup
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                ForEach(SettingsGroup.allCases, id: \.self) { group in
-                    settingsGroupHeader(group)
-                    settingsGroupBody(group)
-                }
-
-                // Save button
-                HStack(spacing: VoceDesign.sm) {
-                    Button("Save & Apply") {
-                        controller.applySettingsDraft(preferences: preferencesDraft)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(VoceDesign.accent)
-
-                    Spacer()
-                }
-                .padding(.top, VoceDesign.sm)
-            }
-            .padding(.vertical, VoceDesign.lg)
+        HStack(alignment: .top, spacing: VoceDesign.lg) {
+            sidebar
+            contentPane
         }
+        .padding(.vertical, VoceDesign.lg)
+        .toggleStyle(.switch)
         .onAppear {
             preferencesDraft = controller.preferences
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: expandedGroup)
+        .onChange(of: controller.preferences) { newValue in
+            preferencesDraft = newValue
+        }
+        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: selectedGroup)
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            Text("Settings")
+                .font(.system(size: 24, weight: .bold))
+                .foregroundStyle(VoceDesign.textPrimary)
+                .padding(.bottom, VoceDesign.xs)
+
+            ForEach(SettingsGroup.allCases, id: \.self) { group in
+                sidebarButton(for: group)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(VoceDesign.md)
+        .frame(width: 210, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.58))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(0.28))
+                )
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
+                .stroke(Color.white.opacity(0.32), lineWidth: VoceDesign.borderThin)
+        )
+        .shadowStyle(.md)
+    }
+
+    private func sidebarButton(for group: SettingsGroup) -> some View {
+        Button {
+            selectedGroup = group
+        } label: {
+            SettingsSidebarButtonLabel(
+                group: group,
+                isSelected: selectedGroup == group
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(group.title)
+        .accessibilityValue(selectedGroup == group ? "Selected" : "")
+    }
+
+    private var contentPane: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            contentHeader
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    groupContent(selectedGroup)
+
+                    HStack(spacing: VoceDesign.sm) {
+                        Button("Save & Apply") {
+                            controller.applySettingsDraft(preferences: preferencesDraft)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(VoceDesign.accent)
+
+                        Spacer()
+                    }
+                    .padding(.top, VoceDesign.sm)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, VoceDesign.xs)
+            }
+        }
+        .padding(VoceDesign.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.48))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(0.34))
+                )
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.white.opacity(0.34), lineWidth: VoceDesign.borderThin)
+        )
+        .shadowStyle(.md)
+    }
+
+    private var contentHeader: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            HStack(alignment: .center, spacing: VoceDesign.sm) {
+                Text(selectedGroup.title)
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                if let badge = selectedGroup.badge {
+                    Text(badge)
+                        .font(VoceDesign.label())
+                        .foregroundStyle(VoceDesign.accent)
+                        .padding(.horizontal, VoceDesign.sm)
+                        .padding(.vertical, VoceDesign.xxs)
+                        .background(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
+                        .clipShape(Capsule())
+                }
+            }
+
+            Text(selectedGroup.description)
+                .font(VoceDesign.subheadline())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+        .padding(.bottom, VoceDesign.xs)
     }
 
     @ViewBuilder
@@ -63,66 +160,6 @@ struct SettingsView: View {
             )
         }
     }
-
-    private func settingsGroupHeader(_ group: SettingsGroup) -> some View {
-        let isExpanded = expandedGroup == group
-
-        return Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                expandedGroup = isExpanded ? nil : group
-            }
-        } label: {
-            HStack(spacing: VoceDesign.sm) {
-                Image(systemName: group.icon)
-                    .font(.system(size: VoceDesign.iconMD))
-                    .foregroundStyle(isExpanded ? VoceDesign.accent : VoceDesign.textSecondary)
-                    .frame(width: VoceDesign.xl)
-
-                Text(group.title)
-                    .font(VoceDesign.heading3())
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                Spacer()
-
-                if !isExpanded {
-                    Text(group.subtitle)
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                }
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(VoceDesign.textSecondary)
-                    .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
-            }
-            .padding(.horizontal, VoceDesign.md)
-            .padding(.vertical, VoceDesign.md)
-            .background {
-                if isExpanded {
-                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
-                        .fill(VoceDesign.accent.opacity(0.06))
-                }
-            }
-            .glassBackground(cornerRadius: VoceDesign.radiusSmall)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(group.title), \(isExpanded ? "expanded" : "collapsed")")
-    }
-
-    private func settingsGroupBody(_ group: SettingsGroup) -> some View {
-        let isExpanded = expandedGroup == group
-
-        return VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            groupContent(group)
-        }
-        .padding(.top, VoceDesign.xs)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: isExpanded ? nil : 0, alignment: .top)
-        .clipped()
-        .opacity(isExpanded ? 1 : 0)
-        .allowsHitTesting(isExpanded)
-        .accessibilityHidden(!isExpanded)
-    }
 }
 
 private enum SettingsGroup: String, CaseIterable {
@@ -135,7 +172,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup: return "Setup"
         case .behavior: return "Behavior"
-        case .vocabulary: return "Vocabulary & Commands"
+        case .vocabulary: return "Vocabulary"
         case .general: return "General"
         }
     }
@@ -145,7 +182,20 @@ private enum SettingsGroup: String, CaseIterable {
         case .setup: return "Permissions, hotkeys, engine"
         case .behavior: return "Insertion, media, cleanup"
         case .vocabulary: return "Lexicon, snippets, voice"
-        case .general: return "Launch, updates"
+        case .general: return "Launch, visibility, onboarding"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .setup:
+            return "Get Voce ready to listen: system permissions, recording controls, and the live transcription model."
+        case .behavior:
+            return "Shape how transcripts are inserted, how media behaves during dictation, and how cleanup is applied."
+        case .vocabulary:
+            return "Teach Voce your preferred words, saved snippets, voice commands, and learned corrections."
+        case .general:
+            return "Manage app-level preferences like launch behavior, Dock visibility, and onboarding."
         }
     }
 
@@ -156,5 +206,60 @@ private enum SettingsGroup: String, CaseIterable {
         case .vocabulary: return "text.book.closed"
         case .general: return "wrench.and.screwdriver"
         }
+    }
+
+    var badge: String? {
+        switch self {
+        case .setup:
+            return "Start here"
+        case .behavior, .vocabulary, .general:
+            return nil
+        }
+    }
+}
+
+private struct SettingsSidebarButtonLabel: View {
+    let group: SettingsGroup
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: VoceDesign.md) {
+            Image(systemName: group.icon)
+                .font(.system(size: VoceDesign.iconMD, weight: .semibold))
+                .foregroundStyle(isSelected ? VoceDesign.accent : VoceDesign.textSecondary)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: VoceDesign.xxs) {
+                Text(group.title)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(group.subtitle)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, VoceDesign.md)
+        .padding(.vertical, VoceDesign.md)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(isSelected ? VoceDesign.accent.opacity(0.10) : Color.clear)
+                .overlay {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                            .fill(.regularMaterial.opacity(0.30))
+                    }
+                }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(
+                    isSelected ? VoceDesign.accent.opacity(0.25) : Color.clear,
+                    lineWidth: VoceDesign.borderThin
+                )
+        )
     }
 }

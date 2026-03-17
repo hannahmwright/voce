@@ -140,7 +140,7 @@ enum VoceDesign {
     static let iconSM: CGFloat = 12
     static let iconMD: CGFloat = 16
     static let iconLG: CGFloat = 20
-    static let iconXL: CGFloat = 26
+    static let iconXL: CGFloat = 34
 
     // MARK: - Animation Durations
 
@@ -195,8 +195,8 @@ enum VoceDesign {
 
     // MARK: - Component Sizes
 
-    static let micButtonGlowSize: CGFloat = 92
-    static let micButtonSize: CGFloat = 74
+    static let micButtonGlowSize: CGFloat = 132
+    static let micButtonSize: CGFloat = 104
     static let micButtonGlowScale: CGFloat = 1.2
     static let dividerHeight: CGFloat = 1
     static let windowMinWidth: CGFloat = 600
@@ -353,6 +353,75 @@ struct CopyButtonView: View {
     }
 }
 
+// MARK: - Window Background
+
+struct VoceWindowBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        ZStack {
+            Image("RecordBackground")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .scaleEffect(colorScheme == .dark ? 1.10 : 1.05)
+                .saturation(colorScheme == .dark ? 0.80 : 0.92)
+                .overlay {
+                    Rectangle()
+                        .fill(backdropTint)
+                }
+                .blur(radius: colorScheme == .dark ? 12 : 7)
+
+            Rectangle()
+                .fill(.ultraThinMaterial.opacity(colorScheme == .dark ? 0.14 : 0.10))
+
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(colorScheme == .dark ? 0.06 : 0.20),
+                            Color.clear,
+                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.12 : 0.18)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+            Rectangle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color.white.opacity(colorScheme == .dark ? 0.10 : 0.18),
+                            Color.clear
+                        ],
+                        center: .top,
+                        startRadius: 40,
+                        endRadius: 460
+                    )
+                )
+        }
+        .ignoresSafeArea()
+    }
+
+    private var backdropTint: LinearGradient {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [
+                    VoceDesign.windowBackground.opacity(0.44),
+                    VoceDesign.background.opacity(0.58),
+                    Color.black.opacity(0.22)
+                ]
+                : [
+                    Color.white.opacity(0.08),
+                    VoceDesign.windowBackground.opacity(0.38),
+                    VoceDesign.sage.opacity(0.14)
+                ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
 // MARK: - View Extensions
 
 extension View {
@@ -381,6 +450,23 @@ extension View {
                         RoundedRectangle(cornerRadius: cornerRadius)
                             .fill(.regularMaterial.opacity(VoceDesign.opacityWindowGlass))
                     )
+            }
+    }
+
+    func windowGlassPanel(cornerRadius: CGFloat = 30) -> some View {
+        self
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(VoceDesign.surface.opacity(0.26))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(.ultraThinMaterial.opacity(0.42))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .stroke(Color.white.opacity(0.34), lineWidth: VoceDesign.borderThin)
+                    )
+                    .shadowStyle(.xl)
             }
     }
 }

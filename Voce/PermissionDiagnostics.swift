@@ -50,15 +50,33 @@ struct PermissionDiagnostics {
     }
 
     static func openAccessibilitySettings() {
-        openPrivacySecuritySettings()
+        openSettingsURL(
+            candidates: [
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity"
+            ]
+        )
     }
 
     static func openMicrophoneSettings() {
-        openPrivacySecuritySettings()
+        openSettingsURL(
+            candidates: [
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity"
+            ]
+        )
     }
 
     static func openInputMonitoringSettings() {
-        openPrivacySecuritySettings()
+        openSettingsURL(
+            candidates: [
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity"
+            ]
+        )
     }
 
     static func revealCurrentAppInFinder() {
@@ -69,12 +87,12 @@ struct PermissionDiagnostics {
         Bundle.main.bundleURL.path
     }
 
-    private static func openPrivacySecuritySettings() {
-        openSettingsURL("x-apple.systempreferences:com.apple.settings.PrivacySecurity")
-    }
-
-    private static func openSettingsURL(_ value: String) {
-        guard let url = URL(string: value) else { return }
-        NSWorkspace.shared.open(url)
+    private static func openSettingsURL(candidates: [String]) {
+        for candidate in candidates {
+            guard let url = URL(string: candidate) else { continue }
+            if NSWorkspace.shared.open(url) {
+                return
+            }
+        }
     }
 }

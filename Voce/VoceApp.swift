@@ -12,7 +12,7 @@ struct VoceApp: App {
         WindowGroup("Voce") {
             Group {
                 if !controller.hasBootstrapped {
-                    VoceDesign.windowBackground
+                    VoceWindowBackdrop()
                 } else if controller.preferences.general.showOnboarding {
                     OnboardingView()
                         .environmentObject(controller)
@@ -23,6 +23,7 @@ struct VoceApp: App {
                 }
             }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: VoceDesign.windowIdealWidth, height: VoceDesign.windowIdealHeight)
         .commands {
             CommandGroup(replacing: .newItem) {}
@@ -58,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.isOpaque = false
             window.backgroundColor = .clear
             window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.titlebarSeparatorStyle = .none
+            window.isMovableByWindowBackground = true
             window.styleMask.insert(.fullSizeContentView)
         }
     }

@@ -45,18 +45,7 @@ struct OnboardingView: View {
             idealHeight: VoceDesign.windowIdealHeight
         )
         .background {
-            ZStack {
-                VoceDesign.windowBackground
-                LinearGradient(
-                    colors: [
-                        VoceDesign.skyBlue.opacity(0.10),
-                        Color.clear,
-                        VoceDesign.roseLight.opacity(0.08)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
+            VoceWindowBackdrop()
         }
         .animation(
             reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85, blendDuration: 0),
@@ -227,12 +216,15 @@ struct OnboardingView: View {
                         .font(VoceDesign.bodyEmphasis())
                         .foregroundStyle(VoceDesign.textPrimary)
                     Picker("Model", selection: $modelArch) {
-                        Text("Tiny Streaming (~50 MB)").tag(MoonshineModelPreset.tinyStreaming)
-                        Text("Small Streaming (~160 MB)").tag(MoonshineModelPreset.smallStreaming)
+                        ForEach(MoonshineModelPreset.voceSupportedOptions) { preset in
+                            Text(preset.pickerLabel).tag(preset)
+                        }
                     }
                     .pickerStyle(.menu)
                     .disabled(isDownloading)
                 }
+
+                selectedModelSummary
 
                 if MoonshineModelDownloader.isModelReady(preset: modelArch) {
                     HStack(spacing: VoceDesign.xs) {
@@ -250,6 +242,42 @@ struct OnboardingView: View {
 
             Spacer()
         }
+    }
+
+    private var selectedModelSummary: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            HStack(spacing: VoceDesign.xs) {
+                Text(modelArch.pickerTitle)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                if let badge = modelArch.recommendationBadge {
+                    Text(badge)
+                        .font(VoceDesign.label())
+                        .foregroundStyle(VoceDesign.accent)
+                        .padding(.horizontal, VoceDesign.sm)
+                        .padding(.vertical, VoceDesign.xxs)
+                        .background(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
+                        .clipShape(Capsule())
+                }
+
+                Spacer()
+
+                Text(modelArch.approxDownloadSize)
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            Text(modelArch.selectionSummary)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textPrimary)
+
+            Text(modelArch.selectionFootnote)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+        .padding(VoceDesign.md)
+        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
     }
 
     private var downloadSection: some View {
@@ -339,8 +367,8 @@ struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
-                tipRow(number: "1", text: "Hold Option to dictate (press-to-talk)")
-                tipRow(number: "2", text: "Press F18 to toggle hands-free mode")
+                tipRow(number: "1", text: "Hold \(controller.preferences.hotkeys.pressToTalkModifier.displayName) to dictate (press-to-talk)")
+                tipRow(number: "2", text: handsFreeTipText)
                 tipRow(number: "3", text: "Check the History tab for past transcripts")
             }
             .cardStyle()
@@ -363,6 +391,14 @@ struct OnboardingView: View {
                 .font(VoceDesign.body())
                 .foregroundStyle(VoceDesign.textPrimary)
         }
+    }
+
+    private var handsFreeTipText: String {
+        if let hotkey = controller.preferences.hotkeys.handsFreeGlobalHotkey {
+            return "Press \(hotkeyDisplayName(for: hotkey)) to toggle hands-free mode"
+        }
+
+        return "Set a hands-free key in Settings when you're ready"
     }
 
     // MARK: - Navigation Bar
