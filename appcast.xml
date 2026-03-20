@@ -3,6 +3,25 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.15</title>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>0.4.15</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.15</h2>
+        <ul>
+          <li>Hands-free dictation can now end and submit with Return as an optional setting, so click-to-start capture works better in chat boxes and command bars</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 20 Mar 2026 19:39:14 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.15/Voce-0.4.15.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="8vj3mF/eSxf7nRiYQ65Fl0E6hk2k6565LJdUbvOuSsqMEauIj39n90ecmld7xSwgqMYCI62o55q0AcZ4rONhAA=="
+        length="34273358"
+      />
+    </item>
+    <item>
       <title>Version 0.4.14</title>
       <sparkle:version>17</sparkle:version>
       <sparkle:shortVersionString>0.4.14</sparkle:shortVersionString>
