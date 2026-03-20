@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.14</title>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>0.4.14</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.14</h2>
+        <ul>
+          <li>Hold-to-talk now supports real modifier chords such as Control+Option, which reduces accidental recordings when one modifier is part of another shortcut</li>
+          <li>Fixes stale permission warnings on the record screen so already-granted microphone and accessibility access no longer show as missing</li>
+          <li>Makes media pause and resume behavior smoother during quick dictation starts and stops</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 20 Mar 2026 18:36:08 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.14/Voce-0.4.14.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="xlnzEu5g6oaXnMJMDdM+U88UC2wA0A5JOfToRj3BmPBJ+h3wp64yo3YhkXHOnr48hPHlLp3hoP2z7DzjpTq6BA=="
+        length="33401700"
+      />
+    </item>
+    <item>
       <title>Version 0.4.13</title>
       <sparkle:version>16</sparkle:version>
       <sparkle:shortVersionString>0.4.13</sparkle:shortVersionString>
