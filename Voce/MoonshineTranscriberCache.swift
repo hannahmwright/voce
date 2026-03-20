@@ -30,7 +30,26 @@ final class MoonshineTranscriberCache: @unchecked Sendable {
         }
     }
 
+    func warm(config: MoonshineTranscriptionEngine.Configuration) {
+        let key = Key(modelDirectoryPath: config.modelDirectoryPath, modelArch: config.modelArch)
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try self.prepareTranscriber(for: key)
+            } catch {
+                return
+            }
+        }
+    }
+
     func transcriber(for config: MoonshineStreamingSession.Configuration) throws -> Transcriber {
+        let key = Key(modelDirectoryPath: config.modelDirectoryPath, modelArch: config.modelArch)
+        return try queue.sync {
+            try prepareTranscriber(for: key)
+        }
+    }
+
+    func transcriber(for config: MoonshineTranscriptionEngine.Configuration) throws -> Transcriber {
         let key = Key(modelDirectoryPath: config.modelDirectoryPath, modelArch: config.modelArch)
         return try queue.sync {
             try prepareTranscriber(for: key)

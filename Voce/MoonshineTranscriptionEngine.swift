@@ -40,6 +40,7 @@ struct MoonshineTranscriptionEngine: TranscriptionEngine, Sendable {
     struct Configuration: Sendable {
         var modelDirectoryPath: String
         var modelArch: MoonshineModelPreset
+        var keepModelWarm: Bool = true
     }
 
     private let config: Configuration
@@ -57,11 +58,20 @@ struct MoonshineTranscriptionEngine: TranscriptionEngine, Sendable {
             )
 
             let audio = try Self.loadAudioSamples(from: audioURL)
-            let transcriber = try Transcriber(
-                modelPath: configuration.modelDirectoryPath,
-                modelArch: configuration.modelArch.moonshineArch
-            )
-            defer { transcriber.close() }
+            let transcriber: Transcriber
+            if configuration.keepModelWarm {
+                transcriber = try MoonshineTranscriberCache.shared.transcriber(for: configuration)
+            } else {
+                transcriber = try Transcriber(
+                    modelPath: configuration.modelDirectoryPath,
+                    modelArch: configuration.modelArch.moonshineArch
+                )
+            }
+            defer {
+                if !configuration.keepModelWarm {
+                    transcriber.close()
+                }
+            }
 
             let transcript = try transcriber.transcribeWithoutStreaming(
                 audioData: audio.samples,

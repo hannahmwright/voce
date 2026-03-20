@@ -185,6 +185,10 @@ struct HistoryTab: View {
                     .font(VoceDesign.label())
                     .foregroundStyle(VoceDesign.textSecondary)
 
+                if let processingNote = entry.processingNote, !processingNote.isEmpty {
+                    processingNoteBadge(processingNote)
+                }
+
                 statusDot(entry.insertionStatus)
 
                 Spacer()
@@ -264,6 +268,24 @@ struct HistoryTab: View {
             .frame(width: 6, height: 6)
             .accessibilityLabel("Status: \(label)")
             .help(label)
+    }
+
+    private func processingNoteBadge(_ note: String) -> some View {
+        Text("Recovered")
+            .font(VoceDesign.label())
+            .foregroundStyle(VoceDesign.warning)
+            .padding(.horizontal, VoceDesign.xs)
+            .padding(.vertical, VoceDesign.xxs)
+            .background(
+                Capsule()
+                    .fill(VoceDesign.warningBackground)
+            )
+            .overlay(
+                Capsule()
+                    .stroke(VoceDesign.warningBorder, lineWidth: VoceDesign.borderThin)
+            )
+            .help(note)
+            .accessibilityLabel(note)
     }
 
     private func appName(for bundleID: String) -> String {

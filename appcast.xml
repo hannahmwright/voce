@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.16</title>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>0.4.16</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.16</h2>
+        <ul>
+          <li>Switches live preview to Apple Speech while keeping Moonshine for final transcription, so long dictation starts immediately and no longer hard-stops when streaming falls behind</li>
+          <li>Adds rolling background finalization with overlap-aware, silence-aware chunking to reduce stop-time processing delays while preserving a full-file recovery path</li>
+          <li>Adds recovery diagnostics and Settings visibility for seam quality and fallback reasons, so transcription issues are easier to detect and tune</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 20 Mar 2026 22:04:26 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.16/Voce-0.4.16.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="FwcL8WODAgmzyKRNZVP6vXEe/J+hX2QbST8hlcd6D2eEywnWnBiHG2W6h2I621Vj9zgaSR2rPN6wMtPY4M7OBg=="
+        length="34291956"
+      />
+    </item>
+    <item>
       <title>Version 0.4.15</title>
       <sparkle:version>18</sparkle:version>
       <sparkle:shortVersionString>0.4.15</sparkle:shortVersionString>

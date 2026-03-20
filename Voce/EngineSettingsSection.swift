@@ -10,29 +10,36 @@ struct EngineSettingsSection: View {
     @StateObject private var downloader = MoonshineModelDownloader()
 
     var body: some View {
-        settingsCard("Engine") {
-            Picker("Model", selection: $preferences.dictation.modelArch) {
-                ForEach(MoonshineModelPreset.voceSupportedOptions) { preset in
-                    Text(preset.pickerLabel).tag(preset)
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            settingsCard("Engine") {
+                Picker("Model", selection: $preferences.dictation.modelArch) {
+                    ForEach(MoonshineModelPreset.voceSupportedOptions) { preset in
+                        Text(preset.pickerLabel).tag(preset)
+                    }
+                }
+                .pickerStyle(.menu)
+                .onChange(of: preferences.dictation.modelArch) { newArch in
+                    preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
+                }
+
+                selectedModelSummary(for: preferences.dictation.modelArch)
+
+                Toggle("Keep Moonshine warmed in memory", isOn: $preferences.dictation.keepModelWarm)
+                Text("Reduces the first Moonshine background/final transcription delay. Apple live preview still appears immediately. Higher idle memory use.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+
+                if modelIsReady {
+                    modelReadySection
+                } else {
+                    modelDownloadSection
                 }
             }
-            .pickerStyle(.menu)
-            .onChange(of: preferences.dictation.modelArch) { newArch in
-                preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
-            }
 
-            selectedModelSummary(for: preferences.dictation.modelArch)
-
-            Toggle("Keep model warmed in memory", isOn: $preferences.dictation.keepModelWarm)
-            Text("Faster recording start, higher idle memory use.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-
-            if modelIsReady {
-                modelReadySection
-            } else {
-                modelDownloadSection
-            }
+            rollingDiagnosticsSection
+        }
+        .task {
+            await controller.refreshRollingFallbackMetrics()
         }
     }
 
@@ -151,6 +158,71 @@ struct EngineSettingsSection: View {
                 }
             }
         }
+    }
+
+    private var rollingDiagnosticsSection: some View {
+        settingsCard("Live Diagnostics") {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: VoceDesign.xxs) {
+                    Text("Rolling fallback counts")
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                    Text("Tracks when the live rolling path had to recover with the full final pass.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+
+                Spacer()
+
+                Button("Refresh") {
+                    Task {
+                        await controller.refreshRollingFallbackMetrics()
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+
+            let metrics = controller.rollingFallbackMetrics
+
+            LazyVGrid(columns: [
+                GridItem(.flexible(minimum: 120), spacing: VoceDesign.sm),
+                GridItem(.flexible(minimum: 120), spacing: VoceDesign.sm)
+            ], alignment: .leading, spacing: VoceDesign.sm) {
+                metricsTile(title: "Total", value: "\(metrics.totalFallbacks)")
+                metricsTile(title: "Weak seam", value: "\(metrics.weakSeamFallbacks)")
+                metricsTile(title: "Chunk failed", value: "\(metrics.chunkTranscriptionFailureFallbacks)")
+                metricsTile(title: "Incomplete", value: "\(metrics.incompleteRollingTranscriptFallbacks)")
+            }
+
+            Text(lastUpdatedText(for: metrics))
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+    }
+
+    private func metricsTile(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xxs) {
+            Text(title)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+            Text(value)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(VoceDesign.textPrimary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(VoceDesign.md)
+        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
+    }
+
+    private func lastUpdatedText(for metrics: RollingFallbackMetricsSnapshot) -> String {
+        guard metrics.updatedAt != .distantPast else {
+            return "No rolling fallbacks recorded yet."
+        }
+
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        let relative = formatter.localizedString(for: metrics.updatedAt, relativeTo: Date())
+        return "Last updated \(relative)."
     }
 
     private func runTestSetup() {

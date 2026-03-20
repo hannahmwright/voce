@@ -95,16 +95,38 @@ public actor SessionCoordinator {
     /// Accepts a pre-built transcript (e.g. from streaming) and runs cleanup, insertion, and history.
     public func processStreamingTranscript(
         _ rawTranscript: RawTranscript,
-        sessionID: SessionID
+        sessionID: SessionID,
+        processingNote: String? = nil
     ) async throws -> InsertResult {
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
             throw SessionCoordinatorError.sessionNotFound
         }
 
-        return try await finaliseTranscript(rawTranscript, active: active)
+        return try await finaliseTranscript(rawTranscript, active: active, processingNote: processingNote)
     }
 
-    private func finaliseTranscript(_ raw: RawTranscript, active: ActiveSession) async throws -> InsertResult {
+    /// Finalises a streaming session from captured audio written by the UI-layer
+    /// preview engine.
+    public func processStreamingAudio(
+        audioURL: URL,
+        sessionID: SessionID,
+        languageHints: [String] = ["en-US"],
+        processingNote: String? = nil
+    ) async throws -> InsertResult {
+        guard let active = activeSessions.removeValue(forKey: sessionID) else {
+            throw SessionCoordinatorError.sessionNotFound
+        }
+
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        let rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
+        return try await finaliseTranscript(rawTranscript, active: active, processingNote: processingNote)
+    }
+
+    private func finaliseTranscript(
+        _ raw: RawTranscript,
+        active: ActiveSession,
+        processingNote: String? = nil
+    ) async throws -> InsertResult {
         var rawTranscript = raw
         rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
 
@@ -129,7 +151,8 @@ public actor SessionCoordinator {
             rawText: rawTranscript.text,
             cleanText: finalText,
             audioURL: nil,
-            insertionStatus: insertResult.status
+            insertionStatus: insertResult.status,
+            processingNote: processingNote
         )
         try await historyStore.append(entry: entry)
 

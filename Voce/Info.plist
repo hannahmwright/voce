@@ -26,6 +26,8 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voce needs microphone access for dictation.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Voce uses on-device speech recognition for live transcript previews while you speak.</string>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUEnableAutomaticChecks</key>

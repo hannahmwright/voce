@@ -8,6 +8,7 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
     public var cleanText: String
     public var audioURL: URL?
     public var insertionStatus: InsertionStatus
+    public var processingNote: String?
 
     public init(
         id: UUID = UUID(),
@@ -16,7 +17,8 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
         rawText: String,
         cleanText: String,
         audioURL: URL?,
-        insertionStatus: InsertionStatus
+        insertionStatus: InsertionStatus,
+        processingNote: String? = nil
     ) {
         self.id = id
         self.createdAt = createdAt
@@ -25,5 +27,6 @@ public struct TranscriptEntry: Sendable, Codable, Equatable, Identifiable {
         self.cleanText = cleanText
         self.audioURL = audioURL
         self.insertionStatus = insertionStatus
+        self.processingNote = processingNote
     }
 }
