@@ -49,6 +49,7 @@ struct RecordTab: View {
             }
         }
         .onAppear {
+            controller.refreshPermissionStatuses()
             showErrorBanner = hasError
         }
     }
@@ -150,7 +151,7 @@ struct RecordTab: View {
     }
 
     private var hasError: Bool {
-        !controller.lastError.isEmpty || !controller.hotkeyRegistrationMessage.isEmpty
+        permissionCalloutKind != nil || !activeErrorMessage.isEmpty
     }
 
     private var errorBannerAccessibilityLabel: String {
@@ -164,42 +165,60 @@ struct RecordTab: View {
         return parts.joined(separator: ". ")
     }
 
-    private var isPermissionRelated: Bool {
-        let combined = (controller.lastError + controller.hotkeyRegistrationMessage).lowercased()
-        return combined.contains("accessibility")
-            || combined.contains("microphone")
-            || combined.contains("input monitoring")
-    }
-
     private var activeErrorMessage: String {
         let parts = [controller.hotkeyRegistrationMessage, controller.lastError]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+            .filter { !isResolvedPermissionMessage($0) }
         return parts.joined(separator: " ")
     }
 
     private var permissionCalloutKind: PermissionCalloutKind? {
         let combined = activeErrorMessage.lowercased()
 
-        if combined.contains("accessibility")
-            || controller.accessibilityPermissionStatus == .denied
+        if controller.accessibilityPermissionStatus == .denied
+            || (combined.contains("accessibility") && controller.accessibilityPermissionStatus != .granted)
         {
             return .accessibility
         }
 
-        if combined.contains("input monitoring")
-            || controller.inputMonitoringPermissionStatus == .denied
+        if controller.inputMonitoringPermissionStatus == .denied
+            || (combined.contains("input monitoring") && controller.inputMonitoringPermissionStatus != .granted)
         {
             return .inputMonitoring
         }
 
-        if combined.contains("microphone")
-            || controller.microphonePermissionStatus == .denied
+        if controller.microphonePermissionStatus == .denied
+            || (
+                controller.microphonePermissionStatus != .granted
+                && (combined.contains("microphone") || combined.contains("allow microphone"))
+            )
         {
             return .microphone
         }
 
         return nil
+    }
+
+    private func isResolvedPermissionMessage(_ message: String) -> Bool {
+        let normalized = message.lowercased()
+
+        if controller.microphonePermissionStatus == .granted,
+           (normalized.contains("microphone permission") || normalized == "microphone permission denied") {
+            return true
+        }
+
+        if controller.accessibilityPermissionStatus == .granted,
+           normalized.contains("accessibility") && normalized.contains("permission") {
+            return true
+        }
+
+        if controller.inputMonitoringPermissionStatus == .granted,
+           normalized.contains("input monitoring") {
+            return true
+        }
+
+        return false
     }
 
     private var permissionCalloutMessage: String {
@@ -230,7 +249,7 @@ struct RecordTab: View {
 
     private var errorBanner: some View {
         Group {
-            if isPermissionRelated, let kind = permissionCalloutKind {
+            if let kind = permissionCalloutKind {
                 permissionBanner(kind)
             } else {
                 genericErrorBanner
@@ -364,7 +383,7 @@ struct RecordTab: View {
         HStack(spacing: VoceDesign.sm) {
             let hotkeys = controller.preferences.hotkeys
             if hotkeys.optionPressToTalkEnabled {
-                keyBadge(hotkeys.pressToTalkModifier.displayName)
+                keyBadge(hotkeys.pressToTalkHotkey.displayName)
                 Text("hold to dictate")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)

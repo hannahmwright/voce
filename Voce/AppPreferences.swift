@@ -23,11 +23,12 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
     struct Hotkeys: Codable, Sendable, Equatable {
         var optionPressToTalkEnabled: Bool
-        var pressToTalkModifier: PressToTalkModifier
+        var pressToTalkHotkey: PressToTalkHotkey
         var handsFreeGlobalHotkey: HandsFreeHotkey?
 
         enum CodingKeys: String, CodingKey {
             case optionPressToTalkEnabled
+            case pressToTalkHotkey
             case pressToTalkModifier
             case handsFreeGlobalHotkey
             case handsFreeGlobalKeyCode
@@ -35,18 +36,24 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(
             optionPressToTalkEnabled: Bool,
-            pressToTalkModifier: PressToTalkModifier = .option,
+            pressToTalkHotkey: PressToTalkHotkey = .default,
             handsFreeGlobalHotkey: HandsFreeHotkey? = .keyCode(79)
         ) {
             self.optionPressToTalkEnabled = optionPressToTalkEnabled
-            self.pressToTalkModifier = pressToTalkModifier
+            self.pressToTalkHotkey = pressToTalkHotkey
             self.handsFreeGlobalHotkey = handsFreeGlobalHotkey
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             optionPressToTalkEnabled = try container.decodeIfPresent(Bool.self, forKey: .optionPressToTalkEnabled) ?? true
-            pressToTalkModifier = try container.decodeIfPresent(PressToTalkModifier.self, forKey: .pressToTalkModifier) ?? .option
+            if let hotkey = try container.decodeIfPresent(PressToTalkHotkey.self, forKey: .pressToTalkHotkey) {
+                pressToTalkHotkey = hotkey
+            } else if let legacyModifier = try container.decodeIfPresent(PressToTalkModifier.self, forKey: .pressToTalkModifier) {
+                pressToTalkHotkey = legacyModifier.asHotkey
+            } else {
+                pressToTalkHotkey = .default
+            }
             if let hotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeGlobalHotkey) {
                 handsFreeGlobalHotkey = hotkey
             } else if let legacyKeyCode = try container.decodeIfPresent(UInt16.self, forKey: .handsFreeGlobalKeyCode) {
@@ -59,7 +66,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(optionPressToTalkEnabled, forKey: .optionPressToTalkEnabled)
-            try container.encode(pressToTalkModifier, forKey: .pressToTalkModifier)
+            try container.encode(pressToTalkHotkey, forKey: .pressToTalkHotkey)
             try container.encodeIfPresent(handsFreeGlobalHotkey, forKey: .handsFreeGlobalHotkey)
         }
     }
@@ -173,7 +180,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             ),
             hotkeys: .init(
                 optionPressToTalkEnabled: true,
-                pressToTalkModifier: .option,
+                pressToTalkHotkey: .default,
                 handsFreeGlobalHotkey: .keyCode(79)
             ),
             dictation: .init(

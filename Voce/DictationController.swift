@@ -241,7 +241,7 @@ final class DictationController: ObservableObject {
         if recordingStateMachine.state == .idle {
             hotkey.stop()
             hotkey.isOptionPressToTalkEnabled = preferences.hotkeys.optionPressToTalkEnabled
-            hotkey.pressToTalkModifier = preferences.hotkeys.pressToTalkModifier
+            hotkey.pressToTalkHotkey = preferences.hotkeys.pressToTalkHotkey
             hotkey.globalToggleHotkey = preferences.hotkeys.handsFreeGlobalHotkey
             hotkey.start()
         }
@@ -249,12 +249,12 @@ final class DictationController: ObservableObject {
 
     func pressToTalkStart() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
-        apply(transition: recordingStateMachine.handleOptionKeyDown())
+        apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
     }
 
     func pressToTalkStop() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
-        apply(transition: recordingStateMachine.handleOptionKeyUp())
+        apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
     }
 
     func toggleHandsFree() {
@@ -662,7 +662,7 @@ final class DictationController: ObservableObject {
     private func applyPreferencesLocally(_ newValue: AppPreferences) {
         preferences = newValue
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
-        hotkey.pressToTalkModifier = newValue.hotkeys.pressToTalkModifier
+        hotkey.pressToTalkHotkey = newValue.hotkeys.pressToTalkHotkey
         hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
     }

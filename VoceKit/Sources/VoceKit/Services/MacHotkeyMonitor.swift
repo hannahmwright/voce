@@ -23,7 +23,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     public var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)?
 
     public var isOptionPressToTalkEnabled: Bool = true
-    public var pressToTalkModifier: PressToTalkModifier = .option {
+    public var pressToTalkHotkey: PressToTalkHotkey = .default {
         didSet {
             isPressToTalkHeld = false
             toggleModifierGate.reset()
@@ -60,7 +60,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         guard !hasStarted else { return }
         callbackGeneration &+= 1
         hasStarted = true
-        installOptionMonitors()
+        installPressToTalkMonitors()
         updateHandsFreeStatus()
     }
 
@@ -68,7 +68,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         callbackGeneration &+= 1
         hasStarted = false
         uninstallEventTap()
-        uninstallOptionMonitors()
+        uninstallPressToTalkMonitors()
         isPressToTalkHeld = false
         isGlobalToggleModifierHeld = false
         toggleModifierGate.reset()
@@ -76,7 +76,7 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     // MARK: - Press-to-Talk Monitors
 
-    private func installOptionMonitors() {
+    private func installPressToTalkMonitors() {
         guard globalFlagsMonitor == nil, localFlagsMonitor == nil else { return }
 
         globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -89,7 +89,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
     }
 
-    private func uninstallOptionMonitors() {
+    private func uninstallPressToTalkMonitors() {
         if let globalFlagsMonitor {
             NSEvent.removeMonitor(globalFlagsMonitor)
             self.globalFlagsMonitor = nil
@@ -109,13 +109,14 @@ public final class MacHotkeyMonitor: HotkeyService {
     private func handlePressToTalkFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
         guard isOptionPressToTalkEnabled else { return }
 
-        let modifierIsNowHeld = modifiers.contains(pressToTalkModifier.eventFlags)
-        guard modifierIsNowHeld != isPressToTalkHeld else { return }
+        let effectiveModifiers = modifiers.subtracting(.capsLock)
+        let hotkeyIsNowHeld = effectiveModifiers == pressToTalkHotkey.eventFlags
+        guard hotkeyIsNowHeld != isPressToTalkHeld else { return }
 
-        isPressToTalkHeld = modifierIsNowHeld
+        isPressToTalkHeld = hotkeyIsNowHeld
         let generation = callbackGeneration
 
-        if modifierIsNowHeld {
+        if hotkeyIsNowHeld {
             Task { @MainActor [weak self] in
                 guard let self,
                       self.hasStarted,
@@ -216,10 +217,10 @@ public final class MacHotkeyMonitor: HotkeyService {
 
         if isOptionPressToTalkEnabled,
            case .modifier(let modifier) = globalToggleHotkey,
-           modifier.eventFlags == pressToTalkModifier.eventFlags {
+           pressToTalkHotkey.contains(modifier.asPressToTalkModifier) {
             uninstallEventTap()
             onRegistrationStatusChanged?(
-                .unavailable(reason: "Hands-free key can't match the hold-to-talk key.")
+                .unavailable(reason: "Hands-free key can't be part of the hold-to-talk key.")
             )
             return
         }
@@ -283,7 +284,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     deinit {
         MainActor.assumeIsolated {
             uninstallEventTap()
-            uninstallOptionMonitors()
+            uninstallPressToTalkMonitors()
             // Clear callback state defensively after uninstall.
             tapContext.machPort = nil
             tapContext.onToggle = nil
@@ -307,19 +308,38 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
     }
 }
-private extension PressToTalkModifier {
+private extension PressToTalkHotkey {
+    var eventFlags: NSEvent.ModifierFlags {
+        modifiers.reduce(into: NSEvent.ModifierFlags()) { partialResult, modifier in
+            partialResult.insert(modifier.eventFlags)
+        }
+    }
+}
+
+private extension PressToTalkHotkey.Modifier {
     var eventFlags: NSEvent.ModifierFlags {
         switch self {
         case .option: return .option
         case .control: return .control
         case .command: return .command
         case .shift: return .shift
+        case .function: return .function
         }
     }
 }
 
 private extension HandsFreeHotkey.Modifier {
     var eventFlags: NSEvent.ModifierFlags {
+        switch self {
+        case .option: return .option
+        case .control: return .control
+        case .command: return .command
+        case .shift: return .shift
+        case .function: return .function
+        }
+    }
+
+    var asPressToTalkModifier: PressToTalkHotkey.Modifier {
         switch self {
         case .option: return .option
         case .control: return .control

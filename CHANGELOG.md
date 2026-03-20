@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-03-20
+
+### Added
+- Hold-to-talk hotkeys can now use real modifier chords such as `Control+Option`, which reduces accidental recordings when one modifier is part of another shortcut.
+
+### Fixed
+- The record screen now suppresses stale microphone/accessibility/input-monitoring warnings once the relevant permission has already been granted.
+- Media interruption pause/resume behavior is smoother and less jittery during quick dictation starts and stops.
+
 ## [0.4.13] - 2026-03-17
 
 ### Changed
@@ -130,7 +139,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [0.1.6] - 2026-03-03
 
 ### Added
-- Added `Steno/Steno.entitlements` and wired entitlements via `project.yml` for microphone access and DYLD environment behavior needed by local `whisper.cpp` builds.
+- Added `Voce/Voce.entitlements` and wired entitlements via `project.yml` for microphone access and DYLD environment behavior needed by local `whisper.cpp` builds.
 - Added `StenoKitTestSupport` as a dedicated package target for test doubles used by `StenoKitTests`.
 
 ### Changed
@@ -152,10 +161,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [0.1.5] - 2026-02-28
 
 ### Added
-- Refreshed macOS app icon artwork in `Steno/Assets.xcassets/AppIcon.appiconset`.
+- Refreshed macOS app icon artwork in `Voce/Assets.xcassets/AppIcon.appiconset`.
 
 ### Changed
-- Pivoted cleanup to local-only. Steno now runs transcription and cleanup fully on-device with no cloud cleanup mode.
+- Pivoted cleanup to local-only. Voce now runs transcription and cleanup fully on-device with no cloud cleanup mode.
 - Removed API key onboarding/settings flow and cloud-mode status messaging to simplify setup and avoid mixed local/cloud behavior.
 - Settings now use a draft-and-apply flow to avoid mutating preferences during view updates.
 - Press-to-talk now attempts media interruption before starting audio capture.
@@ -180,10 +189,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [0.1.2] - 2026-02-23
 
 ### Added
-- First-pass macOS app icon set in `Steno/Assets.xcassets/AppIcon.appiconset` with a stenography-inspired glyph
+- First-pass macOS app icon set in `Voce/Assets.xcassets/AppIcon.appiconset` with a stenography-inspired glyph
 
 ### Removed
-- Tracked generated Xcode project files (`Steno.xcodeproj/*`) from source control
+- Tracked generated Xcode project files (`Voce.xcodeproj/*`) from source control
 
 ## [0.1.1] - 2026-02-21
 

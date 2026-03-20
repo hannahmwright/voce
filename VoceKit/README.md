@@ -10,7 +10,7 @@ This package implements the core architecture for a local-first dictation workfl
 - rule-based local transcript cleanup (`RuleBasedCleanupEngine`)
 - Transcript history + recovery (`HistoryStore`)
 - `pasteLast()` recovery flow for wrong-text-box insertion issues
-- Personal lexicon correction (e.g., `stenoh` -> `Steno`)
+- Personal lexicon correction (e.g., `stenoh` -> `Voce`)
 - Style profiles and app-specific behavior
 - Snippet expansion
 - Fallback insertion chain (`InsertionService`)

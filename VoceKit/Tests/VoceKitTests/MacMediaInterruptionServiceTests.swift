@@ -31,6 +31,23 @@ private final class DelayedPlaybackDetector: MediaPlaybackStateDetector {
     }
 }
 
+private final class SequencedPlaybackDetector: MediaPlaybackStateDetector {
+    private var results: [PlaybackDetectionResult]
+    private let fallback: PlaybackDetectionResult
+
+    init(_ results: [PlaybackDetectionResult], fallback: PlaybackDetectionResult = .unknown) {
+        self.results = results
+        self.fallback = fallback
+    }
+
+    func detect() async -> PlaybackDetectionResult {
+        if !results.isEmpty {
+            return results.removeFirst()
+        }
+        return fallback
+    }
+}
+
 @MainActor
 private final class FakeMediaRemoteBridge: MediaRemoteBridging {
     var activateCalls = 0
@@ -192,8 +209,9 @@ func unknownPlaybackStateMustNotStartPhantomMediaPlayback() async {
 func mediaInterruptionResumesOnlyForActiveToken() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: StaticPlaybackDetector(.playing),
-        sendPlayPauseKey: { recorder.send() }
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying]),
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0
     )
 
     guard let token = await service.beginInterruption() else {
@@ -202,6 +220,7 @@ func mediaInterruptionResumesOnlyForActiveToken() async {
     }
 
     service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
 
     #expect(recorder.sendCalls == 2)
 }
@@ -211,8 +230,9 @@ func mediaInterruptionResumesOnlyForActiveToken() async {
 func mediaInterruptionIgnoresInvalidOrDuplicateTokens() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: StaticPlaybackDetector(.playing),
-        sendPlayPauseKey: { recorder.send() }
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying]),
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0
     )
 
     guard let token = await service.beginInterruption() else {
@@ -224,10 +244,63 @@ func mediaInterruptionIgnoresInvalidOrDuplicateTokens() async {
     #expect(recorder.sendCalls == 1)
 
     service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
     #expect(recorder.sendCalls == 2)
 
     service.endInterruption(token: token)
     #expect(recorder.sendCalls == 2)
+}
+
+@MainActor
+@Test("Media interruption only resumes after the last active token ends")
+func mediaInterruptionResumesAfterLastActiveToken() async {
+    let recorder = MediaKeySendRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying]),
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0
+    )
+
+    guard let first = await service.beginInterruption() else {
+        Issue.record("Expected first interruption token for active playback.")
+        return
+    }
+
+    guard let second = await service.beginInterruption() else {
+        Issue.record("Expected second interruption token while interruption is active.")
+        return
+    }
+
+    #expect(recorder.sendCalls == 1)
+
+    service.endInterruption(token: first)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(recorder.sendCalls == 1)
+
+    service.endInterruption(token: second)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+    #expect(recorder.sendCalls == 2)
+}
+
+@MainActor
+@Test("Media interruption skips resume when playback already restarted")
+func mediaInterruptionSkipsResumeIfPlaybackAlreadyActive() async {
+    let recorder = MediaKeySendRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.playing, .playing]),
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for active playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(recorder.sendCalls == 1)
 }
 
 @MainActor

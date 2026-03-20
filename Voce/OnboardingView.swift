@@ -367,7 +367,7 @@ struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
-                tipRow(number: "1", text: "Hold \(controller.preferences.hotkeys.pressToTalkModifier.displayName) to dictate (press-to-talk)")
+                tipRow(number: "1", text: "Hold \(controller.preferences.hotkeys.pressToTalkHotkey.displayName) to dictate (press-to-talk)")
                 tipRow(number: "2", text: handsFreeTipText)
                 tipRow(number: "3", text: "Check the History tab for past transcripts")
             }

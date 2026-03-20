@@ -1,23 +1,23 @@
-# Steno
+# Voce
 
 Fast macOS voice-to-text with smart app-aware insertion and optional text cleanup.
 
-Steno is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with [Moonshine](https://github.com/moonshine-ai/moonshine), fast hotkeys, and reliable text output across apps.
+Voce is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with [Moonshine](https://github.com/moonshine-ai/moonshine), fast hotkeys, and reliable text output across apps.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 
 ## Choose Your Path
 
-- **I want to use Steno**: follow [QUICKSTART.md](QUICKSTART.md) or the quick setup below.
+- **I want to use Voce**: follow [QUICKSTART.md](QUICKSTART.md) or the quick setup below.
 - **I want to contribute**: start with [CONTRIBUTING.md](CONTRIBUTING.md) and the architecture notes below.
 
-## What Steno Does
+## What Voce Does
 
 - High-accuracy local transcription with Moonshine (audio never leaves your Mac)
 - Automatic model download on first launch (~160 MB for the recommended model)
 - Smart app-aware paste (target-aware insertion): terminals prefer paste, editors use direct typing or accessibility insertion
 - Local transcript cleanup (no cloud dependency)
-- Global hotkeys: Option hold-to-talk and configurable hands-free toggle
+- Global hotkeys: configurable hold-to-talk and configurable hands-free toggle
 - Menu bar app with status overlay
 - 30-day transcript history with search
 - Personal lexicon, style profiles, and snippets
@@ -55,7 +55,7 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
    xcodegen generate
    ```
 
-3. Open your local `Steno.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
+3. Open your local `Voce.xcodeproj` in Xcode and set your Apple Developer Team in Signing & Capabilities.
 
 4. Build and run (Cmd+R).
 
@@ -65,7 +65,7 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 ## Usage
 
-- **Option Hold-to-Talk**: hold Option to record, release to transcribe and insert
+- **Hold-to-Talk**: hold your chosen modifier keys to record, release to transcribe and insert
 - **Hands-Free Toggle**: press the configured function key (default `F18`) to start/stop recording
 - **Menu Bar**: Click icon to show app window, right-click for quick actions
 - **Recording Modes**: Press-to-talk (immediate recording) or hands-free (toggle on/off)
@@ -73,16 +73,16 @@ Steno is built for a premium dictation workflow without subscription lock-in: hi
 
 ## Verify Setup
 
-- Hold `Option` to record and release to transcribe.
+- Hold your configured hold-to-talk keys to record and release to transcribe.
 - Use the hands-free toggle key (default `F18`).
 - Confirm insertion works in both a text editor and a terminal.
 
 ## Architecture (Contributor View)
 
-Steno uses a two-layer design:
+Voce uses a two-layer design:
 
 - **`VoceKit/`**: pure Swift package with business logic, protocols, models, and services (no UI)
-- **`Steno/`**: SwiftUI app target with views, `DictationController` orchestration, and settings persistence
+- **`Voce/`**: SwiftUI app target with views, `DictationController` orchestration, and settings persistence
 
 Key patterns: protocol-first dependency injection, actor isolation, no singletons, `Sendable` value types.
 

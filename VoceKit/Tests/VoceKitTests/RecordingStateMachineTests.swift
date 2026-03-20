@@ -25,11 +25,11 @@ func recordingStateMachineHandsFreeToggle() {
     #expect(machine.state == .idle)
 }
 
-@Test("RecordingStateMachine keeps Option hold-to-talk independent")
-func recordingStateMachineOptionFlow() {
+@Test("RecordingStateMachine keeps hold-to-talk independent")
+func recordingStateMachinePressToTalkFlow() {
     var machine = RecordingStateMachine()
 
-    let start = machine.handleOptionKeyDown()
+    let start = machine.handlePressToTalkKeyDown()
     #expect(start == .start(mode: .pressToTalk))
     #expect(machine.state == .recordingPressToTalk)
 
@@ -38,10 +38,10 @@ func recordingStateMachineOptionFlow() {
     case .ignore(let reason):
         #expect(!reason.isEmpty)
     default:
-        Issue.record("Expected hands-free toggle to be ignored during Option recording")
+        Issue.record("Expected hands-free toggle to be ignored during hold-to-talk recording")
     }
 
-    let stop = machine.handleOptionKeyUp()
+    let stop = machine.handlePressToTalkKeyUp()
     #expect(stop == .stop(mode: .pressToTalk))
     #expect(machine.state == .transcribing)
 

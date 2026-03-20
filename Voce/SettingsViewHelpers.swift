@@ -228,6 +228,10 @@ func hotkeyDisplayName(for hotkey: HandsFreeHotkey) -> String {
     }
 }
 
+func hotkeyDisplayName(for hotkey: PressToTalkHotkey) -> String {
+    hotkey.displayName
+}
+
 @MainActor
 final class HotkeyCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
@@ -339,6 +343,191 @@ final class HotkeyCaptureCoordinator: ObservableObject {
     }
 }
 
+@MainActor
+final class PressToTalkHotkeyCaptureCoordinator: ObservableObject {
+    @Published var isCapturing = false
+    @Published var helperText: String?
+
+    private var keyMonitor: Any?
+    private var flagsMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
+    private var pendingHotkey: PressToTalkHotkey?
+
+    func startCapture(onCapture: @escaping (PressToTalkHotkey) -> Void) {
+        stopCapture(clearHelperText: false)
+        isCapturing = true
+        pendingHotkey = nil
+        helperText = "Hold one or more modifier keys together, then release to save. Esc cancels."
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleKeyDown(event)
+        }
+
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self else { return event }
+            return self.handleFlagsChanged(event, onCapture: onCapture)
+        }
+
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.stopCapture()
+            }
+        }
+    }
+
+    func stopCapture(clearHelperText: Bool = true) {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+
+        if let flagsMonitor {
+            NSEvent.removeMonitor(flagsMonitor)
+            self.flagsMonitor = nil
+        }
+
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+            self.resignObserver = nil
+        }
+
+        pendingHotkey = nil
+        isCapturing = false
+        if clearHelperText {
+            helperText = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        guard isCapturing else { return event }
+
+        if event.keyCode == 53 {
+            stopCapture()
+            return nil
+        }
+
+        helperText = "Use modifier keys only for hold-to-talk, like Control+Option."
+        return nil
+    }
+
+    private func handleFlagsChanged(_ event: NSEvent, onCapture: @escaping (PressToTalkHotkey) -> Void) -> NSEvent? {
+        guard isCapturing else { return event }
+
+        let modifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting(.capsLock)
+        let supportedModifiers = PressToTalkHotkey.Modifier.allCases.filter { modifiers.contains($0.eventFlags) }
+
+        guard !supportedModifiers.isEmpty else {
+            if let pendingHotkey {
+                onCapture(pendingHotkey)
+                helperText = nil
+                stopCapture(clearHelperText: false)
+                return nil
+            }
+            return event
+        }
+
+        let capturedHotkey = PressToTalkHotkey(modifiers: supportedModifiers)
+        if let pendingHotkey, pendingHotkey.modifiers.count > capturedHotkey.modifiers.count {
+            helperText = "Release to save \(pendingHotkey.displayName)."
+            return nil
+        }
+
+        pendingHotkey = capturedHotkey
+        helperText = "Release to save \(capturedHotkey.displayName)."
+        return nil
+    }
+}
+
+struct PressToTalkHotkeyRecorderField: View {
+    @Binding var hotkey: PressToTalkHotkey
+    @StateObject private var coordinator = PressToTalkHotkeyCaptureCoordinator()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            HStack(spacing: VoceDesign.sm) {
+                Button {
+                    if coordinator.isCapturing {
+                        coordinator.stopCapture()
+                    } else {
+                        coordinator.startCapture { capturedHotkey in
+                            hotkey = capturedHotkey
+                        }
+                    }
+                } label: {
+                    HStack(spacing: VoceDesign.sm) {
+                        Image(systemName: coordinator.isCapturing ? "keyboard.badge.ellipsis" : "mic.badge.plus")
+                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
+
+                        Text(fieldTitle)
+                            .font(VoceDesign.callout())
+                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.textPrimary : VoceDesign.textSecondary)
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, VoceDesign.md)
+                    .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(VoceDesign.surfaceSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .fill(.regularMaterial.opacity(0.28))
+                            )
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .stroke(
+                                coordinator.isCapturing ? VoceDesign.accent.opacity(0.45) : VoceDesign.border,
+                                lineWidth: VoceDesign.borderThin
+                            )
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hold-to-talk hotkey")
+                .accessibilityValue(fieldTitle)
+
+                Button("Reset") {
+                    hotkey = .default
+                    coordinator.stopCapture()
+                }
+                .buttonStyle(.plain)
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(
+                    hotkey == .default
+                    ? VoceDesign.textSecondary.opacity(0.5)
+                    : VoceDesign.textSecondary
+                )
+                .disabled(hotkey == .default)
+            }
+
+            if let helperText = coordinator.helperText {
+                Text(helperText)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+        }
+        .onDisappear {
+            coordinator.stopCapture()
+        }
+    }
+
+    private var fieldTitle: String {
+        if coordinator.isCapturing {
+            return "Hold modifier keys..."
+        }
+
+        return hotkeyDisplayName(for: hotkey)
+    }
+}
+
 struct HotkeyRecorderField: View {
     @Binding var hotkey: HandsFreeHotkey?
     @StateObject private var coordinator = HotkeyCaptureCoordinator()
@@ -423,6 +612,18 @@ struct HotkeyRecorderField: View {
 }
 
 private extension HandsFreeHotkey.Modifier {
+    var eventFlags: NSEvent.ModifierFlags {
+        switch self {
+        case .option: return .option
+        case .control: return .control
+        case .command: return .command
+        case .shift: return .shift
+        case .function: return .function
+        }
+    }
+}
+
+private extension PressToTalkHotkey.Modifier {
     var eventFlags: NSEvent.ModifierFlags {
         switch self {
         case .option: return .option

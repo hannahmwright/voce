@@ -25,13 +25,13 @@ public struct RecordingStateMachine: Sendable, Equatable {
         self.state = initialState
     }
 
-    public mutating func handleOptionKeyDown() -> RecordingTransition {
+    public mutating func handlePressToTalkKeyDown() -> RecordingTransition {
         switch state {
         case .idle:
             state = .recordingPressToTalk
             return .start(mode: .pressToTalk)
         case .recordingPressToTalk:
-            return .ignore(reason: "Already recording with Option hold-to-talk.")
+            return .ignore(reason: "Already recording with hold-to-talk.")
         case .recordingHandsFree:
             return .ignore(reason: "Hands-free recording is active.")
         case .transcribing:
@@ -39,13 +39,13 @@ public struct RecordingStateMachine: Sendable, Equatable {
         }
     }
 
-    public mutating func handleOptionKeyUp() -> RecordingTransition {
+    public mutating func handlePressToTalkKeyUp() -> RecordingTransition {
         switch state {
         case .recordingPressToTalk:
             state = .transcribing
             return .stop(mode: .pressToTalk)
         case .idle:
-            return .ignore(reason: "No active Option recording.")
+            return .ignore(reason: "No active hold-to-talk recording.")
         case .recordingHandsFree:
             return .ignore(reason: "Hands-free recording is active.")
         case .transcribing:
@@ -62,7 +62,7 @@ public struct RecordingStateMachine: Sendable, Equatable {
             state = .transcribing
             return .stop(mode: .handsFree)
         case .recordingPressToTalk:
-            return .ignore(reason: "Option hold-to-talk is active.")
+            return .ignore(reason: "Hold-to-talk is active.")
         case .transcribing:
             return .ignore(reason: "Still transcribing the previous session.")
         }

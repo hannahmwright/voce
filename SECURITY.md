@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Steno is currently pre-1.0. Security fixes are applied to:
+Voce is currently pre-1.0. Security fixes are applied to:
 
 | Version | Supported |
 | --- | --- |

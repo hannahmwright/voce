@@ -37,7 +37,7 @@ public protocol HotkeyService: AnyObject {
     var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)? { get set }
 
     var isOptionPressToTalkEnabled: Bool { get set }
-    var pressToTalkModifier: PressToTalkModifier { get set }
+    var pressToTalkHotkey: PressToTalkHotkey { get set }
     var globalToggleHotkey: HandsFreeHotkey? { get set }
 
     /// Begins monitoring for configured hotkeys.

@@ -1,6 +1,6 @@
-# Contributing to Steno
+# Contributing to Voce
 
-Thank you for your interest in contributing to Steno. This guide will help you get started with development.
+Thank you for your interest in contributing to Voce. This guide will help you get started with development.
 
 If you only want to run the app as a user, use [QUICKSTART.md](QUICKSTART.md) first. This document is contributor-focused.
 
@@ -25,7 +25,7 @@ Before you begin, ensure you have:
    xcodegen generate
    ```
 
-3. Open your local `Steno.xcodeproj` in Xcode.
+3. Open your local `Voce.xcodeproj` in Xcode.
 
 4. In Xcode, set your own Apple Developer Team in Signing & Capabilities.
 
@@ -33,7 +33,7 @@ Before you begin, ensure you have:
 
 ## Code Style
 
-Steno follows strict conventions to maintain code quality and consistency.
+Voce follows strict conventions to maintain code quality and consistency.
 
 ### Swift 6 Strict Concurrency
 
@@ -90,7 +90,7 @@ withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNorm
 
 ## Testing
 
-Steno uses Swift Testing (not XCTest) with tests in `VoceKit/Tests/`.
+Voce uses Swift Testing (not XCTest) with tests in `VoceKit/Tests/`.
 
 Run all tests:
 
@@ -118,9 +118,9 @@ When adding new features:
 
 ## XcodeGen Workflow
 
-The Xcode project is generated from `project.yml`. `Steno.xcodeproj` is intentionally untracked in git and should be generated locally when needed.
+The Xcode project is generated from `project.yml`. `Voce.xcodeproj` is intentionally untracked in git and should be generated locally when needed.
 
-After modifying `project.yml` or adding/removing Swift files in `Steno/`:
+After modifying `project.yml` or adding/removing Swift files in `Voce/`:
 
 ```bash
 xcodegen generate
@@ -138,7 +138,7 @@ Tracked source uses contributor-first signing defaults (in `project.yml`):
 Maintainers should keep their personal Team ID in local Xcode settings (or local xcconfig), not in committed source.
 
 Maintainer release-signing flow:
-1. Open `Steno.xcodeproj` -> target `Steno` -> Signing & Capabilities.
+1. Open `Voce.xcodeproj` -> target `Voce` -> Signing & Capabilities.
 2. Set `Team` to your Apple Developer account team.
 3. Keep `Bundle Identifier` unique to your account if required by your signing setup.
 4. Build/archive from your local machine; do not commit team-specific signing changes.
@@ -156,7 +156,7 @@ Before submitting a PR:
 - [ ] Animations respect `accessibilityReduceMotion`
 - [ ] No force unwraps, no singletons, no `print()` statements
 - [ ] `xcodegen generate` run locally after `project.yml` or app source layout changes
-- [ ] No generated `Steno.xcodeproj` files staged in the PR
+- [ ] No generated `Voce.xcodeproj` files staged in the PR
 - [ ] Code follows Swift 6 strict concurrency rules
 - [ ] Commit messages are clear and concise
 
@@ -165,9 +165,9 @@ Before submitting a PR:
 
 Key architectural concepts:
 
-- Two-layer structure (`VoceKit/` pure Swift package + `Steno/` app target)
+- Two-layer structure (`VoceKit/` pure Swift package + `Voce/` app target)
 - Session lifecycle and recording state machine
-- Hotkey mechanism (CGEventTap for function keys, NSEvent for Option key)
+- Hotkey mechanism (CGEventTap for function keys, NSEvent modifier monitoring for hold-to-talk)
 - Insertion chain (target-aware routing)
 - Local cleanup pipeline with fallback behavior
 - Media interruption (token-based pause/resume)
@@ -182,4 +182,4 @@ If you encounter issues or have questions:
 - Open a GitHub Issue for bugs or feature requests
 - For security reports, follow `SECURITY.md`
 
-We appreciate your contributions to Steno.
+We appreciate your contributions to Voce.

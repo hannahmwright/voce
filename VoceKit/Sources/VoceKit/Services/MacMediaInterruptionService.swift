@@ -19,25 +19,43 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     private var activeTokens: Set<UUID> = []
     private let playbackDetector: any MediaPlaybackStateDetector
     private let sendPlayPauseKey: () -> Bool
+    private let minimumResumeDelayNanoseconds: UInt64
+    private var pendingResumeTask: Task<Void, Never>?
+    private var pauseSentAtUptimeNanoseconds: UInt64?
 
     public init() {
         let bridge = MediaRemoteBridge()
         self.playbackDetector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
         self.sendPlayPauseKey = SystemMediaKeySender.sendPlayPause
+        self.minimumResumeDelayNanoseconds = 300_000_000
     }
 
     init(
         playbackDetector: any MediaPlaybackStateDetector,
-        sendPlayPauseKey: @escaping () -> Bool
+        sendPlayPauseKey: @escaping () -> Bool,
+        minimumResumeDelayNanoseconds: UInt64 = 300_000_000
     ) {
         self.playbackDetector = playbackDetector
         self.sendPlayPauseKey = sendPlayPauseKey
+        self.minimumResumeDelayNanoseconds = minimumResumeDelayNanoseconds
     }
 
     public func beginInterruption() async -> MediaInterruptionToken? {
+        pendingResumeTask?.cancel()
+        pendingResumeTask = nil
+
         if Task.isCancelled {
             Self.logger.debug("Skipping media interruption because task is cancelled before detection.")
             return nil
+        }
+
+        let token = MediaInterruptionToken()
+        if !activeTokens.isEmpty {
+            activeTokens.insert(token.id)
+            Self.logger.debug(
+                "Media interruption already active. Reusing pause state. Active tokens: \(self.activeTokens.count, privacy: .public)"
+            )
+            return token
         }
 
         let detection = await playbackDetector.detect()
@@ -55,8 +73,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             let didSend = sendPlayPauseKey()
             Self.logger.debug("Media interruption pause key send attempted: \(didSend, privacy: .public)")
             guard didSend else { return nil }
-            let token = MediaInterruptionToken()
             activeTokens.insert(token.id)
+            pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
             return token
         case .notPlaying, .unknown:
@@ -71,9 +89,68 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return
         }
         activeTokens.remove(token.id)
-        let didSend = sendPlayPauseKey()
-        Self.logger.debug("Media interruption resume key send attempted: \(didSend, privacy: .public)")
-        Self.logger.debug("Media interruption ended. Active tokens: \(self.activeTokens.count, privacy: .public)")
+        guard activeTokens.isEmpty else {
+            Self.logger.debug(
+                "Media interruption token ended but interruption remains active. Active tokens: \(self.activeTokens.count, privacy: .public)"
+            )
+            return
+        }
+
+        pendingResumeTask?.cancel()
+        let pauseSentAtUptimeNanoseconds = self.pauseSentAtUptimeNanoseconds
+        let minimumResumeDelayNanoseconds = self.minimumResumeDelayNanoseconds
+        pendingResumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            if let pauseSentAtUptimeNanoseconds {
+                let now = DispatchTime.now().uptimeNanoseconds
+                let earliestResumeTime = pauseSentAtUptimeNanoseconds &+ minimumResumeDelayNanoseconds
+                if now < earliestResumeTime {
+                    try? await Task.sleep(nanoseconds: earliestResumeTime - now)
+                }
+            }
+
+            await self.resumePlaybackIfNeeded()
+        }
+        Self.logger.debug("Media interruption ended. Active tokens: 0")
+    }
+
+    private func resumePlaybackIfNeeded() async {
+        defer {
+            pendingResumeTask = nil
+            pauseSentAtUptimeNanoseconds = nil
+        }
+
+        guard !Task.isCancelled else {
+            Self.logger.debug("Skipping media interruption resume because task was cancelled.")
+            return
+        }
+
+        guard activeTokens.isEmpty else {
+            Self.logger.debug("Skipping media interruption resume because a new interruption became active.")
+            return
+        }
+
+        let detection = await playbackDetector.detect()
+        guard !Task.isCancelled else {
+            Self.logger.debug("Skipping media interruption resume because task was cancelled after detection.")
+            return
+        }
+
+        guard activeTokens.isEmpty else {
+            Self.logger.debug("Skipping media interruption resume because a new interruption became active after detection.")
+            return
+        }
+
+        switch detection {
+        case .playing, .likelyPlaying:
+            Self.logger.debug(
+                "Skipping media interruption resume because playback already appears active: \(detection.logValue, privacy: .public)"
+            )
+        case .notPlaying, .unknown:
+            let didSend = sendPlayPauseKey()
+            Self.logger.debug("Media interruption resume key send attempted: \(didSend, privacy: .public)")
+        }
     }
 }
 

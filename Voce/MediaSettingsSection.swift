@@ -5,7 +5,7 @@ struct MediaSettingsSection: View {
 
     var body: some View {
         settingsCard("Media") {
-            Toggle("Pause music/video during hold-to-talk (\(preferences.hotkeys.pressToTalkModifier.displayName))",
+            Toggle("Pause music/video during hold-to-talk (\(preferences.hotkeys.pressToTalkHotkey.displayName))",
                    isOn: $preferences.media.pauseDuringPressToTalk)
             Toggle("Pause music/video during hands-free dictation",
                    isOn: $preferences.media.pauseDuringHandsFree)

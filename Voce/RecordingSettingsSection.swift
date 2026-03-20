@@ -10,14 +10,15 @@ struct RecordingSettingsSection: View {
             Toggle("Enable hold-to-talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
 
             if preferences.hotkeys.optionPressToTalkEnabled {
-                Picker("Hold-to-talk key", selection: $preferences.hotkeys.pressToTalkModifier) {
-                    ForEach(PressToTalkModifier.allCases, id: \.self) { modifier in
-                        Text(modifier.displayName).tag(modifier)
-                    }
-                }
-                .pickerStyle(.menu)
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("Hold-to-talk keys")
+                        .font(VoceDesign.callout())
+                        .foregroundStyle(VoceDesign.textPrimary)
 
-                Text("Choose a modifier key you do not already use for other shortcuts.")
+                    PressToTalkHotkeyRecorderField(hotkey: $preferences.hotkeys.pressToTalkHotkey)
+                }
+
+                Text("Click the field, then hold one or more modifier keys together and release to save. Control+Option works well when Control is part of other shortcuts.")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
