@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-03-20
+
+### Added
+- Hands-free dictation can now end and submit with `Return` as an optional setting, so click-to-start capture works better in chat boxes and command bars.
+
 ## [0.4.14] - 2026-03-20
 
 ### Added

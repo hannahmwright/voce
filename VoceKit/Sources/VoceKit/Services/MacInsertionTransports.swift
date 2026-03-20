@@ -297,6 +297,33 @@ public enum MacPasteHelper {
         return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
     }
 
+    public static func activateAndPressReturn(target: AppContext) async -> AutoPasteOutcome {
+        guard AXIsProcessTrusted() else {
+            return .skipped(reason: "Accessibility permission is required to submit with Return.")
+        }
+
+        let activationResult = await activateTargetApp(target)
+        switch activationResult {
+        case .activated, .unknownTarget:
+            break
+        case .appNotFound:
+            return .skipped(reason: "Target app was not found before submitting with Return.")
+        case .focusNotAcquired:
+            return .skipped(reason: "Could not focus target app before submitting with Return.")
+        }
+
+        for attempt in 0..<2 {
+            if simulateReturn() {
+                return .attempted
+            }
+
+            let delay = UInt64(60_000_000 * UInt64(attempt + 1))
+            try? await Task.sleep(nanoseconds: delay)
+        }
+
+        return .skipped(reason: "Unable to synthesize Return for submit.")
+    }
+
     private static func activateTargetApp(_ target: AppContext) async -> ActivationResult {
         guard target.bundleIdentifier != "unknown" else {
             return .unknownTarget
@@ -338,6 +365,16 @@ public enum MacPasteHelper {
         else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
+        keyDown.post(tap: voceSyntheticEventTapLocation)
+        keyUp.post(tap: voceSyntheticEventTapLocation)
+        return true
+    }
+
+    public static func simulateReturn() -> Bool {
+        guard let source = CGEventSource(stateID: .privateState),
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: false)
+        else { return false }
         keyDown.post(tap: voceSyntheticEventTapLocation)
         keyUp.post(tap: voceSyntheticEventTapLocation)
         return true

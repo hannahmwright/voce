@@ -35,6 +35,15 @@ struct RecordingSettingsSection: View {
                 .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
 
+            Toggle(
+                "Press Return to end hands-free dictation and submit",
+                isOn: $preferences.hotkeys.enterFinishesHandsFreeAndSubmits
+            )
+
+            Text("When hands-free dictation is active, Return will stop recording, insert the finished transcript, then send one final Return to the current app. This is best for chat boxes and command bars.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+
             if !hotkeyRegistrationMessage.isEmpty {
                 Text(hotkeyRegistrationMessage)
                     .font(VoceDesign.caption())

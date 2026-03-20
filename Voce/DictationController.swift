@@ -49,7 +49,9 @@ final class DictationController: ObservableObject {
 
     private var recordingStateMachine = RecordingStateMachine()
     private var currentSessionID: SessionID?
+    private var activeAppContext: AppContext?
     private var activeRecordingMode: RecordingMode?
+    private var submitCurrentRecordingRequested = false
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activeStreamingSession: MoonshineStreamingSession?
@@ -87,6 +89,9 @@ final class DictationController: ObservableObject {
         }
         hotkey.onToggleHandsFree = { [weak self] in
             self?.toggleHandsFree()
+        }
+        hotkey.onSubmitActiveRecording = { [weak self] in
+            self?.submitActiveRecording()
         }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
             switch status {
@@ -243,6 +248,7 @@ final class DictationController: ObservableObject {
             hotkey.isOptionPressToTalkEnabled = preferences.hotkeys.optionPressToTalkEnabled
             hotkey.pressToTalkHotkey = preferences.hotkeys.pressToTalkHotkey
             hotkey.globalToggleHotkey = preferences.hotkeys.handsFreeGlobalHotkey
+            hotkey.isSubmitActiveRecordingEnabled = false
             hotkey.start()
         }
     }
@@ -259,6 +265,13 @@ final class DictationController: ObservableObject {
 
     func toggleHandsFree() {
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
+    }
+
+    func submitActiveRecording() {
+        guard activeRecordingMode == .handsFree, isRecording else { return }
+        guard preferences.hotkeys.enterFinishesHandsFreeAndSubmits else { return }
+        submitCurrentRecordingRequested = true
+        toggleHandsFree()
     }
 
     func pasteLastTranscript() {
@@ -454,6 +467,8 @@ final class DictationController: ObservableObject {
         status = "Checking microphone..."
         lastError = ""
         let capturedContext = AppContextProvider.current()
+        activeAppContext = capturedContext
+        submitCurrentRecordingRequested = false
         let overlayAnchorSnapshot = overlay.captureAnchorSnapshot()
 
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
@@ -468,6 +483,7 @@ final class DictationController: ObservableObject {
                 handsFreeOn = mode == .handsFree
                 menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
                 activeRecordingMode = mode
+                updateSubmitActiveRecordingHotkey()
                 recordingElapsed = 0
                 recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
@@ -522,6 +538,9 @@ final class DictationController: ObservableObject {
                 handsFreeOn = false
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
+                activeAppContext = nil
+                submitCurrentRecordingRequested = false
+                updateSubmitActiveRecordingHotkey()
                 activeStreamingSession = nil
                 recordingStateMachine.markTranscriptionFailed()
                 status = "Failed to start"
@@ -547,6 +566,7 @@ final class DictationController: ObservableObject {
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
+        updateSubmitActiveRecordingHotkey()
 
         Task {
             await pendingStart?.value
@@ -562,6 +582,9 @@ final class DictationController: ObservableObject {
                 mediaInterruption.endInterruption(token: token)
                 activeMediaToken = nil
             }
+
+            activeAppContext = nil
+            submitCurrentRecordingRequested = false
 
             recordingStateMachine.markTranscriptionFailed()
             status = streamingFailureStatusMessage(for: error)
@@ -588,6 +611,7 @@ final class DictationController: ObservableObject {
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
+        updateSubmitActiveRecordingHotkey()
 
         Task {
             // Wait for startSession's Task to finish so currentSessionID
@@ -601,6 +625,10 @@ final class DictationController: ObservableObject {
                 return
             }
             currentSessionID = nil
+            let targetAppContext = activeAppContext
+            let shouldSubmitWithReturn = submitCurrentRecordingRequested
+            activeAppContext = nil
+            submitCurrentRecordingRequested = false
 
             if let token = activeMediaToken {
                 mediaInterruption.endInterruption(token: token)
@@ -637,6 +665,14 @@ final class DictationController: ObservableObject {
                     status = "\(status) \(fallbackWarning)"
                 }
 
+                if shouldSubmitWithReturn, result.status == .inserted, let targetAppContext {
+                    let submitOutcome = await MacPasteHelper.activateAndPressReturn(target: targetAppContext)
+                    if case .skipped(let reason) = submitOutcome {
+                        status = "Transcript inserted."
+                        lastError = reason
+                    }
+                }
+
                 dismissOverlaySoon()
                 await refreshHistory()
                 recordingStateMachine.markTranscriptionCompleted()
@@ -664,6 +700,7 @@ final class DictationController: ObservableObject {
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
         hotkey.pressToTalkHotkey = newValue.hotkeys.pressToTalkHotkey
         hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
+        updateSubmitActiveRecordingHotkey()
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
     }
 
@@ -799,6 +836,13 @@ final class DictationController: ObservableObject {
         }
 
         return "Recording stopped"
+    }
+
+    private func updateSubmitActiveRecordingHotkey() {
+        hotkey.isSubmitActiveRecordingEnabled =
+            preferences.hotkeys.enterFinishesHandsFreeAndSubmits
+            && activeRecordingMode == .handsFree
+            && isRecording
     }
 }
 

@@ -25,6 +25,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var optionPressToTalkEnabled: Bool
         var pressToTalkHotkey: PressToTalkHotkey
         var handsFreeGlobalHotkey: HandsFreeHotkey?
+        var enterFinishesHandsFreeAndSubmits: Bool
 
         enum CodingKeys: String, CodingKey {
             case optionPressToTalkEnabled
@@ -32,16 +33,19 @@ struct AppPreferences: Codable, Sendable, Equatable {
             case pressToTalkModifier
             case handsFreeGlobalHotkey
             case handsFreeGlobalKeyCode
+            case enterFinishesHandsFreeAndSubmits
         }
 
         init(
             optionPressToTalkEnabled: Bool,
             pressToTalkHotkey: PressToTalkHotkey = .default,
-            handsFreeGlobalHotkey: HandsFreeHotkey? = .keyCode(79)
+            handsFreeGlobalHotkey: HandsFreeHotkey? = .keyCode(79),
+            enterFinishesHandsFreeAndSubmits: Bool = false
         ) {
             self.optionPressToTalkEnabled = optionPressToTalkEnabled
             self.pressToTalkHotkey = pressToTalkHotkey
             self.handsFreeGlobalHotkey = handsFreeGlobalHotkey
+            self.enterFinishesHandsFreeAndSubmits = enterFinishesHandsFreeAndSubmits
         }
 
         init(from decoder: Decoder) throws {
@@ -61,6 +65,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             } else {
                 handsFreeGlobalHotkey = .keyCode(79)
             }
+            enterFinishesHandsFreeAndSubmits = try container.decodeIfPresent(Bool.self, forKey: .enterFinishesHandsFreeAndSubmits) ?? false
         }
 
         func encode(to encoder: Encoder) throws {
@@ -68,6 +73,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             try container.encode(optionPressToTalkEnabled, forKey: .optionPressToTalkEnabled)
             try container.encode(pressToTalkHotkey, forKey: .pressToTalkHotkey)
             try container.encodeIfPresent(handsFreeGlobalHotkey, forKey: .handsFreeGlobalHotkey)
+            try container.encode(enterFinishesHandsFreeAndSubmits, forKey: .enterFinishesHandsFreeAndSubmits)
         }
     }
 
@@ -181,7 +187,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             hotkeys: .init(
                 optionPressToTalkEnabled: true,
                 pressToTalkHotkey: .default,
-                handsFreeGlobalHotkey: .keyCode(79)
+                handsFreeGlobalHotkey: .keyCode(79),
+                enterFinishesHandsFreeAndSubmits: false
             ),
             dictation: .init(
                 modelDirectoryPath: MoonshineModelPaths.defaultModelDirectoryPath(for: .smallStreaming),

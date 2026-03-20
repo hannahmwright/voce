@@ -34,11 +34,13 @@ public protocol HotkeyService: AnyObject {
     var onPressToTalkStart: (() -> Void)? { get set }
     var onPressToTalkStop: (() -> Void)? { get set }
     var onToggleHandsFree: (() -> Void)? { get set }
+    var onSubmitActiveRecording: (() -> Void)? { get set }
     var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)? { get set }
 
     var isOptionPressToTalkEnabled: Bool { get set }
     var pressToTalkHotkey: PressToTalkHotkey { get set }
     var globalToggleHotkey: HandsFreeHotkey? { get set }
+    var isSubmitActiveRecordingEnabled: Bool { get set }
 
     /// Begins monitoring for configured hotkeys.
     func start()
