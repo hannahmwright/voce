@@ -62,6 +62,7 @@ final class DictationController: ObservableObject {
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var terminationObserver: Any?
+    private var overlayPersistenceBundleIdentifier: String?
 
     init(
         hotkey: MacHotkeyMonitor = MacHotkeyMonitor(),
@@ -95,6 +96,9 @@ final class DictationController: ObservableObject {
         }
         hotkey.onSubmitActiveRecording = { [weak self] in
             self?.submitActiveRecording()
+        }
+        overlay.onUserDraggedToPosition = { [weak self] position in
+            self?.saveOverlayDragPosition(position)
         }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
             switch status {
@@ -133,6 +137,7 @@ final class DictationController: ObservableObject {
         }
         hotkey.stop()
         overlay.hide()
+        overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
         activeStartTask = nil
         activePreviewSession?.cancel()
@@ -224,6 +229,22 @@ final class DictationController: ObservableObject {
 
     func openInputMonitoringSettings() {
         PermissionDiagnostics.openInputMonitoringSettings()
+    }
+
+    func beginOverlayRepositionMode() {
+        guard isRecording else {
+            status = "Start dictation to reposition the overlay."
+            return
+        }
+
+        if activeAppContext == nil {
+            let capturedContext = AppContextProvider.current()
+            activeAppContext = capturedContext
+            overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
+        }
+
+        status = "Drag the overlay to reposition it. Reposition mode ends automatically."
+        overlay.beginInteractiveRepositionMode()
     }
 
     func requestAccessibilityPermission() {
@@ -479,8 +500,24 @@ final class DictationController: ObservableObject {
         lastError = ""
         let capturedContext = AppContextProvider.current()
         activeAppContext = capturedContext
+        overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
         submitCurrentRecordingRequested = false
-        let overlayAnchorSnapshot = overlay.captureAnchorSnapshot()
+
+        // Restore per-app overlay position if the user previously dragged it,
+        // otherwise fall back to accessibility-based anchoring.
+        let overlayAnchorSnapshot: MacOverlayPresenter.AnchorSnapshot?
+        if let saved = preferences.appAnchorOverrides[capturedContext.bundleIdentifier] {
+            if saved.width == 0 && saved.height == 0 {
+                // Drag-saved window origin — restore directly.
+                overlay.restoreDraggedPosition(NSPoint(x: saved.x, y: saved.y))
+                overlayAnchorSnapshot = nil
+            } else {
+                // Manual anchor rect — position above it.
+                overlayAnchorSnapshot = MacOverlayPresenter.AnchorSnapshot(frame: saved.cgRect)
+            }
+        } else {
+            overlayAnchorSnapshot = overlay.captureAnchorSnapshot()
+        }
 
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
@@ -554,6 +591,7 @@ final class DictationController: ObservableObject {
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
                 activeAppContext = nil
+                overlayPersistenceBundleIdentifier = nil
                 submitCurrentRecordingRequested = false
                 updateSubmitActiveRecordingHotkey()
                 activePreviewSession = nil
@@ -601,6 +639,7 @@ final class DictationController: ObservableObject {
             }
 
             activeAppContext = nil
+            overlayPersistenceBundleIdentifier = nil
             submitCurrentRecordingRequested = false
 
             recordingStateMachine.markTranscriptionFailed()
@@ -751,7 +790,35 @@ final class DictationController: ObservableObject {
             } else {
                 overlay.hide()
             }
+            overlayPersistenceBundleIdentifier = nil
         }
+    }
+
+    /// Bundle IDs for browsers — these work well with accessibility APIs
+    /// so we don't save per-app drag overrides for them.
+    private static let browserBundleIDs: Set<String> = [
+        "com.apple.Safari",
+        "com.google.Chrome",
+        "org.mozilla.firefox",
+        "com.microsoft.edgemac",
+        "com.brave.Browser",
+        "com.operasoftware.Opera",
+        "company.thebrowser.Browser",     // Arc
+        "com.vivaldi.Vivaldi",
+        "com.nickvision.nicegram",
+    ]
+
+    private func saveOverlayDragPosition(_ position: NSPoint) {
+        guard let bundleID = activeAppContext?.bundleIdentifier ?? overlayPersistenceBundleIdentifier,
+              bundleID != "unknown",
+              !Self.browserBundleIDs.contains(bundleID) else { return }
+
+        // Save the exact window origin so we can restore it next time.
+        // width/height = 0 signals a drag-saved position (vs manual anchor).
+        preferences.appAnchorOverrides[bundleID] = AppAnchorOverride(
+            x: position.x, y: position.y, width: 0, height: 0
+        )
+        Task { await preferencesStore.save(preferences) }
     }
 
     private func applyPreferencesLocally(_ newValue: AppPreferences) {

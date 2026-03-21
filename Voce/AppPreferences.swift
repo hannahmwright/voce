@@ -1,6 +1,37 @@
 import Foundation
 import VoceKit
 
+/// A fixed screen-space anchor for apps where accessibility can't detect the input area.
+/// The overlay positions itself relative to this rect instead of querying AX APIs.
+struct AppAnchorOverride: Codable, Sendable, Equatable {
+    /// Screen-space origin X.
+    var x: Double
+    /// Screen-space origin Y.
+    var y: Double
+    /// Width of the input region.
+    var width: Double
+    /// Height of the input region.
+    var height: Double
+
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    init(rect: CGRect) {
+        self.x = rect.origin.x
+        self.y = rect.origin.y
+        self.width = rect.size.width
+        self.height = rect.size.height
+    }
+
+    init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+    }
+}
+
 struct AppPreferences: Codable, Sendable, Equatable {
     struct General: Codable, Sendable, Equatable {
         var launchAtLoginEnabled: Bool
@@ -174,8 +205,50 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var lexiconEntries: [LexiconEntry]
     var globalStyleProfile: StyleProfile
     var appStyleProfiles: [String: StyleProfile]
+    var appAnchorOverrides: [String: AppAnchorOverride]
     var snippets: [Snippet]
     var voiceCommands: [VoiceCommand]
+
+    init(
+        general: General,
+        hotkeys: Hotkeys,
+        dictation: Dictation,
+        insertion: Insertion,
+        media: Media,
+        lexiconEntries: [LexiconEntry],
+        globalStyleProfile: StyleProfile,
+        appStyleProfiles: [String: StyleProfile],
+        appAnchorOverrides: [String: AppAnchorOverride],
+        snippets: [Snippet],
+        voiceCommands: [VoiceCommand]
+    ) {
+        self.general = general
+        self.hotkeys = hotkeys
+        self.dictation = dictation
+        self.insertion = insertion
+        self.media = media
+        self.lexiconEntries = lexiconEntries
+        self.globalStyleProfile = globalStyleProfile
+        self.appStyleProfiles = appStyleProfiles
+        self.appAnchorOverrides = appAnchorOverrides
+        self.snippets = snippets
+        self.voiceCommands = voiceCommands
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        general = try container.decode(General.self, forKey: .general)
+        hotkeys = try container.decode(Hotkeys.self, forKey: .hotkeys)
+        dictation = try container.decode(Dictation.self, forKey: .dictation)
+        insertion = try container.decode(Insertion.self, forKey: .insertion)
+        media = try container.decode(Media.self, forKey: .media)
+        lexiconEntries = try container.decodeIfPresent([LexiconEntry].self, forKey: .lexiconEntries) ?? []
+        globalStyleProfile = try container.decodeIfPresent(StyleProfile.self, forKey: .globalStyleProfile) ?? AppPreferences.default.globalStyleProfile
+        appStyleProfiles = try container.decodeIfPresent([String: StyleProfile].self, forKey: .appStyleProfiles) ?? [:]
+        appAnchorOverrides = try container.decodeIfPresent([String: AppAnchorOverride].self, forKey: .appAnchorOverrides) ?? [:]
+        snippets = try container.decodeIfPresent([Snippet].self, forKey: .snippets) ?? []
+        voiceCommands = try container.decodeIfPresent([VoiceCommand].self, forKey: .voiceCommands) ?? VoiceCommand.builtIns
+    }
 
     static var `default`: AppPreferences {
         return AppPreferences(
@@ -209,6 +282,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 commandPolicy: .transform
             ),
             appStyleProfiles: [:],
+            appAnchorOverrides: [:],
             snippets: [],
             voiceCommands: VoiceCommand.builtIns
         )

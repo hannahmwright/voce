@@ -34,8 +34,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private static let axSelectedTextMarkerRangeAttribute = "AXSelectedTextMarkerRange"
     private static let axBoundsForTextMarkerRangeParameterizedAttribute = "AXBoundsForTextMarkerRange"
-    private static let compactSize = NSSize(width: 260, height: 44)
-    private static let transcriptSize = NSSize(width: 320, height: 84)
+    private static let compactSize = NSSize(width: 286, height: 52)
+    private static let transcriptSize = NSSize(width: 372, height: 102)
+    private static let windowPadding: CGFloat = 48
 
     public struct AnchorSnapshot: Sendable, Equatable {
         public let frame: CGRect
@@ -47,25 +48,40 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private var window: NSWindow?
     private var containerView: NSView?
-    private var statusDot: NSView?
-    private var dotGlowLayer: CALayer?
-    private var borderGradientLayer: CAGradientLayer?
+    private var glassHostView: NSView?
+    private var backgroundImageLayer: CALayer?
+    private var scrimLayer: CAGradientLayer?
+    private var auraPrimaryLayer: CAGradientLayer?
+    private var auraSecondaryLayer: CAGradientLayer?
+    private var glassTintLayer: CAGradientLayer?
+    private var sheenLayer: CAGradientLayer?
     private var statusTextField: NSTextField?
     private var transcriptScrollView: NSScrollView?
     private var transcriptTextView: NSTextView?
     private var timer: Timer?
     private var listeningStartDate: Date?
     private var listeningHandsFree = false
-    private var pulseTimer: Timer?
-    private var dotPulseHigh = true
     private var wasHidden = true
     private var anchorSnapshot: AnchorSnapshot?
     private var layoutMode: LayoutMode = .compact
     private var lastLiveTranscriptText: String = ""
+    private var userDraggedPosition: NSPoint?
+    private var isPositioningProgrammatically = false
+    private var userDidDrag = false
+    private var repositionModeEnabled = false
+    private var repositionModeTask: Task<Void, Never>?
 
-    private static let dotBlue = NSColor(red: 0.32, green: 0.60, blue: 0.82, alpha: 1.0)
-    private static let dotSkyBlue = NSColor(red: 0.62, green: 0.78, blue: 0.90, alpha: 1.0)
-    private static let dotLavender = NSColor(red: 0.72, green: 0.70, blue: 0.84, alpha: 1.0)
+    /// Called when the user finishes dragging the overlay to a new position.
+    /// Provides the window origin so the caller can persist it per-app.
+    public var onUserDraggedToPosition: ((NSPoint) -> Void)?
+
+    // Monet-inspired palette matching the app's DesignSystem.
+    private static let accentBlue = NSColor(red: 0.32, green: 0.60, blue: 0.82, alpha: 1.0)    // cerulean
+    private static let accentCyan = NSColor(red: 0.62, green: 0.78, blue: 0.90, alpha: 1.0)    // sky blue
+    private static let accentLavender = NSColor(red: 0.72, green: 0.70, blue: 0.84, alpha: 1.0) // lavender haze
+    private static let accentWheat = NSColor(red: 0.82, green: 0.74, blue: 0.52, alpha: 1.0)   // golden wheat
+    private static let compactCornerRadius: CGFloat = 26
+    private static let transcriptCornerRadius: CGFloat = 30
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -85,8 +101,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         MainActor.assumeIsolated {
             timer?.invalidate()
             timer = nil
-            pulseTimer?.invalidate()
-            pulseTimer = nil
+            repositionModeTask?.cancel()
+            repositionModeTask = nil
             NSWorkspace.shared.notificationCenter.removeObserver(self)
         }
     }
@@ -109,6 +125,27 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         anchorSnapshot = snapshot
     }
 
+    /// Restores a previously saved drag position so the overlay appears
+    /// where the user last placed it for this app.
+    public func restoreDraggedPosition(_ origin: NSPoint) {
+        userDraggedPosition = origin
+    }
+
+    public func beginInteractiveRepositionMode(timeout: TimeInterval = 10) {
+        ensureWindow()
+        guard let window else { return }
+        repositionModeTask?.cancel()
+        repositionModeEnabled = true
+        window.ignoresMouseEvents = false
+        window.isMovableByWindowBackground = true
+
+        repositionModeTask = Task { @MainActor [weak self] in
+            let delay = UInt64(max(0, timeout) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: delay)
+            self?.endInteractiveRepositionMode()
+        }
+    }
+
     public func show(state: OverlayState) {
         ensureWindow()
 
@@ -123,7 +160,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             lastLiveTranscriptText = ""
             updateTranscript("Transcribing…")
             stopTimer()
-            animateDotColor(Self.dotBlue)
+            animateAura(color: Self.accentBlue)
             resetBorderToAccent()
             startDotPulse()
 
@@ -132,7 +169,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopTimer()
             lastLiveTranscriptText = text
             updateTranscript(text)
-            animateDotColor(Self.dotBlue)
+            animateAura(color: Self.accentBlue)
             resetBorderToAccent()
             startDotPulse()
 
@@ -140,7 +177,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopTimer()
             applyLayout(.transcript)
             updateTranscript(lastLiveTranscriptText.isEmpty ? "Transcribing…" : lastLiveTranscriptText)
-            animateDotColor(.systemOrange)
+            animateAura(color: .systemOrange)
             updateBorderColors(for: .systemOrange)
             startDotPulse()
 
@@ -149,7 +186,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopTimer()
             stopDotPulse()
             updateText("Inserted")
-            animateDotColor(.systemGreen)
+            animateAura(color: .systemGreen)
             updateBorderColors(for: .systemGreen)
             playSuccessBounce()
 
@@ -158,7 +195,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopTimer()
             stopDotPulse()
             updateText("Copied to clipboard")
-            animateDotColor(.systemOrange)
+            animateAura(color: .systemOrange)
             updateBorderColors(for: .systemOrange)
 
         case .failure(let message):
@@ -166,7 +203,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopTimer()
             stopDotPulse()
             updateText("Error: \(message)")
-            animateDotColor(.systemRed)
+            animateAura(color: .systemRed)
             updateBorderColors(for: .systemRed)
         }
 
@@ -176,6 +213,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             // Entrance animation: fade in + slide up + gentle scale
             window?.alphaValue = 0
             let finalOrigin = window?.frame.origin ?? .zero
+            isPositioningProgrammatically = true
             window?.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y - 12))
             containerView?.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
             window?.orderFrontRegardless()
@@ -185,6 +223,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1) // spring-like
                 self.window?.animator().alphaValue = 1
                 self.window?.animator().setFrameOrigin(finalOrigin)
+            } completionHandler: {
+                Task { @MainActor [weak self] in
+                    self?.isPositioningProgrammatically = false
+                }
             }
 
             CATransaction.begin()
@@ -193,6 +235,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             containerView?.layer?.transform = CATransform3DIdentity
             CATransaction.commit()
         } else {
+            isPositioningProgrammatically = false
             window?.alphaValue = 1
             window?.orderFrontRegardless()
         }
@@ -204,6 +247,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         wasHidden = true
         anchorSnapshot = nil
         lastLiveTranscriptText = ""
+        endInteractiveRepositionMode(notify: false)
+        notifyDragIfNeeded()
+        userDraggedPosition = nil
 
         guard !reduceMotion else {
             window?.orderOut(nil)
@@ -237,6 +283,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         wasHidden = true
         anchorSnapshot = nil
         lastLiveTranscriptText = ""
+        endInteractiveRepositionMode(notify: false)
+        notifyDragIfNeeded()
+        userDraggedPosition = nil
 
         if !reduceMotion {
             // Exit: fade out + subtle scale down + slide down
@@ -269,7 +318,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             return
         }
 
-        let contentRect = NSRect(origin: .zero, size: Self.compactSize)
+        let contentRect = NSRect(origin: .zero, size: windowSize(for: Self.compactSize))
         let panel = NSPanel(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -283,96 +332,151 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         panel.level = .statusBar
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
+        panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        // Glass background with vibrancy
-        let vibrancy = NSVisualEffectView(frame: contentRect)
-        vibrancy.material = .hudWindow
-        vibrancy.blendingMode = .behindWindow
-        vibrancy.state = .active
-        vibrancy.wantsLayer = true
-        vibrancy.layer?.cornerRadius = 22
-        vibrancy.layer?.masksToBounds = true
-        vibrancy.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.88).cgColor
+        let canvas = NSView(frame: contentRect)
+        canvas.wantsLayer = true
+        canvas.layer?.backgroundColor = NSColor.clear.cgColor
 
-        // Outer container for shadow + border (can't put shadow on clipped view)
-        let container = NSView(frame: contentRect)
+        let bubbleRect = CGRect(
+            x: Self.windowPadding,
+            y: Self.windowPadding,
+            width: Self.compactSize.width,
+            height: Self.compactSize.height
+        )
+
+        let container = NSView(frame: bubbleRect)
         container.wantsLayer = true
-        container.layer?.cornerRadius = 22
+        container.layer?.cornerRadius = Self.compactCornerRadius
         container.layer?.masksToBounds = false
         self.containerView = container
 
-        // Animated gradient border layer
-        let borderGradient = CAGradientLayer()
-        borderGradient.type = .conic
-        borderGradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        borderGradient.endPoint = CGPoint(x: 0.5, y: 0)
-        borderGradient.colors = [
-            Self.dotBlue.withAlphaComponent(0.5).cgColor,
-            Self.dotSkyBlue.withAlphaComponent(0.3).cgColor,
-            Self.dotLavender.withAlphaComponent(0.4).cgColor,
-            Self.dotBlue.withAlphaComponent(0.5).cgColor
+        // Soft atmospheric glow behind the pill.
+        let auraPrimary = CAGradientLayer()
+        auraPrimary.type = .radial
+        auraPrimary.colors = [
+            Self.accentBlue.withAlphaComponent(0.22).cgColor,
+            Self.accentLavender.withAlphaComponent(0.08).cgColor,
+            NSColor.clear.cgColor
         ]
-        borderGradient.frame = contentRect
-        borderGradient.cornerRadius = 22
+        auraPrimary.locations = [0, 0.55, 1]
+        auraPrimary.startPoint = CGPoint(x: 0.5, y: 0.5)
+        auraPrimary.endPoint = CGPoint(x: 1, y: 1)
+        auraPrimary.frame = CGRect(x: -44, y: -22, width: bubbleRect.width + 88, height: bubbleRect.height + 62)
+        auraPrimary.opacity = 0.70
+        container.layer?.addSublayer(auraPrimary)
+        self.auraPrimaryLayer = auraPrimary
 
-        // Mask the gradient to only show as a border ring
-        let borderMask = CAShapeLayer()
-        let outerPath = NSBezierPath(roundedRect: contentRect, xRadius: 22, yRadius: 22)
-        let innerRect = contentRect.insetBy(dx: 1.0, dy: 1.0)
-        let innerPath = NSBezierPath(roundedRect: innerRect, xRadius: 21, yRadius: 21)
-        outerPath.append(innerPath.reversed)
-        borderMask.path = outerPath.cgPathFallback
-        borderMask.fillRule = .evenOdd
-        borderGradient.mask = borderMask
-        container.layer?.addSublayer(borderGradient)
-        self.borderGradientLayer = borderGradient
+        let auraSecondary = CAGradientLayer()
+        auraSecondary.type = .radial
+        auraSecondary.colors = [
+            Self.accentCyan.withAlphaComponent(0.16).cgColor,
+            Self.accentBlue.withAlphaComponent(0.05).cgColor,
+            NSColor.clear.cgColor
+        ]
+        auraSecondary.locations = [0, 0.5, 1]
+        auraSecondary.startPoint = CGPoint(x: 0.5, y: 0.5)
+        auraSecondary.endPoint = CGPoint(x: 1, y: 1)
+        auraSecondary.frame = CGRect(x: 12, y: -36, width: bubbleRect.width * 0.78, height: bubbleRect.height + 74)
+        auraSecondary.opacity = 0.60
+        container.layer?.addSublayer(auraSecondary)
+        self.auraSecondaryLayer = auraSecondary
 
-        // Ambient glow shadow — colored to match state
-        container.layer?.shadowColor = Self.dotBlue.withAlphaComponent(0.35).cgColor
-        container.layer?.shadowOffset = CGSize(width: 0, height: -1)
-        container.layer?.shadowRadius = 24
-        container.layer?.shadowOpacity = 1
+        // Glass surface: frosted background image + translucent tint.
+        let glassHost = NSView(frame: NSRect(origin: .zero, size: Self.compactSize))
+        glassHost.wantsLayer = true
+        glassHost.layer?.cornerRadius = Self.compactCornerRadius
+        glassHost.layer?.masksToBounds = true
+        glassHost.layer?.borderWidth = 0.5
+        glassHost.layer?.borderColor = NSColor.white.withAlphaComponent(0.50).cgColor
 
-        container.addSubview(vibrancy)
-        vibrancy.translatesAutoresizingMaskIntoConstraints = false
+        // Background painting — blurred, bright, airy like the app window.
+        let imageLayer = CALayer()
+        if let bgImage = Self.loadBackgroundImage(), let cgImage = bgImage.cgImage(
+            forProposedRect: nil, context: nil, hints: nil
+        ) {
+            imageLayer.contents = cgImage
+            imageLayer.contentsGravity = .resizeAspectFill
+            // Soft blur to match the app's frosted look.
+            if let blur = CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 12]) {
+                imageLayer.filters = [blur]
+            }
+            imageLayer.opacity = 0.70
+        }
+        imageLayer.frame = NSRect(origin: .zero, size: Self.compactSize)
+        glassHost.layer?.addSublayer(imageLayer)
+        self.backgroundImageLayer = imageLayer
+
+        // Light frosted scrim — white/cream, heavier in center for readability,
+        // fading at edges so the painting peeks through like the app window.
+        let scrimLayer = CAGradientLayer()
+        scrimLayer.type = .radial
+        scrimLayer.colors = [
+            NSColor.white.withAlphaComponent(0.82).cgColor,
+            NSColor.white.withAlphaComponent(0.62).cgColor,
+            NSColor.white.withAlphaComponent(0.35).cgColor
+        ]
+        scrimLayer.locations = [0, 0.5, 1]
+        scrimLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
+        scrimLayer.endPoint = CGPoint(x: 1, y: 1)
+        scrimLayer.frame = NSRect(origin: .zero, size: Self.compactSize)
+        glassHost.layer?.addSublayer(scrimLayer)
+        self.scrimLayer = scrimLayer
+
+        // Warm colored tint — subtle wheat & sky like the app backdrop.
+        let glassTint = CAGradientLayer()
+        glassTint.colors = [
+            Self.accentCyan.withAlphaComponent(0.06).cgColor,
+            NSColor.white.withAlphaComponent(0.02).cgColor,
+            Self.accentWheat.withAlphaComponent(0.10).cgColor
+        ]
+        glassTint.startPoint = CGPoint(x: 0, y: 1)
+        glassTint.endPoint = CGPoint(x: 1, y: 0)
+        glassTint.frame = CGRect(origin: .zero, size: Self.compactSize)
+        glassHost.layer?.addSublayer(glassTint)
+        self.glassTintLayer = glassTint
+
+        // Bright top-edge sheen for glass depth.
+        let sheen = CAGradientLayer()
+        sheen.colors = [
+            NSColor.white.withAlphaComponent(0.50).cgColor,
+            NSColor.white.withAlphaComponent(0.12).cgColor,
+            NSColor.clear.cgColor
+        ]
+        sheen.locations = [0, 0.25, 1]
+        sheen.startPoint = CGPoint(x: 0.1, y: 1.0)
+        sheen.endPoint = CGPoint(x: 0.9, y: 0.0)
+        sheen.frame = CGRect(origin: .zero, size: Self.compactSize)
+        glassHost.layer?.addSublayer(sheen)
+        self.sheenLayer = sheen
+
+        // Soft natural shadow — not colored, just depth.
+        container.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
+        container.layer?.shadowOffset = CGSize(width: 0, height: -3)
+        container.layer?.shadowRadius = 18
+        container.layer?.shadowOpacity = 1.0
+
+        self.glassHostView = glassHost
+        container.addSubview(glassHost)
+        glassHost.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            vibrancy.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            vibrancy.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            vibrancy.topAnchor.constraint(equalTo: container.topAnchor),
-            vibrancy.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            glassHost.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            glassHost.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            glassHost.topAnchor.constraint(equalTo: container.topAnchor),
+            glassHost.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
-
-        // Status dot — now a glowing orb
-        let dot = NSView(frame: .zero)
-        dot.wantsLayer = true
-        dot.layer?.cornerRadius = 6
-        dot.layer?.backgroundColor = Self.dotBlue.cgColor
-        dot.translatesAutoresizingMaskIntoConstraints = false
-
-        // Soft glow halo behind the dot
-        let glowLayer = CALayer()
-        glowLayer.backgroundColor = Self.dotBlue.withAlphaComponent(0.25).cgColor
-        glowLayer.cornerRadius = 10
-        glowLayer.frame = CGRect(x: -4, y: -4, width: 20, height: 20)
-        glowLayer.shadowColor = Self.dotBlue.cgColor
-        glowLayer.shadowOffset = .zero
-        glowLayer.shadowRadius = 8
-        glowLayer.shadowOpacity = 0.6
-        dot.layer?.addSublayer(glowLayer)
-        self.dotGlowLayer = glowLayer
-
-        vibrancy.addSubview(dot)
-        self.statusDot = dot
 
         // Compact status text.
         let label = NSTextField(labelWithString: "Listening 00:00")
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .labelColor
-        label.alignment = .left
+        label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        label.textColor = NSColor(calibratedWhite: 0.20, alpha: 0.85)
+        label.alignment = .center
         label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.shadow = textShadow
         label.translatesAutoresizingMaskIntoConstraints = false
-        vibrancy.addSubview(label)
+        glassHost.addSubview(label)
         self.statusTextField = label
 
         // Transcript preview grows to three wrapped lines and follows the latest partials.
@@ -382,10 +486,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         transcriptTextView.isSelectable = false
         transcriptTextView.isVerticallyResizable = true
         transcriptTextView.isHorizontallyResizable = false
-        transcriptTextView.textContainerInset = NSSize(width: 0, height: 1)
-        transcriptTextView.font = .systemFont(ofSize: 13, weight: .medium)
-        transcriptTextView.textColor = .labelColor
-        transcriptTextView.alignment = .left
+        transcriptTextView.textContainerInset = NSSize(width: 0, height: 4)
+        transcriptTextView.font = .systemFont(ofSize: 15, weight: .semibold)
+        transcriptTextView.textColor = NSColor(calibratedWhite: 0.18, alpha: 0.88)
+        transcriptTextView.alignment = .center
         transcriptTextView.textContainer?.lineBreakMode = .byWordWrapping
         transcriptTextView.textContainer?.widthTracksTextView = true
 
@@ -400,45 +504,60 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         transcriptScrollView.documentView = transcriptTextView
         transcriptScrollView.translatesAutoresizingMaskIntoConstraints = false
         transcriptScrollView.isHidden = true
-        vibrancy.addSubview(transcriptScrollView)
+        glassHost.addSubview(transcriptScrollView)
         self.transcriptTextView = transcriptTextView
         self.transcriptScrollView = transcriptScrollView
 
         NSLayoutConstraint.activate([
-            dot.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 16),
-            dot.centerYAnchor.constraint(equalTo: vibrancy.centerYAnchor),
-            dot.widthAnchor.constraint(equalToConstant: 12),
-            dot.heightAnchor.constraint(equalToConstant: 12),
+            label.leadingAnchor.constraint(equalTo: glassHost.leadingAnchor, constant: 20),
+            label.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -20),
+            label.centerYAnchor.constraint(equalTo: glassHost.centerYAnchor),
 
-            label.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 36),
-            label.trailingAnchor.constraint(equalTo: vibrancy.trailingAnchor, constant: -16),
-            label.centerYAnchor.constraint(equalTo: vibrancy.centerYAnchor),
-
-            transcriptScrollView.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 36),
-            transcriptScrollView.trailingAnchor.constraint(equalTo: vibrancy.trailingAnchor, constant: -16),
-            transcriptScrollView.topAnchor.constraint(equalTo: vibrancy.topAnchor, constant: 12),
-            transcriptScrollView.bottomAnchor.constraint(equalTo: vibrancy.bottomAnchor, constant: -12)
+            transcriptScrollView.leadingAnchor.constraint(equalTo: glassHost.leadingAnchor, constant: 24),
+            transcriptScrollView.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -24),
+            transcriptScrollView.topAnchor.constraint(equalTo: glassHost.topAnchor, constant: 16),
+            transcriptScrollView.bottomAnchor.constraint(equalTo: glassHost.bottomAnchor, constant: -16)
         ])
 
-        panel.contentView = container
+        canvas.addSubview(container)
+        container.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            container.leadingAnchor.constraint(equalTo: canvas.leadingAnchor, constant: Self.windowPadding),
+            container.trailingAnchor.constraint(equalTo: canvas.trailingAnchor, constant: -Self.windowPadding),
+            container.topAnchor.constraint(equalTo: canvas.topAnchor, constant: Self.windowPadding),
+            container.bottomAnchor.constraint(equalTo: canvas.bottomAnchor, constant: -Self.windowPadding)
+        ])
+
+        panel.contentView = canvas
         self.window = panel
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidMove(_:)),
+            name: NSWindow.didMoveNotification,
+            object: panel
+        )
+
     }
 
-    private func animateDotColor(_ color: NSColor) {
+    @objc private func windowDidMove(_ notification: Notification) {
+        // Only treat moves as user drags during explicit reposition mode.
+        guard !isPositioningProgrammatically,
+              repositionModeEnabled,
+              let window, window.isVisible, !wasHidden else { return }
+        userDraggedPosition = window.frame.origin
+        userDidDrag = true
+    }
+
+    private func animateAura(color: NSColor) {
         guard !reduceMotion else {
-            statusDot?.layer?.backgroundColor = color.cgColor
-            dotGlowLayer?.backgroundColor = color.withAlphaComponent(0.25).cgColor
-            dotGlowLayer?.shadowColor = color.cgColor
-            containerView?.layer?.shadowColor = color.withAlphaComponent(0.35).cgColor
+            applyAuraPalette(primary: color, secondary: color.blended(withFraction: 0.35, of: Self.accentLavender) ?? color)
             return
         }
         CATransaction.begin()
         CATransaction.setAnimationDuration(0.4)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
-        statusDot?.layer?.backgroundColor = color.cgColor
-        dotGlowLayer?.backgroundColor = color.withAlphaComponent(0.25).cgColor
-        dotGlowLayer?.shadowColor = color.cgColor
-        containerView?.layer?.shadowColor = color.withAlphaComponent(0.35).cgColor
+        applyAuraPalette(primary: color, secondary: color.blended(withFraction: 0.35, of: Self.accentLavender) ?? color)
         CATransaction.commit()
     }
 
@@ -466,8 +585,39 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private func updateTranscript(_ text: String) {
         statusTextField?.isHidden = true
         transcriptScrollView?.isHidden = false
-        transcriptTextView?.string = text
-        transcriptTextView?.scrollToEndOfDocument(nil)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        paragraphStyle.lineSpacing = 1.5
+        let attributedText = NSAttributedString(
+            string: text,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
+                .foregroundColor: NSColor(calibratedWhite: 0.18, alpha: 0.88),
+                .paragraphStyle: paragraphStyle,
+                .shadow: textShadow
+            ]
+        )
+        transcriptTextView?.textStorage?.setAttributedString(attributedText)
+        centerTranscriptVertically()
+    }
+
+    /// Vertically centers transcript text when it's shorter than the scroll view.
+    private func centerTranscriptVertically() {
+        guard let scrollView = transcriptScrollView,
+              let textView = transcriptTextView else { return }
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        let textHeight = textView.layoutManager?.usedRect(for: textView.textContainer!).height ?? 0
+        let inset = textView.textContainerInset
+        let contentHeight = textHeight + inset.height * 2
+        let visibleHeight = scrollView.contentSize.height
+        if contentHeight < visibleHeight {
+            let topInset = max(0, (visibleHeight - textHeight) / 2)
+            textView.textContainerInset = NSSize(width: 0, height: topInset)
+        } else {
+            textView.textContainerInset = NSSize(width: 0, height: 4)
+            textView.scrollToEndOfDocument(nil)
+        }
     }
 
     private func applyLayout(_ newLayout: LayoutMode) {
@@ -484,9 +634,12 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         layoutMode = newLayout
         let targetSize = newLayout == .transcript ? Self.transcriptSize : Self.compactSize
-        window.setContentSize(targetSize)
+        window.setContentSize(windowSize(for: targetSize))
         updateBorderGradientFrame(for: targetSize)
         positionWindow()
+        let cornerRadius = newLayout == .transcript ? Self.transcriptCornerRadius : Self.compactCornerRadius
+        containerView?.layer?.cornerRadius = cornerRadius
+        glassHostView?.layer?.cornerRadius = cornerRadius
         if newLayout == .transcript {
             statusTextField?.isHidden = true
             transcriptScrollView?.isHidden = false
@@ -497,118 +650,59 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func updateBorderGradientFrame(for size: NSSize) {
-        guard let borderGradientLayer else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let rect = NSRect(origin: .zero, size: size)
-        borderGradientLayer.frame = rect
-
-        // Rebuild the border mask for the new size
-        let borderMask = CAShapeLayer()
-        let outerPath = NSBezierPath(roundedRect: rect, xRadius: 22, yRadius: 22)
-        let innerRect = rect.insetBy(dx: 1.0, dy: 1.0)
-        let innerPath = NSBezierPath(roundedRect: innerRect, xRadius: 21, yRadius: 21)
-        outerPath.append(innerPath.reversed)
-        borderMask.path = outerPath.cgPathFallback
-        borderMask.fillRule = .evenOdd
-        borderGradientLayer.mask = borderMask
+        auraPrimaryLayer?.frame = CGRect(x: -36, y: -18, width: rect.width + 72, height: rect.height + 54)
+        auraSecondaryLayer?.frame = CGRect(x: rect.width * 0.08, y: -32, width: rect.width * 0.82, height: rect.height + 64)
+        backgroundImageLayer?.frame = rect
+        scrimLayer?.frame = rect
+        glassTintLayer?.frame = rect
+        sheenLayer?.frame = rect
         CATransaction.commit()
+    }
+
+    private func windowSize(for bubbleSize: NSSize) -> NSSize {
+        NSSize(
+            width: bubbleSize.width + (Self.windowPadding * 2),
+            height: bubbleSize.height + (Self.windowPadding * 2)
+        )
     }
 
     private func startDotPulse() {
         stopDotPulse()
-        dotPulseHigh = true
-        statusDot?.alphaValue = 1.0
-        dotGlowLayer?.opacity = 1.0
-
-        // Breathing glow animation on the halo
-        let newTimer = Timer(timeInterval: 1.2, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.dotPulseHigh.toggle()
-                let targetOpacity: CGFloat = self.dotPulseHigh ? 1.0 : 0.35
-                let glowScale: CGFloat = self.dotPulseHigh ? 1.0 : 0.7
-
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.9
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    self.statusDot?.animator().alphaValue = targetOpacity
-                }
-
-                // Glow layer breathes in/out
-                CATransaction.begin()
-                CATransaction.setAnimationDuration(0.9)
-                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
-                self.dotGlowLayer?.opacity = Float(self.dotPulseHigh ? 0.8 : 0.2)
-                self.dotGlowLayer?.transform = CATransform3DMakeScale(glowScale, glowScale, 1)
-                // Ambient shadow breathes too
-                self.containerView?.layer?.shadowRadius = self.dotPulseHigh ? 24 : 16
-                self.containerView?.layer?.shadowOpacity = self.dotPulseHigh ? 1.0 : 0.5
-                CATransaction.commit()
-            }
-        }
-        RunLoop.current.add(newTimer, forMode: .common)
-        pulseTimer = newTimer
-
-        // Start the animated gradient border rotation
+        addBreathingAnimation(to: auraPrimaryLayer, key: "primaryBreath", scale: 1.08, opacity: 1.0)
+        addBreathingAnimation(to: auraSecondaryLayer, key: "secondaryBreath", scale: 1.12, opacity: 0.86, duration: 3.8)
+        addDriftAnimation(to: auraSecondaryLayer)
         startBorderAnimation()
     }
 
     private func stopDotPulse() {
-        pulseTimer?.invalidate()
-        pulseTimer = nil
-        statusDot?.alphaValue = 1.0
-        dotGlowLayer?.opacity = 1.0
-        dotGlowLayer?.transform = CATransform3DIdentity
-        containerView?.layer?.shadowRadius = 24
-        containerView?.layer?.shadowOpacity = 1.0
+        auraPrimaryLayer?.removeAllAnimations()
+        auraSecondaryLayer?.removeAllAnimations()
+        auraPrimaryLayer?.transform = CATransform3DIdentity
+        auraSecondaryLayer?.transform = CATransform3DIdentity
+        auraPrimaryLayer?.opacity = 0.92
+        auraSecondaryLayer?.opacity = 0.88
+        containerView?.layer?.shadowRadius = 28
+        containerView?.layer?.shadowOpacity = 0.85
         stopBorderAnimation()
     }
 
     private func startBorderAnimation() {
-        guard !reduceMotion else { return }
-        guard let borderGradientLayer else { return }
-        guard borderGradientLayer.animation(forKey: "borderRotation") == nil else { return }
-
-        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
-        rotation.fromValue = 0
-        rotation.toValue = Double.pi * 2
-        rotation.duration = 8
-        rotation.repeatCount = .infinity
-        rotation.isRemovedOnCompletion = false
-        borderGradientLayer.add(rotation, forKey: "borderRotation")
+        // No-op: keeping the hook avoids broader overlay plumbing changes.
     }
 
     private func stopBorderAnimation() {
-        borderGradientLayer?.removeAnimation(forKey: "borderRotation")
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        borderGradientLayer?.transform = CATransform3DIdentity
-        CATransaction.commit()
+        // No-op.
     }
 
     private func updateBorderColors(for color: NSColor) {
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.4)
-        borderGradientLayer?.colors = [
-            color.withAlphaComponent(0.5).cgColor,
-            color.withAlphaComponent(0.2).cgColor,
-            color.withAlphaComponent(0.35).cgColor,
-            color.withAlphaComponent(0.5).cgColor
-        ]
-        CATransaction.commit()
+        animateAura(color: color)
     }
 
     private func resetBorderToAccent() {
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(0.4)
-        borderGradientLayer?.colors = [
-            Self.dotBlue.withAlphaComponent(0.5).cgColor,
-            Self.dotSkyBlue.withAlphaComponent(0.3).cgColor,
-            Self.dotLavender.withAlphaComponent(0.4).cgColor,
-            Self.dotBlue.withAlphaComponent(0.5).cgColor
-        ]
-        CATransaction.commit()
+        animateAura(color: Self.accentBlue)
     }
 
     private func playSuccessBounce() {
@@ -629,6 +723,83 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             }
         }
         CATransaction.commit()
+    }
+
+    private func applyAuraPalette(primary: NSColor, secondary: NSColor) {
+        auraPrimaryLayer?.colors = [
+            primary.withAlphaComponent(0.22).cgColor,
+            secondary.withAlphaComponent(0.08).cgColor,
+            NSColor.clear.cgColor
+        ]
+        auraSecondaryLayer?.colors = [
+            secondary.withAlphaComponent(0.14).cgColor,
+            primary.withAlphaComponent(0.04).cgColor,
+            NSColor.clear.cgColor
+        ]
+        sheenLayer?.colors = [
+            NSColor.white.withAlphaComponent(0.50).cgColor,
+            NSColor.white.withAlphaComponent(0.12).cgColor,
+            NSColor.clear.cgColor
+        ]
+        glassTintLayer?.colors = [
+            primary.withAlphaComponent(0.04).cgColor,
+            NSColor.white.withAlphaComponent(0.02).cgColor,
+            secondary.withAlphaComponent(0.06).cgColor
+        ]
+        // Subtle tinted border.
+        glassHostView?.layer?.borderColor = primary.blended(
+            withFraction: 0.5, of: .white
+        )?.withAlphaComponent(0.30).cgColor
+        containerView?.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
+    }
+
+    private var textShadow: NSShadow {
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.white.withAlphaComponent(0.60)
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        shadow.shadowBlurRadius = 3
+        return shadow
+    }
+
+    private func addBreathingAnimation(
+        to layer: CALayer?,
+        key: String,
+        scale: CGFloat,
+        opacity: Float,
+        duration: CFTimeInterval = 3.1
+    ) {
+        guard !reduceMotion, let layer else { return }
+        let animation = CAAnimationGroup()
+
+        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnimation.fromValue = 0.96
+        scaleAnimation.toValue = scale
+        scaleAnimation.autoreverses = true
+
+        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
+        opacityAnimation.fromValue = opacity * 0.72
+        opacityAnimation.toValue = opacity
+        opacityAnimation.autoreverses = true
+
+        animation.animations = [scaleAnimation, opacityAnimation]
+        animation.duration = duration
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: key)
+    }
+
+    private func addDriftAnimation(to layer: CALayer?) {
+        guard !reduceMotion, let layer else { return }
+        let drift = CABasicAnimation(keyPath: "transform.translation.x")
+        drift.fromValue = -8
+        drift.toValue = 8
+        drift.duration = 5.4
+        drift.autoreverses = true
+        drift.repeatCount = .infinity
+        drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        drift.isRemovedOnCompletion = false
+        layer.add(drift, forKey: "drift")
     }
 
     private func startTimer() {
@@ -663,6 +834,17 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func positionWindow() {
         guard let window else { return }
+
+        // If the user dragged the overlay, keep it where they put it.
+        if let draggedOrigin = userDraggedPosition {
+            isPositioningProgrammatically = true
+            window.setFrameOrigin(draggedOrigin)
+            isPositioningProgrammatically = false
+            return
+        }
+
+        isPositioningProgrammatically = true
+        defer { isPositioningProgrammatically = false }
 
         if let anchoredOrigin = anchoredWindowOrigin(for: window) {
             window.setFrameOrigin(anchoredOrigin)
@@ -896,6 +1078,42 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         let x = screenFrame.origin.x + (screenFrame.width - window.frame.width) / 2
         let y = screenFrame.origin.y + screenFrame.height - window.frame.height - 40
         window.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private static func loadBackgroundImage() -> NSImage? {
+        // Try the app's asset catalog first.
+        if let img = NSImage(named: "RecordBackground") {
+            return img
+        }
+        // Fallback: search the main bundle for the loose file.
+        if let url = Bundle.main.url(forResource: "record-background", withExtension: "png") {
+            return NSImage(contentsOf: url)
+        }
+        #if DEBUG
+        // Debug fallback for standalone preview harness.
+        let devPath = "/tmp/record-background.png"
+        if FileManager.default.fileExists(atPath: devPath) {
+            return NSImage(contentsOfFile: devPath)
+        }
+        #endif
+        return nil
+    }
+
+    private func endInteractiveRepositionMode(notify: Bool = true) {
+        repositionModeTask?.cancel()
+        repositionModeTask = nil
+        repositionModeEnabled = false
+        window?.ignoresMouseEvents = true
+        window?.isMovableByWindowBackground = false
+        if notify {
+            notifyDragIfNeeded()
+        }
+    }
+
+    private func notifyDragIfNeeded() {
+        guard userDidDrag, let position = userDraggedPosition else { return }
+        userDidDrag = false
+        onUserDraggedToPosition?(position)
     }
 
     @objc

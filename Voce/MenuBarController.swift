@@ -82,6 +82,11 @@ final class MenuBarController: NSObject {
         handsFreeItem.target = self
         menu.addItem(handsFreeItem)
 
+        let repositionItem = NSMenuItem(title: "Reposition Overlay", action: #selector(repositionOverlayAction), keyEquivalent: "")
+        repositionItem.target = self
+        repositionItem.isEnabled = controller?.isRecording == true
+        menu.addItem(repositionItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Voce", action: #selector(quitAction), keyEquivalent: "q")
@@ -99,6 +104,10 @@ final class MenuBarController: NSObject {
 
     @objc private func toggleHandsFreeAction() {
         controller?.toggleHandsFree()
+    }
+
+    @objc private func repositionOverlayAction() {
+        controller?.beginOverlayRepositionMode()
     }
 
     @objc private func checkForUpdatesAction() {

@@ -148,6 +148,7 @@ struct SettingsView: View {
             InsertionSettingsSection(preferences: $preferencesDraft)
             MediaSettingsSection(preferences: $preferencesDraft)
             CleanupStyleSettingsSection(preferences: $preferencesDraft)
+            AnchorOverrideSettingsSection(preferences: $preferencesDraft)
         case .vocabulary:
             LexiconSettingsSection(preferences: $preferencesDraft)
             SnippetsSettingsSection(preferences: $preferencesDraft)
@@ -186,7 +187,7 @@ private enum SettingsGroup: String, CaseIterable {
     var subtitle: String {
         switch self {
         case .setup: return "Permissions, hotkeys, engine"
-        case .behavior: return "Insertion, media, cleanup"
+        case .behavior: return "Insertion, media, cleanup, overlay"
         case .vocabulary: return "Lexicon, snippets, voice"
         case .general: return "Launch, visibility, onboarding"
         }
