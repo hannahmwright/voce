@@ -597,20 +597,37 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         }
 
         if permissionStatus == .notDetermined {
-            var permissionGranted = false
+            let permissionState = PermissionRequestState()
             let semaphore = DispatchSemaphore(value: 0)
 
             AVCaptureDevice.requestAccess(for: .audio) { granted in
-                permissionGranted = granted
+                permissionState.setGranted(granted)
                 semaphore.signal()
             }
 
             semaphore.wait()
 
-            if !permissionGranted {
+            if !permissionState.granted {
                 throw MoonshineTranscriptionError.microphonePermissionDenied
             }
         }
+    }
+}
+
+private final class PermissionRequestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedGranted = false
+
+    var granted: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedGranted
+    }
+
+    func setGranted(_ granted: Bool) {
+        lock.lock()
+        storedGranted = granted
+        lock.unlock()
     }
 }
 

@@ -60,6 +60,13 @@ public protocol OverlayPresenter: AnyObject {
 
     /// Hides the overlay.
     func hide()
+
+    /// Plays a satisfying scale-up pop and fades out. Falls back to `hide()`.
+    func popAndHide()
+}
+
+extension OverlayPresenter {
+    public func popAndHide() { hide() }
 }
 
 /// Pauses and resumes system media playback during recording sessions.

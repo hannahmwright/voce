@@ -3,6 +3,28 @@ import AppKit
 import ApplicationServices
 import QuartzCore
 
+// MARK: - NSBezierPath → CGPath
+
+private extension NSBezierPath {
+    var cgPathFallback: CGPath {
+        let path = CGMutablePath()
+        var points = [CGPoint](repeating: .zero, count: 3)
+        for i in 0..<elementCount {
+            let kind = element(at: i, associatedPoints: &points)
+            switch kind {
+            case .moveTo:  path.move(to: points[0])
+            case .lineTo:  path.addLine(to: points[0])
+            case .curveTo: path.addCurve(to: points[2], control1: points[0], control2: points[1])
+            case .closePath: path.closeSubpath()
+            case .cubicCurveTo: path.addCurve(to: points[2], control1: points[0], control2: points[1])
+            case .quadraticCurveTo: path.addQuadCurve(to: points[1], control: points[0])
+            @unknown default: break
+            }
+        }
+        return path
+    }
+}
+
 @MainActor
 public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private enum LayoutMode {
@@ -24,7 +46,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private var window: NSWindow?
+    private var containerView: NSView?
     private var statusDot: NSView?
+    private var dotGlowLayer: CALayer?
+    private var borderGradientLayer: CAGradientLayer?
     private var statusTextField: NSTextField?
     private var transcriptScrollView: NSScrollView?
     private var transcriptTextView: NSTextView?
@@ -39,6 +64,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var lastLiveTranscriptText: String = ""
 
     private static let dotBlue = NSColor(red: 0.32, green: 0.60, blue: 0.82, alpha: 1.0)
+    private static let dotSkyBlue = NSColor(red: 0.62, green: 0.78, blue: 0.90, alpha: 1.0)
+    private static let dotLavender = NSColor(red: 0.72, green: 0.70, blue: 0.84, alpha: 1.0)
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -97,6 +124,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             updateTranscript("Transcribing…")
             stopTimer()
             animateDotColor(Self.dotBlue)
+            resetBorderToAccent()
             startDotPulse()
 
         case .liveTranscript(let text, _):
@@ -105,6 +133,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             lastLiveTranscriptText = text
             updateTranscript(text)
             animateDotColor(Self.dotBlue)
+            resetBorderToAccent()
             startDotPulse()
 
         case .transcribing:
@@ -112,6 +141,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             applyLayout(.transcript)
             updateTranscript(lastLiveTranscriptText.isEmpty ? "Transcribing…" : lastLiveTranscriptText)
             animateDotColor(.systemOrange)
+            updateBorderColors(for: .systemOrange)
             startDotPulse()
 
         case .inserted:
@@ -120,6 +150,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopDotPulse()
             updateText("Inserted")
             animateDotColor(.systemGreen)
+            updateBorderColors(for: .systemGreen)
+            playSuccessBounce()
 
         case .copiedOnly:
             applyLayout(.compact)
@@ -127,6 +159,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopDotPulse()
             updateText("Copied to clipboard")
             animateDotColor(.systemOrange)
+            updateBorderColors(for: .systemOrange)
 
         case .failure(let message):
             applyLayout(.compact)
@@ -134,26 +167,68 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             stopDotPulse()
             updateText("Error: \(message)")
             animateDotColor(.systemRed)
+            updateBorderColors(for: .systemRed)
         }
 
         positionWindow()
 
         if isFirstShow && !reduceMotion {
-            // Entrance animation: fade in + slide up
+            // Entrance animation: fade in + slide up + gentle scale
             window?.alphaValue = 0
             let finalOrigin = window?.frame.origin ?? .zero
-            window?.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y - 20))
+            window?.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y - 12))
+            containerView?.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
             window?.orderFrontRegardless()
+
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.3
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.duration = 0.4
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1) // spring-like
                 self.window?.animator().alphaValue = 1
                 self.window?.animator().setFrameOrigin(finalOrigin)
             }
+
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.5)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1))
+            containerView?.layer?.transform = CATransform3DIdentity
+            CATransaction.commit()
         } else {
             window?.alphaValue = 1
             window?.orderFrontRegardless()
         }
+    }
+
+    public func popAndHide() {
+        stopTimer()
+        stopDotPulse()
+        wasHidden = true
+        anchorSnapshot = nil
+        lastLiveTranscriptText = ""
+
+        guard !reduceMotion else {
+            window?.orderOut(nil)
+            return
+        }
+
+        // Pop: scale up + fade out simultaneously
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.3)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1))
+        containerView?.layer?.transform = CATransform3DMakeScale(1.08, 1.08, 1)
+        containerView?.layer?.opacity = 0
+        CATransaction.commit()
+
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+            self.window?.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.window?.orderOut(nil)
+                self?.containerView?.layer?.transform = CATransform3DIdentity
+                self?.containerView?.layer?.opacity = 1
+            }
+        })
     }
 
     public func hide() {
@@ -164,11 +239,25 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         lastLiveTranscriptText = ""
 
         if !reduceMotion {
+            // Exit: fade out + subtle scale down + slide down
+            let currentOrigin = window?.frame.origin ?? .zero
+
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.25)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeIn))
+            containerView?.layer?.transform = CATransform3DMakeScale(0.97, 0.97, 1)
+            CATransaction.commit()
+
             NSAnimationContext.runAnimationGroup({ context in
-                context.duration = 0.2
+                context.duration = 0.25
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 self.window?.animator().alphaValue = 0
-            }, completionHandler: {
-                self.window?.orderOut(nil)
+                self.window?.animator().setFrameOrigin(NSPoint(x: currentOrigin.x, y: currentOrigin.y - 6))
+            }, completionHandler: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.window?.orderOut(nil)
+                    self?.containerView?.layer?.transform = CATransform3DIdentity
+                }
             })
         } else {
             window?.orderOut(nil)
@@ -211,12 +300,40 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         container.wantsLayer = true
         container.layer?.cornerRadius = 22
         container.layer?.masksToBounds = false
-        container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
-        container.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
-        container.layer?.shadowOffset = CGSize(width: 0, height: -2)
-        container.layer?.shadowRadius = 20
+        self.containerView = container
+
+        // Animated gradient border layer
+        let borderGradient = CAGradientLayer()
+        borderGradient.type = .conic
+        borderGradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+        borderGradient.endPoint = CGPoint(x: 0.5, y: 0)
+        borderGradient.colors = [
+            Self.dotBlue.withAlphaComponent(0.5).cgColor,
+            Self.dotSkyBlue.withAlphaComponent(0.3).cgColor,
+            Self.dotLavender.withAlphaComponent(0.4).cgColor,
+            Self.dotBlue.withAlphaComponent(0.5).cgColor
+        ]
+        borderGradient.frame = contentRect
+        borderGradient.cornerRadius = 22
+
+        // Mask the gradient to only show as a border ring
+        let borderMask = CAShapeLayer()
+        let outerPath = NSBezierPath(roundedRect: contentRect, xRadius: 22, yRadius: 22)
+        let innerRect = contentRect.insetBy(dx: 1.0, dy: 1.0)
+        let innerPath = NSBezierPath(roundedRect: innerRect, xRadius: 21, yRadius: 21)
+        outerPath.append(innerPath.reversed)
+        borderMask.path = outerPath.cgPathFallback
+        borderMask.fillRule = .evenOdd
+        borderGradient.mask = borderMask
+        container.layer?.addSublayer(borderGradient)
+        self.borderGradientLayer = borderGradient
+
+        // Ambient glow shadow — colored to match state
+        container.layer?.shadowColor = Self.dotBlue.withAlphaComponent(0.35).cgColor
+        container.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        container.layer?.shadowRadius = 24
         container.layer?.shadowOpacity = 1
+
         container.addSubview(vibrancy)
         vibrancy.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -226,12 +343,25 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             vibrancy.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
-        // Status dot
+        // Status dot — now a glowing orb
         let dot = NSView(frame: .zero)
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 6
         dot.layer?.backgroundColor = Self.dotBlue.cgColor
         dot.translatesAutoresizingMaskIntoConstraints = false
+
+        // Soft glow halo behind the dot
+        let glowLayer = CALayer()
+        glowLayer.backgroundColor = Self.dotBlue.withAlphaComponent(0.25).cgColor
+        glowLayer.cornerRadius = 10
+        glowLayer.frame = CGRect(x: -4, y: -4, width: 20, height: 20)
+        glowLayer.shadowColor = Self.dotBlue.cgColor
+        glowLayer.shadowOffset = .zero
+        glowLayer.shadowRadius = 8
+        glowLayer.shadowOpacity = 0.6
+        dot.layer?.addSublayer(glowLayer)
+        self.dotGlowLayer = glowLayer
+
         vibrancy.addSubview(dot)
         self.statusDot = dot
 
@@ -297,11 +427,18 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private func animateDotColor(_ color: NSColor) {
         guard !reduceMotion else {
             statusDot?.layer?.backgroundColor = color.cgColor
+            dotGlowLayer?.backgroundColor = color.withAlphaComponent(0.25).cgColor
+            dotGlowLayer?.shadowColor = color.cgColor
+            containerView?.layer?.shadowColor = color.withAlphaComponent(0.35).cgColor
             return
         }
         CATransaction.begin()
-        CATransaction.setAnimationDuration(0.25)
+        CATransaction.setAnimationDuration(0.4)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
         statusDot?.layer?.backgroundColor = color.cgColor
+        dotGlowLayer?.backgroundColor = color.withAlphaComponent(0.25).cgColor
+        dotGlowLayer?.shadowColor = color.cgColor
+        containerView?.layer?.shadowColor = color.withAlphaComponent(0.35).cgColor
         CATransaction.commit()
     }
 
@@ -315,11 +452,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.1
             self.statusTextField?.animator().alphaValue = 0
-        }, completionHandler: {
-            self.statusTextField?.stringValue = newText
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
-                self.statusTextField?.animator().alphaValue = 1
+        }, completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.statusTextField?.stringValue = newText
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.15
+                    self?.statusTextField?.animator().alphaValue = 1
+                }
             }
         })
     }
@@ -346,6 +485,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         layoutMode = newLayout
         let targetSize = newLayout == .transcript ? Self.transcriptSize : Self.compactSize
         window.setContentSize(targetSize)
+        updateBorderGradientFrame(for: targetSize)
         positionWindow()
         if newLayout == .transcript {
             statusTextField?.isHidden = true
@@ -356,28 +496,139 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
     }
 
+    private func updateBorderGradientFrame(for size: NSSize) {
+        guard let borderGradientLayer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let rect = NSRect(origin: .zero, size: size)
+        borderGradientLayer.frame = rect
+
+        // Rebuild the border mask for the new size
+        let borderMask = CAShapeLayer()
+        let outerPath = NSBezierPath(roundedRect: rect, xRadius: 22, yRadius: 22)
+        let innerRect = rect.insetBy(dx: 1.0, dy: 1.0)
+        let innerPath = NSBezierPath(roundedRect: innerRect, xRadius: 21, yRadius: 21)
+        outerPath.append(innerPath.reversed)
+        borderMask.path = outerPath.cgPathFallback
+        borderMask.fillRule = .evenOdd
+        borderGradientLayer.mask = borderMask
+        CATransaction.commit()
+    }
+
     private func startDotPulse() {
         stopDotPulse()
         dotPulseHigh = true
         statusDot?.alphaValue = 1.0
-        let newTimer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
+        dotGlowLayer?.opacity = 1.0
+
+        // Breathing glow animation on the halo
+        let newTimer = Timer(timeInterval: 1.2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.dotPulseHigh.toggle()
+                let targetOpacity: CGFloat = self.dotPulseHigh ? 1.0 : 0.35
+                let glowScale: CGFloat = self.dotPulseHigh ? 1.0 : 0.7
+
                 NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.6
-                    self.statusDot?.animator().alphaValue = self.dotPulseHigh ? 1.0 : 0.4
+                    context.duration = 0.9
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    self.statusDot?.animator().alphaValue = targetOpacity
                 }
+
+                // Glow layer breathes in/out
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.9)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+                self.dotGlowLayer?.opacity = Float(self.dotPulseHigh ? 0.8 : 0.2)
+                self.dotGlowLayer?.transform = CATransform3DMakeScale(glowScale, glowScale, 1)
+                // Ambient shadow breathes too
+                self.containerView?.layer?.shadowRadius = self.dotPulseHigh ? 24 : 16
+                self.containerView?.layer?.shadowOpacity = self.dotPulseHigh ? 1.0 : 0.5
+                CATransaction.commit()
             }
         }
         RunLoop.current.add(newTimer, forMode: .common)
         pulseTimer = newTimer
+
+        // Start the animated gradient border rotation
+        startBorderAnimation()
     }
 
     private func stopDotPulse() {
         pulseTimer?.invalidate()
         pulseTimer = nil
         statusDot?.alphaValue = 1.0
+        dotGlowLayer?.opacity = 1.0
+        dotGlowLayer?.transform = CATransform3DIdentity
+        containerView?.layer?.shadowRadius = 24
+        containerView?.layer?.shadowOpacity = 1.0
+        stopBorderAnimation()
+    }
+
+    private func startBorderAnimation() {
+        guard !reduceMotion else { return }
+        guard let borderGradientLayer else { return }
+        guard borderGradientLayer.animation(forKey: "borderRotation") == nil else { return }
+
+        let rotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        rotation.fromValue = 0
+        rotation.toValue = Double.pi * 2
+        rotation.duration = 8
+        rotation.repeatCount = .infinity
+        rotation.isRemovedOnCompletion = false
+        borderGradientLayer.add(rotation, forKey: "borderRotation")
+    }
+
+    private func stopBorderAnimation() {
+        borderGradientLayer?.removeAnimation(forKey: "borderRotation")
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        borderGradientLayer?.transform = CATransform3DIdentity
+        CATransaction.commit()
+    }
+
+    private func updateBorderColors(for color: NSColor) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.4)
+        borderGradientLayer?.colors = [
+            color.withAlphaComponent(0.5).cgColor,
+            color.withAlphaComponent(0.2).cgColor,
+            color.withAlphaComponent(0.35).cgColor,
+            color.withAlphaComponent(0.5).cgColor
+        ]
+        CATransaction.commit()
+    }
+
+    private func resetBorderToAccent() {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.4)
+        borderGradientLayer?.colors = [
+            Self.dotBlue.withAlphaComponent(0.5).cgColor,
+            Self.dotSkyBlue.withAlphaComponent(0.3).cgColor,
+            Self.dotLavender.withAlphaComponent(0.4).cgColor,
+            Self.dotBlue.withAlphaComponent(0.5).cgColor
+        ]
+        CATransaction.commit()
+    }
+
+    private func playSuccessBounce() {
+        guard !reduceMotion else { return }
+
+        // Quick scale up then settle back — a satisfying "pop"
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.15)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        containerView?.layer?.transform = CATransform3DMakeScale(1.03, 1.03, 1)
+        CATransaction.setCompletionBlock { [weak self] in
+            Task { @MainActor [weak self] in
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.3)
+                CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1))
+                self?.containerView?.layer?.transform = CATransform3DIdentity
+                CATransaction.commit()
+            }
+        }
+        CATransaction.commit()
     }
 
     private func startTimer() {

@@ -114,7 +114,9 @@ final class DictationController: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.teardown()
+            Task { @MainActor [weak self] in
+                self?.teardown()
+            }
         }
 
         Task {
@@ -699,9 +701,11 @@ final class DictationController: ObservableObject {
                 case .inserted:
                     status = "Transcript inserted."
                     lastError = ""
+                    overlay.show(state: .inserted)
                 case .copiedOnly:
                     status = copiedOnlyStatusMessage(for: result)
                     lastError = result.errorMessage ?? ""
+                    overlay.show(state: .copiedOnly)
                 case .failed:
                     status = "Transcript ready but insertion failed."
                     let reason = result.errorMessage ?? "Insertion chain exhausted."
@@ -724,7 +728,7 @@ final class DictationController: ObservableObject {
                     }
                 }
 
-                dismissOverlaySoon()
+                dismissOverlaySoon(pop: result.status == .inserted)
                 await refreshHistory()
                 recordingStateMachine.markTranscriptionCompleted()
                 await applyDeferredRebuildIfNeeded()
@@ -739,10 +743,14 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func dismissOverlaySoon() {
+    private func dismissOverlaySoon(pop: Bool = false) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
-            overlay.hide()
+            if pop {
+                overlay.popAndHide()
+            } else {
+                overlay.hide()
+            }
         }
     }
 

@@ -71,6 +71,10 @@ final class MenuBarController: NSObject {
         showItem.target = self
         menu.addItem(showItem)
 
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
+
         menu.addItem(.separator())
 
         let handsFreeTitle = controller?.handsFreeOn == true ? "Stop Hands-Free" : "Start Hands-Free"
@@ -95,6 +99,10 @@ final class MenuBarController: NSObject {
 
     @objc private func toggleHandsFreeAction() {
         controller?.toggleHandsFree()
+    }
+
+    @objc private func checkForUpdatesAction() {
+        NotificationCenter.default.post(name: .voceCheckForUpdatesRequested, object: nil)
     }
 
     @objc private func quitAction() {

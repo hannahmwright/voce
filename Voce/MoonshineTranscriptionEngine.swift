@@ -1,4 +1,4 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 import MoonshineVoice
 import VoceKit
@@ -150,17 +150,17 @@ struct MoonshineTranscriptionEngine: TranscriptionEngine, Sendable {
             throw MoonshineTranscriptionError.failedToReadAudio("Failed to allocate output buffer")
         }
 
-        var didSupplyInput = false
+        let conversionState = AudioConversionInputState(inputBuffer: inputBuffer)
         var conversionError: NSError?
         let status = converter.convert(to: outputBuffer, error: &conversionError) { _, outStatus in
-            if didSupplyInput {
+            if conversionState.didSupplyInput {
                 outStatus.pointee = .endOfStream
                 return nil
             }
 
-            didSupplyInput = true
+            conversionState.didSupplyInput = true
             outStatus.pointee = .haveData
-            return inputBuffer
+            return conversionState.inputBuffer
         }
 
         if let conversionError {
@@ -174,5 +174,29 @@ struct MoonshineTranscriptionEngine: TranscriptionEngine, Sendable {
         let frameLength = Int(outputBuffer.frameLength)
         let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
         return (samples, Int32(outputFormat.sampleRate))
+    }
+}
+
+private final class AudioConversionInputState: @unchecked Sendable {
+    let inputBuffer: AVAudioPCMBuffer
+
+    private let lock = NSLock()
+    private var storedDidSupplyInput = false
+
+    init(inputBuffer: AVAudioPCMBuffer) {
+        self.inputBuffer = inputBuffer
+    }
+
+    var didSupplyInput: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedDidSupplyInput
+        }
+        set {
+            lock.lock()
+            storedDidSupplyInput = newValue
+            lock.unlock()
+        }
     }
 }

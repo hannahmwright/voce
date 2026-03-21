@@ -27,11 +27,20 @@ struct VoceApp: App {
         .defaultSize(width: VoceDesign.windowIdealWidth, height: VoceDesign.windowIdealHeight)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updaterController.checkForUpdates()
+                }
+                .disabled(!updaterController.canCheckForUpdates)
+            }
         }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var suppressedInitialWindowForBackgroundLaunch = false
+    private lazy var launchPreferences = loadLaunchPreferences()
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -40,15 +49,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Delay slightly so the window is fully created before configuring transparency
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.configureTransparentWindows()
+            self.suppressInitialWindowIfNeeded()
         }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard suppressedInitialWindowForBackgroundLaunch else {
+            return
+        }
+
+        showPrimaryWindowIfNeeded()
+        suppressedInitialWindowForBackgroundLaunch = false
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
-            if let reopenWindow = sender.windows.first(where: { !($0 is NSPanel) && $0.canBecomeMain }) {
-                reopenWindow.makeKeyAndOrderFront(nil)
-                configureTransparentWindows()
-            }
+            showPrimaryWindowIfNeeded()
         }
         return true
     }
@@ -73,5 +89,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return window.title == "Voce"
+    }
+
+    @MainActor
+    private func suppressInitialWindowIfNeeded() {
+        guard !NSApp.isActive else {
+            return
+        }
+
+        guard launchPreferences.general.launchAtLoginEnabled else {
+            return
+        }
+
+        let primaryWindows = NSApp.windows.filter(isPrimaryVoceWindow(_:))
+        guard !primaryWindows.isEmpty else {
+            return
+        }
+
+        primaryWindows.forEach { $0.orderOut(nil) }
+        suppressedInitialWindowForBackgroundLaunch = true
+    }
+
+    @MainActor
+    private func showPrimaryWindowIfNeeded() {
+        guard let window = NSApp.windows.first(where: isPrimaryVoceWindow(_:)) else {
+            return
+        }
+
+        window.makeKeyAndOrderFront(nil)
+        configureTransparentWindows()
+    }
+
+    private func loadLaunchPreferences() -> AppPreferences {
+        let storageURL = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("Voce", isDirectory: true)
+            .appendingPathComponent("preferences.json")
+
+        guard
+            let storageURL,
+            let data = try? Data(contentsOf: storageURL),
+            let preferences = try? JSONDecoder().decode(AppPreferences.self, from: data)
+        else {
+            return .default
+        }
+
+        var normalized = preferences
+        normalized.normalize()
+        return normalized
     }
 }

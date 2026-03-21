@@ -35,6 +35,7 @@ func settingsCardWithSubtitle<Content: View>(
     .cardStyle()
 }
 
+@MainActor
 func entryRow(
     leading: String,
     trailing: String? = nil,
