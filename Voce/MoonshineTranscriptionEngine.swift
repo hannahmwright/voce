@@ -120,9 +120,12 @@ struct MoonshineTranscriptionEngine: TranscriptionEngine, Sendable {
         }
 
         let inputFormat = file.processingFormat
+        // Keep the captured sample rate intact and let Moonshine resample
+        // internally. The live path already does this because app-side
+        // 24 kHz -> 16 kHz conversion hurt Bluetooth mic amplitude.
         guard let outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: 16_000,
+            sampleRate: inputFormat.sampleRate,
             channels: 1,
             interleaved: false
         ) else {
@@ -173,7 +176,7 @@ struct MoonshineTranscriptionEngine: TranscriptionEngine, Sendable {
 
         let frameLength = Int(outputBuffer.frameLength)
         let samples = Array(UnsafeBufferPointer(start: channelData, count: frameLength))
-        return (samples, Int32(outputFormat.sampleRate))
+        return (samples, Int32(outputFormat.sampleRate.rounded()))
     }
 }
 

@@ -5,6 +5,8 @@ import VoceKit
 
 @MainActor
 final class DictationController: ObservableObject {
+    private static let minimumVisibleEmptyTranscriptDurationMS = 3_000
+
     private enum RecordingStartError: LocalizedError {
         case microphonePermissionDenied
 
@@ -697,10 +699,12 @@ final class DictationController: ObservableObject {
             lastError = ""
             overlay.show(state: .transcribing)
 
+            var captureDurationMS = 0
             do {
                 guard let stopResult = try previewSession?.stop() else {
                     throw AppleSpeechPreviewError.missingOutputFile
                 }
+                captureDurationMS = stopResult.captureDurationMS
                 let rollingTranscript = await rollingFinalizer?.finish(
                     finalChunk: stopResult.finalChunk,
                     expectedChunkCount: stopResult.totalChunkCount
@@ -709,6 +713,15 @@ final class DictationController: ObservableObject {
                 let processingNote: String?
                 switch rollingTranscript {
                 case .completed(let rollingTranscript):
+                    if rollingTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        await coordinator.cancel(sessionID: sessionID)
+                        if shouldSuppressEmptyTranscriptError(captureDurationMS: stopResult.captureDurationMS) {
+                            handleShortSilentCapture()
+                            await applyDeferredRebuildIfNeeded()
+                            return
+                        }
+                        throw MoonshineTranscriptionError.emptyLiveTranscript
+                    }
                     processingNote = nil
                     result = try await coordinator.processStreamingTranscript(
                         rollingTranscript,
@@ -772,6 +785,11 @@ final class DictationController: ObservableObject {
                 recordingStateMachine.markTranscriptionCompleted()
                 await applyDeferredRebuildIfNeeded()
             } catch {
+                if shouldSuppressEmptyTranscriptError(error, captureDurationMS: captureDurationMS) {
+                    handleShortSilentCapture()
+                    await applyDeferredRebuildIfNeeded()
+                    return
+                }
                 status = "Transcription failed"
                 lastError = error.localizedDescription
                 overlay.show(state: .failure(message: error.localizedDescription))
@@ -964,6 +982,30 @@ final class DictationController: ObservableObject {
         }
 
         return "Recording stopped"
+    }
+
+    private func shouldSuppressEmptyTranscriptError(_ error: Error? = nil, captureDurationMS: Int) -> Bool {
+        guard captureDurationMS > 0, captureDurationMS < Self.minimumVisibleEmptyTranscriptDurationMS else {
+            return false
+        }
+
+        guard let error else {
+            return true
+        }
+
+        if case MoonshineTranscriptionError.emptyLiveTranscript = error {
+            return true
+        }
+
+        return false
+    }
+
+    private func handleShortSilentCapture() {
+        status = "Recording stopped"
+        lastError = ""
+        overlay.hide()
+        overlayPersistenceBundleIdentifier = nil
+        recordingStateMachine.markTranscriptionCompleted()
     }
 
     private func updateSubmitActiveRecordingHotkey() {

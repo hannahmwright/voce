@@ -154,6 +154,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         switch state {
         case .listening(let handsFree, _):
+            applyDefaultSurfaceAppearance()
             applyLayout(.transcript)
             listeningHandsFree = handsFree
             listeningStartDate = Date()
@@ -165,6 +166,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             startDotPulse()
 
         case .liveTranscript(let text, _):
+            applyDefaultSurfaceAppearance()
             applyLayout(.transcript)
             stopTimer()
             lastLiveTranscriptText = text
@@ -175,30 +177,31 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .transcribing:
             stopTimer()
-            applyLayout(.transcript)
-            updateTranscript(lastLiveTranscriptText.isEmpty ? "Transcribing…" : lastLiveTranscriptText)
-            animateAura(color: .systemOrange)
-            updateBorderColors(for: .systemOrange)
+            applyLayout(.compact)
+            hideContent()
+            resetBorderToAccent()
+            applyTranscribingSurfaceAppearance()
             startDotPulse()
 
         case .inserted:
+            applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
             stopDotPulse()
             updateText("Inserted")
-            animateAura(color: .systemGreen)
-            updateBorderColors(for: .systemGreen)
+            resetBorderToAccent()
             playSuccessBounce()
 
         case .copiedOnly:
+            applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
             stopDotPulse()
             updateText("Copied to clipboard")
-            animateAura(color: .systemOrange)
-            updateBorderColors(for: .systemOrange)
+            resetBorderToAccent()
 
         case .failure(let message):
+            applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
             stopDotPulse()
@@ -600,6 +603,43 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         )
         transcriptTextView?.textStorage?.setAttributedString(attributedText)
         centerTranscriptVertically()
+    }
+
+    private func hideContent() {
+        statusTextField?.isHidden = true
+        transcriptScrollView?.isHidden = true
+    }
+
+    private func applyDefaultSurfaceAppearance() {
+        backgroundImageLayer?.opacity = 0.70
+        scrimLayer?.colors = [
+            NSColor.white.withAlphaComponent(0.82).cgColor,
+            NSColor.white.withAlphaComponent(0.62).cgColor,
+            NSColor.white.withAlphaComponent(0.35).cgColor
+        ]
+        glassTintLayer?.colors = [
+            Self.accentCyan.withAlphaComponent(0.06).cgColor,
+            NSColor.white.withAlphaComponent(0.02).cgColor,
+            Self.accentWheat.withAlphaComponent(0.10).cgColor
+        ]
+        glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
+        glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.50).cgColor
+    }
+
+    private func applyTranscribingSurfaceAppearance() {
+        backgroundImageLayer?.opacity = 0.18
+        scrimLayer?.colors = [
+            NSColor.white.withAlphaComponent(0.96).cgColor,
+            NSColor.white.withAlphaComponent(0.90).cgColor,
+            NSColor.white.withAlphaComponent(0.82).cgColor
+        ]
+        glassTintLayer?.colors = [
+            Self.accentCyan.withAlphaComponent(0.03).cgColor,
+            NSColor.white.withAlphaComponent(0.10).cgColor,
+            Self.accentWheat.withAlphaComponent(0.05).cgColor
+        ]
+        glassHostView?.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.62).cgColor
     }
 
     /// Vertically centers transcript text when it's shorter than the scroll view.

@@ -31,6 +31,7 @@ struct CapturedAudioChunk: Sendable {
 
 struct AppleSpeechPreviewStopResult: Sendable {
     let captureURL: URL
+    let captureDurationMS: Int
     let finalChunk: CapturedAudioChunk?
     let totalChunkCount: Int
 }
@@ -204,11 +205,13 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             throw AppleSpeechPreviewError.missingOutputFile
         }
 
+        let captureDurationMS = Self.captureDurationMS(for: outputURL)
         let finalChunk = try sealActiveChunk()
         let totalChunkCount = finalChunk.map { $0.index + 1 } ?? activeChunkIndex
         self.outputURL = nil
         return AppleSpeechPreviewStopResult(
             captureURL: outputURL,
+            captureDurationMS: captureDurationMS,
             finalChunk: finalChunk,
             totalChunkCount: totalChunkCount
         )
@@ -373,6 +376,12 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("voce-live-chunk-\(index)-\(UUID().uuidString)")
             .appendingPathExtension("caf")
+    }
+
+    private static func captureDurationMS(for url: URL) -> Int {
+        guard let audioFile = try? AVAudioFile(forReading: url) else { return 0 }
+        let durationSeconds = Double(audioFile.length) / max(audioFile.processingFormat.sampleRate, 1)
+        return Int((durationSeconds * 1_000).rounded())
     }
 
     private static func windowedActivityRMS(for buffer: AVAudioPCMBuffer) -> Float {

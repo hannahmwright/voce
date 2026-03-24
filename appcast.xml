@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.19</title>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>0.4.19</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.4</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.19</h2>
+        <ul>
+          <li>Suppresses the no-transcription error for very short silent clips so quick taps under 3 seconds fail quietly instead of feeling broken</li>
+          <li>Turns the post-recording transcription delay into a cleaner pulsing bubble with no extra status color or text, and makes that bubble much more opaque</li>
+          <li>Keeps offline transcription on the captured sample rate and makes launch-at-login settings clearer for development builds outside Applications</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 24 Mar 2026 16:32:00 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.19/Voce-0.4.19.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="eIWhnMwwwPIwliwoTHpAoI8VTaBd/pOraUmnAq0zruZVwHcHMjmhDhWXsiht2WdShvl+fCU5My2X0a0StUykCA=="
+        length="33786393"
+      />
+    </item>
+    <item>
       <title>Version 0.4.18</title>
       <sparkle:version>21</sparkle:version>
       <sparkle:shortVersionString>0.4.18</sparkle:shortVersionString>
@@ -21,6 +42,27 @@
         type="application/octet-stream"
         sparkle:edSignature="B1UsD9qVU5fzIEFpl4HFP8wxy02kwX5AiRYKxvNWCd9nLnQ1KoyWCPg4m4LwrXiB5WIBJUGRAS7KFxXxvt4SBg=="
         length="34309210"
+      />
+    </item>
+    <item>
+      <title>Version 0.4.17</title>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>0.4.17</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.4</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.17</h2>
+        <ul>
+          <li>Adds Check for Updates to the app menu, menu bar menu, and a dedicated Updates card in Settings so updates are much easier to find</li>
+          <li>Lets Sparkle continue straight through install after the user accepts an update instead of asking for a redundant second confirmation</li>
+          <li>Polishes the live transcription overlay with a success pop on real insertions and keeps background startup from forcing the main window open</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sat, 21 Mar 2026 19:14:00 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.17/Voce-0.4.17.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="//k+2Fjq5WYJnum6L7VFT4Dhlp1vPhD/ufdF+8AR0V7IfvnKNuq8ewg3UmrNg7LVcQ2xklzDo/Te8AVsc/6xDA=="
+        length="34310370"
       />
     </item>
     <item>
