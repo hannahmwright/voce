@@ -85,3 +85,22 @@ func clipboardTransportReportsSkipReason() async {
     #expect(result.errorMessage == "Accessibility permission is required for auto-paste.")
     #expect(await clipboard.latestValue == "hello")
 }
+
+@Test("Clipboard transport reports inserted when auto-paste is attempted")
+func clipboardTransportReportsInsertedAfterAutoPasteAttempt() async {
+    let clipboard = MemoryClipboardService()
+    let service = InsertionService(
+        transports: [
+            ClipboardInsertionTransport(clipboard: clipboard) { _ in
+                .attempted
+            }
+        ]
+    )
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .inserted)
+    #expect(result.method == .clipboardPaste)
+    #expect(result.errorMessage == nil)
+    #expect(await clipboard.latestValue == "hello")
+}

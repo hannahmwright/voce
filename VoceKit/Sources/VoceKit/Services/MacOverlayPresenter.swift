@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import CoreImage
 import QuartzCore
 
 // MARK: - NSBezierPath → CGPath
@@ -32,10 +33,16 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         case transcript
     }
 
+    private enum PulseMode {
+        case none
+        case listening
+        case transcribing
+    }
+
     private static let axSelectedTextMarkerRangeAttribute = "AXSelectedTextMarkerRange"
     private static let axBoundsForTextMarkerRangeParameterizedAttribute = "AXBoundsForTextMarkerRange"
-    private static let compactSize = NSSize(width: 286, height: 52)
-    private static let transcriptSize = NSSize(width: 372, height: 102)
+    private static let compactSize = TranscriptOverlayLayout.compactSize
+    private static let transcriptSize = TranscriptOverlayLayout.maximumTranscriptSize
     private static let windowPadding: CGFloat = 48
 
     public struct AnchorSnapshot: Sendable, Equatable {
@@ -50,6 +57,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var containerView: NSView?
     private var glassHostView: NSView?
     private var backgroundImageLayer: CALayer?
+    private var revealedBackgroundImageLayer: CALayer?
     private var scrimLayer: CAGradientLayer?
     private var auraPrimaryLayer: CAGradientLayer?
     private var auraSecondaryLayer: CAGradientLayer?
@@ -64,7 +72,12 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var wasHidden = true
     private var anchorSnapshot: AnchorSnapshot?
     private var layoutMode: LayoutMode = .compact
+    private var activePulseMode: PulseMode = .none
+    private var hasShownLiveTranscriptInSession = false
+    private var currentBubbleSize: NSSize = TranscriptOverlayLayout.compactSize
     private var lastLiveTranscriptText: String = ""
+    private var transcriptBubbleHeight: CGFloat = TranscriptOverlayLayout.minimumTranscriptHeight
+    private var sessionPinnedOrigin: NSPoint?
     private var userDraggedPosition: NSPoint?
     private var isPositioningProgrammatically = false
     private var userDidDrag = false
@@ -82,6 +95,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private static let accentWheat = NSColor(red: 0.82, green: 0.74, blue: 0.52, alpha: 1.0)   // golden wheat
     private static let compactCornerRadius: CGFloat = 26
     private static let transcriptCornerRadius: CGFloat = 30
+    private static let initialTranscriptShellHeight: CGFloat = 78
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -129,6 +143,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     /// where the user last placed it for this app.
     public func restoreDraggedPosition(_ origin: NSPoint) {
         userDraggedPosition = origin
+        sessionPinnedOrigin = origin
     }
 
     public func beginInteractiveRepositionMode(timeout: TimeInterval = 10) {
@@ -155,11 +170,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         switch state {
         case .listening(let handsFree, _):
             applyDefaultSurfaceAppearance()
-            applyLayout(.transcript)
             listeningHandsFree = handsFree
             listeningStartDate = Date()
             lastLiveTranscriptText = ""
-            updateTranscript("Transcribing…")
+            hasShownLiveTranscriptInSession = false
+            resetTranscriptBubbleGrowth()
+            transcriptBubbleHeight = max(transcriptBubbleHeight, Self.initialTranscriptShellHeight)
+            updateTranscript("Transcribing…", preserveBubbleShell: true)
             stopTimer()
             animateAura(color: Self.accentBlue)
             resetBorderToAccent()
@@ -167,25 +184,25 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .liveTranscript(let text, _):
             applyDefaultSurfaceAppearance()
-            applyLayout(.transcript)
             stopTimer()
             lastLiveTranscriptText = text
-            updateTranscript(text)
+            updateTranscript(text, preserveBubbleShell: !hasShownLiveTranscriptInSession)
+            hasShownLiveTranscriptInSession = true
             animateAura(color: Self.accentBlue)
             resetBorderToAccent()
             startDotPulse()
 
         case .transcribing:
             stopTimer()
-            applyLayout(.compact)
+            applyContinuousBubbleLayout()
             hideContent()
             resetBorderToAccent()
             applyTranscribingSurfaceAppearance()
-            startDotPulse()
+            startTranscribingPulse()
 
         case .inserted:
             applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
+            applyContinuousBubbleLayout()
             stopTimer()
             stopDotPulse()
             updateText("Inserted")
@@ -194,7 +211,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .copiedOnly:
             applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
+            applyContinuousBubbleLayout()
             stopTimer()
             stopDotPulse()
             updateText("Copied to clipboard")
@@ -202,7 +219,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .failure(let message):
             applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
+            applyContinuousBubbleLayout()
             stopTimer()
             stopDotPulse()
             updateText("Error: \(message)")
@@ -250,6 +267,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         wasHidden = true
         anchorSnapshot = nil
         lastLiveTranscriptText = ""
+        hasShownLiveTranscriptInSession = false
+        sessionPinnedOrigin = nil
+        resetTranscriptBubbleGrowth()
         endInteractiveRepositionMode(notify: false)
         notifyDragIfNeeded()
         userDraggedPosition = nil
@@ -286,6 +306,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         wasHidden = true
         anchorSnapshot = nil
         lastLiveTranscriptText = ""
+        hasShownLiveTranscriptInSession = false
+        sessionPinnedOrigin = nil
+        resetTranscriptBubbleGrowth()
         endInteractiveRepositionMode(notify: false)
         notifyDragIfNeeded()
         userDraggedPosition = nil
@@ -396,20 +419,30 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         // Background painting — blurred, bright, airy like the app window.
         let imageLayer = CALayer()
-        if let bgImage = Self.loadBackgroundImage(), let cgImage = bgImage.cgImage(
-            forProposedRect: nil, context: nil, hints: nil
-        ) {
+        if let cgImage = Self.loadBlurredBackgroundImage() {
             imageLayer.contents = cgImage
             imageLayer.contentsGravity = .resizeAspectFill
-            // Soft blur to match the app's frosted look.
-            if let blur = CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 12]) {
-                imageLayer.filters = [blur]
-            }
+            imageLayer.minificationFilter = .trilinear
+            imageLayer.magnificationFilter = .trilinear
             imageLayer.opacity = 0.70
         }
-        imageLayer.frame = NSRect(origin: .zero, size: Self.compactSize)
+        imageLayer.frame = glassHost.bounds
+        imageLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         glassHost.layer?.addSublayer(imageLayer)
         self.backgroundImageLayer = imageLayer
+
+        let revealedImageLayer = CALayer()
+        if let cgImage = Self.loadBackgroundCGImage() {
+            revealedImageLayer.contents = cgImage
+            revealedImageLayer.contentsGravity = .resizeAspectFill
+            revealedImageLayer.minificationFilter = .trilinear
+            revealedImageLayer.magnificationFilter = .trilinear
+            revealedImageLayer.opacity = 0.0
+        }
+        revealedImageLayer.frame = glassHost.bounds
+        revealedImageLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        glassHost.layer?.addSublayer(revealedImageLayer)
+        self.revealedBackgroundImageLayer = revealedImageLayer
 
         // Light frosted scrim — white/cream, heavier in center for readability,
         // fading at edges so the painting peeks through like the app window.
@@ -423,7 +456,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         scrimLayer.locations = [0, 0.5, 1]
         scrimLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
         scrimLayer.endPoint = CGPoint(x: 1, y: 1)
-        scrimLayer.frame = NSRect(origin: .zero, size: Self.compactSize)
+        scrimLayer.frame = glassHost.bounds
+        scrimLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         glassHost.layer?.addSublayer(scrimLayer)
         self.scrimLayer = scrimLayer
 
@@ -436,7 +470,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         ]
         glassTint.startPoint = CGPoint(x: 0, y: 1)
         glassTint.endPoint = CGPoint(x: 1, y: 0)
-        glassTint.frame = CGRect(origin: .zero, size: Self.compactSize)
+        glassTint.frame = glassHost.bounds
+        glassTint.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         glassHost.layer?.addSublayer(glassTint)
         self.glassTintLayer = glassTint
 
@@ -450,7 +485,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         sheen.locations = [0, 0.25, 1]
         sheen.startPoint = CGPoint(x: 0.1, y: 1.0)
         sheen.endPoint = CGPoint(x: 0.9, y: 0.0)
-        sheen.frame = CGRect(origin: .zero, size: Self.compactSize)
+        sheen.frame = glassHost.bounds
+        sheen.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         glassHost.layer?.addSublayer(sheen)
         self.sheenLayer = sheen
 
@@ -489,7 +525,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         transcriptTextView.isSelectable = false
         transcriptTextView.isVerticallyResizable = true
         transcriptTextView.isHorizontallyResizable = false
-        transcriptTextView.textContainerInset = NSSize(width: 0, height: 4)
+        transcriptTextView.textContainerInset = NSSize(width: 0, height: TranscriptOverlayLayout.transcriptTextInset)
         transcriptTextView.font = .systemFont(ofSize: 15, weight: .semibold)
         transcriptTextView.textColor = NSColor(calibratedWhite: 0.18, alpha: 0.88)
         transcriptTextView.alignment = .center
@@ -585,24 +621,47 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         })
     }
 
-    private func updateTranscript(_ text: String) {
+    private func updateTranscript(_ text: String, preserveBubbleShell: Bool = false) {
         statusTextField?.isHidden = true
         transcriptScrollView?.isHidden = false
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.alignment = .center
-        paragraphStyle.lineBreakMode = .byWordWrapping
-        paragraphStyle.lineSpacing = 1.5
-        let attributedText = NSAttributedString(
-            string: text,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
-                .foregroundColor: NSColor(calibratedWhite: 0.18, alpha: 0.88),
-                .paragraphStyle: paragraphStyle,
-                .shadow: textShadow
-            ]
+        let attributedText = TranscriptOverlayLayout.attributedText(
+            text,
+            shadow: textShadow
+        )
+        let textHeight = TranscriptOverlayLayout.measuredTextHeight(for: attributedText)
+        let measuredBubbleSize = TranscriptOverlayLayout.bubbleSize(
+            forTextHeight: textHeight,
+            previousHeight: transcriptBubbleHeight
+        )
+        let bubbleSize: NSSize
+        if preserveBubbleShell {
+            let preservedHeight = max(
+                currentBubbleSize.width > Self.compactSize.width ? currentBubbleSize.height : 0,
+                transcriptBubbleHeight,
+                Self.initialTranscriptShellHeight
+            )
+            bubbleSize = NSSize(
+                width: TranscriptOverlayLayout.maximumTranscriptSize.width,
+                height: preservedHeight
+            )
+        } else {
+            bubbleSize = measuredBubbleSize
+        }
+        transcriptBubbleHeight = max(transcriptBubbleHeight, bubbleSize.height)
+        applyLayout(.transcript, bubbleSize: bubbleSize)
+        transcriptTextView?.textContainerInset = NSSize(
+            width: 0,
+            height: TranscriptOverlayLayout.transcriptTextInset
         )
         transcriptTextView?.textStorage?.setAttributedString(attributedText)
-        centerTranscriptVertically()
+        if TranscriptOverlayLayout.shouldScrollToLatest(
+            textHeight: textHeight,
+            bubbleHeight: bubbleSize.height
+        ) {
+            transcriptTextView?.scrollToEndOfDocument(nil)
+        } else {
+            transcriptTextView?.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        }
     }
 
     private func hideContent() {
@@ -612,6 +671,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func applyDefaultSurfaceAppearance() {
         backgroundImageLayer?.opacity = 0.70
+        revealedBackgroundImageLayer?.opacity = 0.0
         scrimLayer?.colors = [
             NSColor.white.withAlphaComponent(0.82).cgColor,
             NSColor.white.withAlphaComponent(0.62).cgColor,
@@ -622,46 +682,33 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             NSColor.white.withAlphaComponent(0.02).cgColor,
             Self.accentWheat.withAlphaComponent(0.10).cgColor
         ]
+        sheenLayer?.opacity = 1.0
         glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
         glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.50).cgColor
     }
 
     private func applyTranscribingSurfaceAppearance() {
-        backgroundImageLayer?.opacity = 0.18
+        backgroundImageLayer?.opacity = 0.32
+        revealedBackgroundImageLayer?.opacity = 0.62
         scrimLayer?.colors = [
-            NSColor.white.withAlphaComponent(0.96).cgColor,
-            NSColor.white.withAlphaComponent(0.90).cgColor,
-            NSColor.white.withAlphaComponent(0.82).cgColor
+            NSColor.white.withAlphaComponent(0.50).cgColor,
+            NSColor.white.withAlphaComponent(0.30).cgColor,
+            NSColor.white.withAlphaComponent(0.14).cgColor
         ]
         glassTintLayer?.colors = [
-            Self.accentCyan.withAlphaComponent(0.03).cgColor,
-            NSColor.white.withAlphaComponent(0.10).cgColor,
-            Self.accentWheat.withAlphaComponent(0.05).cgColor
+            Self.accentCyan.withAlphaComponent(0.08).cgColor,
+            NSColor.white.withAlphaComponent(0.02).cgColor,
+            Self.accentWheat.withAlphaComponent(0.11).cgColor
         ]
-        glassHostView?.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
-        glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.62).cgColor
+        sheenLayer?.opacity = 0.78
+        glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
+        glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.56).cgColor
     }
 
-    /// Vertically centers transcript text when it's shorter than the scroll view.
-    private func centerTranscriptVertically() {
-        guard let scrollView = transcriptScrollView,
-              let textView = transcriptTextView else { return }
-        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
-        let textHeight = textView.layoutManager?.usedRect(for: textView.textContainer!).height ?? 0
-        let inset = textView.textContainerInset
-        let contentHeight = textHeight + inset.height * 2
-        let visibleHeight = scrollView.contentSize.height
-        if contentHeight < visibleHeight {
-            let topInset = max(0, (visibleHeight - textHeight) / 2)
-            textView.textContainerInset = NSSize(width: 0, height: topInset)
-        } else {
-            textView.textContainerInset = NSSize(width: 0, height: 4)
-            textView.scrollToEndOfDocument(nil)
-        }
-    }
-
-    private func applyLayout(_ newLayout: LayoutMode) {
-        guard let window, layoutMode != newLayout else {
+    private func applyLayout(_ newLayout: LayoutMode, bubbleSize requestedSize: NSSize? = nil) {
+        guard let window else { return }
+        let targetSize = requestedSize ?? (newLayout == .transcript ? Self.transcriptSize : Self.compactSize)
+        guard layoutMode != newLayout || currentBubbleSize != targetSize else {
             if newLayout == .transcript {
                 statusTextField?.isHidden = true
                 transcriptScrollView?.isHidden = false
@@ -673,9 +720,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
 
         layoutMode = newLayout
-        let targetSize = newLayout == .transcript ? Self.transcriptSize : Self.compactSize
+        currentBubbleSize = targetSize
         window.setContentSize(windowSize(for: targetSize))
-        updateBorderGradientFrame(for: targetSize)
+        window.contentView?.layoutSubtreeIfNeeded()
+        glassHostView?.layoutSubtreeIfNeeded()
+        updateBorderGradientFrame(for: glassHostView?.bounds.size ?? targetSize)
         positionWindow()
         let cornerRadius = newLayout == .transcript ? Self.transcriptCornerRadius : Self.compactCornerRadius
         containerView?.layer?.cornerRadius = cornerRadius
@@ -689,6 +738,23 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
     }
 
+    private func resetTranscriptBubbleGrowth() {
+        transcriptBubbleHeight = TranscriptOverlayLayout.minimumTranscriptHeight
+    }
+
+    private func applyContinuousBubbleLayout() {
+        let shouldPreserveTranscriptBubble =
+            layoutMode == .transcript ||
+            currentBubbleSize.width > Self.compactSize.width ||
+            currentBubbleSize.height > Self.compactSize.height
+
+        if shouldPreserveTranscriptBubble {
+            applyLayout(.transcript, bubbleSize: currentBubbleSize)
+        } else {
+            applyLayout(.compact)
+        }
+    }
+
     private func updateBorderGradientFrame(for size: NSSize) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -696,6 +762,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         auraPrimaryLayer?.frame = CGRect(x: -36, y: -18, width: rect.width + 72, height: rect.height + 54)
         auraSecondaryLayer?.frame = CGRect(x: rect.width * 0.08, y: -32, width: rect.width * 0.82, height: rect.height + 64)
         backgroundImageLayer?.frame = rect
+        revealedBackgroundImageLayer?.frame = rect
         scrimLayer?.frame = rect
         glassTintLayer?.frame = rect
         sheenLayer?.frame = rect
@@ -710,18 +777,40 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func startDotPulse() {
+        guard activePulseMode != .listening else { return }
         stopDotPulse()
+        activePulseMode = .listening
         addBreathingAnimation(to: auraPrimaryLayer, key: "primaryBreath", scale: 1.08, opacity: 1.0)
         addBreathingAnimation(to: auraSecondaryLayer, key: "secondaryBreath", scale: 1.12, opacity: 0.86, duration: 3.8)
         addDriftAnimation(to: auraSecondaryLayer)
         startBorderAnimation()
     }
 
+    private func startTranscribingPulse() {
+        guard activePulseMode != .transcribing else { return }
+        stopDotPulse()
+        activePulseMode = .transcribing
+        addBreathingAnimation(to: auraPrimaryLayer, key: "primaryBreath", scale: 1.08, opacity: 1.0)
+        addBreathingAnimation(to: auraSecondaryLayer, key: "secondaryBreath", scale: 1.12, opacity: 0.86, duration: 3.8)
+        addDriftAnimation(to: auraSecondaryLayer)
+        startBorderAnimation()
+        addBubblePulseAnimation(to: containerView?.layer, key: "transcribingBubblePulse")
+        addOpacityPulseAnimation(to: glassHostView?.layer, key: "transcribingGlassPulse")
+        addFieldRevealAnimation(to: revealedBackgroundImageLayer, key: "transcribingFieldReveal")
+    }
+
     private func stopDotPulse() {
+        activePulseMode = .none
         auraPrimaryLayer?.removeAllAnimations()
         auraSecondaryLayer?.removeAllAnimations()
+        containerView?.layer?.removeAnimation(forKey: "transcribingBubblePulse")
+        glassHostView?.layer?.removeAnimation(forKey: "transcribingGlassPulse")
+        revealedBackgroundImageLayer?.removeAnimation(forKey: "transcribingFieldReveal")
         auraPrimaryLayer?.transform = CATransform3DIdentity
         auraSecondaryLayer?.transform = CATransform3DIdentity
+        containerView?.layer?.transform = CATransform3DIdentity
+        glassHostView?.layer?.opacity = 1.0
+        revealedBackgroundImageLayer?.transform = CATransform3DIdentity
         auraPrimaryLayer?.opacity = 0.92
         auraSecondaryLayer?.opacity = 0.88
         containerView?.layer?.shadowRadius = 28
@@ -842,6 +931,74 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         layer.add(drift, forKey: "drift")
     }
 
+    private func addBubblePulseAnimation(to layer: CALayer?, key: String) {
+        guard !reduceMotion, let layer else { return }
+        let animation = CAAnimationGroup()
+
+        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnimation.fromValue = 0.985
+        scaleAnimation.toValue = 1.018
+        scaleAnimation.autoreverses = true
+
+        let shadowRadiusAnimation = CABasicAnimation(keyPath: "shadowRadius")
+        shadowRadiusAnimation.fromValue = 22
+        shadowRadiusAnimation.toValue = 31
+        shadowRadiusAnimation.autoreverses = true
+
+        let shadowOpacityAnimation = CABasicAnimation(keyPath: "shadowOpacity")
+        shadowOpacityAnimation.fromValue = 0.68
+        shadowOpacityAnimation.toValue = 0.94
+        shadowOpacityAnimation.autoreverses = true
+
+        animation.animations = [scaleAnimation, shadowRadiusAnimation, shadowOpacityAnimation]
+        animation.duration = 1.18
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: key)
+    }
+
+    private func addOpacityPulseAnimation(to layer: CALayer?, key: String) {
+        guard !reduceMotion, let layer else { return }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = 0.84
+        animation.toValue = 1.0
+        animation.autoreverses = true
+        animation.duration = 1.18
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: key)
+    }
+
+    private func addFieldRevealAnimation(to layer: CALayer?, key: String) {
+        guard !reduceMotion, let layer else { return }
+
+        let animation = CAAnimationGroup()
+
+        let driftAnimation = CABasicAnimation(keyPath: "transform.translation.x")
+        driftAnimation.fromValue = -12
+        driftAnimation.toValue = 12
+        driftAnimation.autoreverses = true
+
+        let scaleAnimation = CABasicAnimation(keyPath: "transform.scale")
+        scaleAnimation.fromValue = 1.02
+        scaleAnimation.toValue = 1.08
+        scaleAnimation.autoreverses = true
+
+        let opacityAnimation = CABasicAnimation(keyPath: "opacity")
+        opacityAnimation.fromValue = 0.52
+        opacityAnimation.toValue = 0.70
+        opacityAnimation.autoreverses = true
+
+        animation.animations = [driftAnimation, scaleAnimation, opacityAnimation]
+        animation.duration = 8.2
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        animation.isRemovedOnCompletion = false
+        layer.add(animation, forKey: key)
+    }
+
     private func startTimer() {
         timer?.invalidate()
         let newTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
@@ -883,15 +1040,24 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             return
         }
 
+        if let pinnedOrigin = sessionPinnedOrigin {
+            isPositioningProgrammatically = true
+            window.setFrameOrigin(pinnedOrigin)
+            isPositioningProgrammatically = false
+            return
+        }
+
         isPositioningProgrammatically = true
         defer { isPositioningProgrammatically = false }
 
         if let anchoredOrigin = anchoredWindowOrigin(for: window) {
             window.setFrameOrigin(anchoredOrigin)
+            sessionPinnedOrigin = anchoredOrigin
             return
         }
 
         centerWindowNearTop()
+        sessionPinnedOrigin = window.frame.origin
     }
 
     private func anchoredWindowOrigin(for window: NSWindow) -> NSPoint? {
@@ -1137,6 +1303,27 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
         #endif
         return nil
+    }
+
+    private static func loadBackgroundCGImage() -> CGImage? {
+        guard let image = loadBackgroundImage() else { return nil }
+        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private static func loadBlurredBackgroundImage() -> CGImage? {
+        guard let cgImage = loadBackgroundCGImage() else { return nil }
+
+        let sourceImage = CIImage(cgImage: cgImage)
+        let blurredImage = sourceImage
+            .clampedToExtent()
+            .applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: 12]
+            )
+            .cropped(to: sourceImage.extent)
+
+        let context = CIContext(options: [.cacheIntermediates: true])
+        return context.createCGImage(blurredImage, from: sourceImage.extent) ?? cgImage
     }
 
     private func endInteractiveRepositionMode(notify: Bool = true) {

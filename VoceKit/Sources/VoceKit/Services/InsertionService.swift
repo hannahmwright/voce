@@ -31,11 +31,21 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             if let clipboardTransport = transport as? ClipboardInsertionTransport {
                 do {
                     let outcome = try await clipboardTransport.insertAndReturnOutcome(text: text, target: target)
+                    let status: InsertionStatus
+                    let errorMessage: String?
+                    switch outcome {
+                    case .attempted:
+                        status = .inserted
+                        errorMessage = nil
+                    case .skipped(let reason):
+                        status = .copiedOnly
+                        errorMessage = reason
+                    }
                     return InsertResult(
-                        status: .copiedOnly,
+                        status: status,
                         method: .clipboardPaste,
                         insertedText: text,
-                        errorMessage: outcome.skippedReason
+                        errorMessage: errorMessage
                     )
                 } catch {
                     failures.append("\(transport.method.rawValue): \(error.localizedDescription)")

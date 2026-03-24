@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.20</title>
+      <sparkle:version>23</sparkle:version>
+      <sparkle:shortVersionString>0.4.20</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.4</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.20</h2>
+        <ul>
+          <li>Keeps the dictation overlay visually continuous from the opening transcribing shell through live partials, processing, and insertion instead of blinking between separate bubbles</li>
+          <li>Makes the processing state feel like the same bubble finishing the thought, with softer motion and clearer field-painting feedback</li>
+          <li>Fixes clipboard-backed auto-paste success reporting, background image clipping on the right edge, and a startup hotkey failure callback that could hide the first live transcript bubble mid-session</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 24 Mar 2026 20:51:03 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.20/Voce-0.4.20.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="nH5znVJ6rbA1RMg8qreRblFy36ICBdn7kkKsECLYGFNN87Qc6m2FyZlZO/7e7dJxeoSP6TTwSk+7rDM2kwyIBw=="
+        length="34421060"
+      />
+    </item>
+    <item>
       <title>Version 0.4.19</title>
       <sparkle:version>22</sparkle:version>
       <sparkle:shortVersionString>0.4.19</sparkle:shortVersionString>

@@ -63,6 +63,7 @@ final class DictationController: ObservableObject {
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
+    private var overlayDismissTask: Task<Void, Never>?
     private var terminationObserver: Any?
     private var overlayPersistenceBundleIdentifier: String?
 
@@ -108,8 +109,10 @@ final class DictationController: ObservableObject {
                 self?.hotkeyRegistrationMessage = ""
             case .unavailable(let reason):
                 self?.hotkeyRegistrationMessage = reason
-                self?.overlay.show(state: .failure(message: reason))
-                self?.dismissOverlaySoon()
+                guard let self else { return }
+                guard !self.isOverlayReservedForDictationSession else { return }
+                self.overlay.show(state: .failure(message: reason))
+                self.dismissOverlaySoon()
             }
         }
         hotkey.start()
@@ -138,6 +141,8 @@ final class DictationController: ObservableObject {
             terminationObserver = nil
         }
         hotkey.stop()
+        overlayDismissTask?.cancel()
+        overlayDismissTask = nil
         overlay.hide()
         overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
@@ -498,6 +503,7 @@ final class DictationController: ObservableObject {
             return
         }
 
+        cancelPendingOverlayDismissal()
         status = "Checking microphone..."
         lastError = ""
         let capturedContext = AppContextProvider.current()
@@ -801,15 +807,31 @@ final class DictationController: ObservableObject {
     }
 
     private func dismissOverlaySoon(pop: Bool = false) {
-        Task { @MainActor in
+        overlayDismissTask?.cancel()
+        overlayDismissTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
             if pop {
                 overlay.popAndHide()
             } else {
                 overlay.hide()
             }
             overlayPersistenceBundleIdentifier = nil
+            overlayDismissTask = nil
         }
+    }
+
+    private func cancelPendingOverlayDismissal() {
+        overlayDismissTask?.cancel()
+        overlayDismissTask = nil
+    }
+
+    private var isOverlayReservedForDictationSession: Bool {
+        activeStartTask != nil
+            || isRecording
+            || recordingLifecycleState != .idle
+            || overlayDismissTask != nil
+            || overlayPersistenceBundleIdentifier != nil
     }
 
     /// Bundle IDs for browsers — these work well with accessibility APIs

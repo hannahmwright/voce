@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-03-24
+
+### Changed
+- The dictation overlay now stays visually continuous from the opening `Transcribing…` shell through live partials, processing, and insertion states instead of blinking between separate bubbles.
+- Processing now reveals the field painting more clearly with a softer motion treatment, so the bubble feels like the same object finishing the thought instead of an empty placeholder.
+
+### Fixed
+- Clipboard-backed auto-paste now reports a real insertion success, so the bubble shows the same success pop when paste actually lands.
+- Fixed background image clipping on the right edge of the overlay by keeping the layered painting surfaces in sync with live bubble resizing.
+- Prevented a hotkey-registration failure callback from hiding the startup transcript bubble mid-session, which removes the distracting disappear-and-reopen effect when the first live transcript arrives.
+
 ## [0.4.15] - 2026-03-20
 
 ### Added
