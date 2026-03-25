@@ -77,7 +77,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.titlebarSeparatorStyle = .none
-            window.isMovableByWindowBackground = true
+            // Hidden-titlebar windows with full-size content can intermittently
+            // swallow the first click when background dragging is enabled.
+            window.isMovableByWindowBackground = false
             window.styleMask.insert(.fullSizeContentView)
         }
     }

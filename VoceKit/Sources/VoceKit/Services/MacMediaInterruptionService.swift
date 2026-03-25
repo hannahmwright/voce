@@ -19,7 +19,6 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     private var activeTokens: Set<UUID> = []
     private let playbackDetector: any MediaPlaybackStateDetector
     private let sendPlayPauseKey: () -> Bool
-    private let pauseConfirmationDelayNanoseconds: UInt64
     private let minimumResumeDelayNanoseconds: UInt64
     private var pendingResumeTask: Task<Void, Never>?
     private var pauseSentAtUptimeNanoseconds: UInt64?
@@ -28,19 +27,16 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         let bridge = MediaRemoteBridge()
         self.playbackDetector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
         self.sendPlayPauseKey = SystemMediaKeySender.sendPlayPause
-        self.pauseConfirmationDelayNanoseconds = 180_000_000
         self.minimumResumeDelayNanoseconds = 300_000_000
     }
 
     init(
         playbackDetector: any MediaPlaybackStateDetector,
         sendPlayPauseKey: @escaping () -> Bool,
-        pauseConfirmationDelayNanoseconds: UInt64 = 180_000_000,
         minimumResumeDelayNanoseconds: UInt64 = 300_000_000
     ) {
         self.playbackDetector = playbackDetector
         self.sendPlayPauseKey = sendPlayPauseKey
-        self.pauseConfirmationDelayNanoseconds = pauseConfirmationDelayNanoseconds
         self.minimumResumeDelayNanoseconds = minimumResumeDelayNanoseconds
     }
 
@@ -69,7 +65,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         }
 
         switch detection {
-        case .playing:
+        case .playing, .likelyPlaying:
             if Task.isCancelled {
                 Self.logger.debug("Skipping media interruption because task is cancelled before key send.")
                 return nil
@@ -77,37 +73,11 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             let didSend = sendPlayPauseKey()
             Self.logger.debug("Media interruption pause key send attempted: \(didSend, privacy: .public)")
             guard didSend else { return nil }
-
-            if pauseConfirmationDelayNanoseconds > 0 {
-                try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
-            }
-
-            if Task.isCancelled {
-                Self.logger.debug("Skipping media interruption because task is cancelled before pause confirmation.")
-                return nil
-            }
-
-            let postPauseDetection = await playbackDetector.detect()
-            if Task.isCancelled {
-                Self.logger.debug("Skipping media interruption because task is cancelled after pause confirmation.")
-                return nil
-            }
-
-            switch postPauseDetection {
-            case .notPlaying:
-                activeTokens.insert(token.id)
-                pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
-                Self.logger.debug(
-                    "Media interruption confirmed paused. Active tokens: \(self.activeTokens.count, privacy: .public)"
-                )
-                return token
-            case .playing, .likelyPlaying, .unknown:
-                Self.logger.debug(
-                    "Media interruption pause was not confirmed. Skipping token to avoid unsafe resume. Detection: \(postPauseDetection.logValue, privacy: .public)"
-                )
-                return nil
-            }
-        case .likelyPlaying, .notPlaying, .unknown:
+            activeTokens.insert(token.id)
+            pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+            Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
+            return token
+        case .notPlaying, .unknown:
             Self.logger.debug("Media interruption skipped. Detection: \(detection.logValue, privacy: .public)")
             return nil
         }
@@ -177,11 +147,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.debug(
                 "Skipping media interruption resume because playback already appears active: \(detection.logValue, privacy: .public)"
             )
-        case .notPlaying:
+        case .notPlaying, .unknown:
             let didSend = sendPlayPauseKey()
             Self.logger.debug("Media interruption resume key send attempted: \(didSend, privacy: .public)")
-        case .unknown:
-            Self.logger.debug("Skipping media interruption resume because playback state is unknown.")
         }
     }
 }

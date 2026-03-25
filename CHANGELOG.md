@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.24] - 2026-03-25
+
+### Fixed
+- The main app window no longer swallows the first click in some hidden-titlebar/full-size-content configurations, because background dragging is now disabled for that window style.
+- Media interruption behavior is less brittle again: likely-playing state can pause media, and resume is allowed when playback looks stopped or unknown, which restores the smoother real-world pause/resume flow.
+
 ## [0.4.23] - 2026-03-25
 
 ### Added

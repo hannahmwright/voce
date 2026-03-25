@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.24</title>
+      <sparkle:version>27</sparkle:version>
+      <sparkle:shortVersionString>0.4.24</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.24</h2>
+        <ul>
+          <li>Fixes a main-window interaction bug where the first click could be swallowed in the hidden-titlebar full-size-content layout</li>
+          <li>Restores smoother media interruption handling by allowing likely-playing state to pause media and allowing resume when playback appears stopped or unknown</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 25 Mar 2026 21:17:56 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.24/Voce-0.4.24.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="JAt7ULIM5kZSgH9WEAWUpg+NcInLWWH02AIskLE5dbA8MPSMZyXoWpk9U60LmzQfvXmOjL7M5VyYtOm/jxEMBw=="
+        length="38398449"
+      />
+    </item>
+    <item>
       <title>Version 0.4.23</title>
       <sparkle:version>26</sparkle:version>
       <sparkle:shortVersionString>0.4.23</sparkle:shortVersionString>
