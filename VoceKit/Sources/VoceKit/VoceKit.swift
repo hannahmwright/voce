@@ -10,17 +10,10 @@ public enum VoceKitAssembly {
         accessibilityInsertion: InsertionTransport? = nil,
         historyStorageURL: URL? = nil
     ) -> SessionCoordinator {
-        let historyStore = HistoryStore(storageURL: historyStorageURL, clipboardService: clipboardService)
-        var transports: [any InsertionTransport] = []
-        if let directInsertion {
-            transports.append(directInsertion)
-        }
-        if let accessibilityInsertion {
-            transports.append(accessibilityInsertion)
-        }
-        transports.append(ClipboardInsertionTransport(clipboard: clipboardService))
-
-        let insertionService = InsertionService(transports: transports)
+        _ = historyStorageURL
+        _ = clipboardService
+        _ = directInsertion
+        _ = accessibilityInsertion
         let lexiconService = PersonalLexiconService()
         let styleService = StyleProfileService()
 
@@ -28,8 +21,6 @@ public enum VoceKitAssembly {
             captureService: captureService,
             transcriptionEngine: transcriptionEngine,
             cleanupEngine: cleanupEngine,
-            insertionService: insertionService,
-            historyStore: historyStore,
             lexiconService: lexiconService,
             styleProfileService: styleService
         )

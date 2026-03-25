@@ -71,7 +71,9 @@ public actor HistoryStore: HistoryStoreProtocol {
         return entries.filter {
             $0.rawText.localizedCaseInsensitiveContains(trimmed)
             || $0.cleanText.localizedCaseInsensitiveContains(trimmed)
+            || ($0.sourceText?.localizedCaseInsensitiveContains(trimmed) ?? false)
             || $0.appBundleID.localizedCaseInsensitiveContains(trimmed)
+            || ($0.aiWorkflowName?.localizedCaseInsensitiveContains(trimmed) ?? false)
         }
     }
 

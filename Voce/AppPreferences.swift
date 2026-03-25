@@ -196,11 +196,43 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
     }
 
+    struct AI: Codable, Sendable, Equatable {
+        var isEnabled: Bool
+        var defaultHandsFreeWorkflowID: UUID?
+        var handsFreeFinishHotkey: HandsFreeHotkey?
+        var leadingPhraseSelectionEnabled: Bool
+        var workflows: [AIWorkflow]
+
+        init(
+            isEnabled: Bool = false,
+            defaultHandsFreeWorkflowID: UUID? = AIWorkflow.askID,
+            handsFreeFinishHotkey: HandsFreeHotkey? = nil,
+            leadingPhraseSelectionEnabled: Bool = true,
+            workflows: [AIWorkflow] = AIWorkflow.builtIns
+        ) {
+            self.isEnabled = isEnabled
+            self.defaultHandsFreeWorkflowID = defaultHandsFreeWorkflowID
+            self.handsFreeFinishHotkey = handsFreeFinishHotkey
+            self.leadingPhraseSelectionEnabled = leadingPhraseSelectionEnabled
+            self.workflows = workflows
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+            defaultHandsFreeWorkflowID = try container.decodeIfPresent(UUID.self, forKey: .defaultHandsFreeWorkflowID) ?? AIWorkflow.askID
+            handsFreeFinishHotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeFinishHotkey)
+            leadingPhraseSelectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .leadingPhraseSelectionEnabled) ?? true
+            workflows = try container.decodeIfPresent([AIWorkflow].self, forKey: .workflows) ?? AIWorkflow.builtIns
+        }
+    }
+
     var general: General
     var hotkeys: Hotkeys
     var dictation: Dictation
     var insertion: Insertion
     var media: Media
+    var ai: AI
 
     var lexiconEntries: [LexiconEntry]
     var globalStyleProfile: StyleProfile
@@ -215,6 +247,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         dictation: Dictation,
         insertion: Insertion,
         media: Media,
+        ai: AI,
         lexiconEntries: [LexiconEntry],
         globalStyleProfile: StyleProfile,
         appStyleProfiles: [String: StyleProfile],
@@ -227,6 +260,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         self.dictation = dictation
         self.insertion = insertion
         self.media = media
+        self.ai = ai
         self.lexiconEntries = lexiconEntries
         self.globalStyleProfile = globalStyleProfile
         self.appStyleProfiles = appStyleProfiles
@@ -242,6 +276,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         dictation = try container.decode(Dictation.self, forKey: .dictation)
         insertion = try container.decode(Insertion.self, forKey: .insertion)
         media = try container.decode(Media.self, forKey: .media)
+        ai = try container.decodeIfPresent(AI.self, forKey: .ai) ?? AI()
         lexiconEntries = try container.decodeIfPresent([LexiconEntry].self, forKey: .lexiconEntries) ?? []
         globalStyleProfile = try container.decodeIfPresent(StyleProfile.self, forKey: .globalStyleProfile) ?? AppPreferences.default.globalStyleProfile
         appStyleProfiles = try container.decodeIfPresent([String: StyleProfile].self, forKey: .appStyleProfiles) ?? [:]
@@ -270,6 +305,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             ),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
+            ai: .init(),
             lexiconEntries: [
                 LexiconEntry(term: "voceh", preferred: "Voce", scope: .global),
                 LexiconEntry(term: "voce kit", preferred: "VoceKit", scope: .global)
@@ -303,6 +339,39 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
 
         insertion.orderedMethods = normalized
+        var existingWorkflows = ai.workflows
+
+        if let legacyIndex = existingWorkflows.firstIndex(where: { $0.id == AIWorkflow.legacyCustomPromptID }) {
+            existingWorkflows[legacyIndex].isBuiltIn = false
+            if existingWorkflows[legacyIndex].name == "Custom Prompt" {
+                existingWorkflows[legacyIndex].name = "Custom Prompt"
+            }
+        }
+
+        let mergedBuiltIns = AIWorkflow.builtIns.reduce(into: [AIWorkflow]()) { partialResult, workflow in
+            if !partialResult.contains(where: { $0.id == workflow.id }) {
+                partialResult.append(workflow)
+            }
+        }
+        for builtIn in mergedBuiltIns where !existingWorkflows.contains(where: { $0.id == builtIn.id }) {
+            existingWorkflows.append(builtIn)
+        }
+        existingWorkflows = existingWorkflows.map { workflow in
+            var updated = workflow
+            if case .modifier? = updated.handsFreeFinishHotkey {
+                updated.handsFreeFinishHotkey = nil
+            }
+            return updated
+        }
+        ai.workflows = existingWorkflows
+        if ai.defaultHandsFreeWorkflowID == nil
+            || !ai.workflows.contains(where: { $0.id == ai.defaultHandsFreeWorkflowID })
+        {
+            ai.defaultHandsFreeWorkflowID = AIWorkflow.askID
+        }
+        if case .modifier? = ai.handsFreeFinishHotkey {
+            ai.handsFreeFinishHotkey = nil
+        }
         let originalArch = dictation.modelArch
         let normalizedArch = originalArch.normalizedForVoce
         if normalizedArch != originalArch {

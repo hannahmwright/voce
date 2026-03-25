@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.22</title>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>0.4.22</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.22</h2>
+        <ul>
+          <li>Adds Apple Intelligence-powered AI workflows with built-in Ask, Rewrite, and Summarize actions, plus support for custom prompts and optional hands-free finish keys</li>
+          <li>Adds a dedicated AI settings section so workflow availability, trigger phrases, and routing behavior can be configured directly in the app</li>
+          <li>Routes finalized dictation through a richer completion pipeline and tightens media interruption safety by only keeping resume tokens when pause is actually confirmed</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 25 Mar 2026 20:01:18 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.22/Voce-0.4.22.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="jo5vYXyCYPa7/113PJ1v6Lv8dKUi7jllc4I0WFqgGZuRTwd/tPHHl5M4QfHdkdyBgkGzWcVB6C1buc1UMjKeBw=="
+        length="38399140"
+      />
+    </item>
+    <item>
       <title>Version 0.4.21</title>
       <sparkle:version>24</sparkle:version>
       <sparkle:shortVersionString>0.4.21</sparkle:shortVersionString>

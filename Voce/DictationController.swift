@@ -28,6 +28,7 @@ final class DictationController: ObservableObject {
     @Published var launchAtLoginWarning: String = ""
     @Published var preferences: AppPreferences = .default
     @Published var microphonePermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
+    @Published var speechRecognitionPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var recordingElapsed: TimeInterval = 0
@@ -47,15 +48,18 @@ final class DictationController: ObservableObject {
     private var styleProfileService: StyleProfileService
     private var snippetService: SnippetService
     private var voiceCommandService: VoiceCommandService
+    private var insertionService: any InsertionServiceProtocol = InsertionService(transports: [])
     private var coordinator: SessionCoordinator?
     private var transcriptionEngine: MoonshineTranscriptionEngine?
     private let learningEngine = LearningEngine()
+    private let completionRoutingService = CompletionRoutingService()
+    private let aiGenerationService = AppleFoundationModelsService()
 
     private var recordingStateMachine = RecordingStateMachine()
     private var currentSessionID: SessionID?
     private var activeAppContext: AppContext?
     private var activeRecordingMode: RecordingMode?
-    private var submitCurrentRecordingRequested = false
+    private var pendingCompletionActionOverride: CompletionAction?
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activePreviewSession: AppleSpeechPreviewSession?
@@ -99,6 +103,9 @@ final class DictationController: ObservableObject {
         }
         hotkey.onSubmitActiveRecording = { [weak self] in
             self?.submitActiveRecording()
+        }
+        hotkey.onFinishActiveRecordingWithAI = { [weak self] hotkey in
+            self?.finishActiveRecordingWithAI(triggeredBy: hotkey)
         }
         overlay.onUserDraggedToPosition = { [weak self] position in
             self?.saveOverlayDragPosition(position)
@@ -230,6 +237,19 @@ final class DictationController: ObservableObject {
         PermissionDiagnostics.openMicrophoneSettings()
     }
 
+    func requestSpeechRecognitionPermission() {
+        Task {
+            _ = await PermissionDiagnostics.requestSpeechRecognitionPermission()
+            await MainActor.run {
+                refreshPermissionStatuses()
+            }
+        }
+    }
+
+    func openSpeechRecognitionSettings() {
+        PermissionDiagnostics.openSpeechRecognitionSettings()
+    }
+
     func openAccessibilitySettings() {
         PermissionDiagnostics.openAccessibilitySettings()
     }
@@ -274,6 +294,7 @@ final class DictationController: ObservableObject {
 
     func refreshPermissionStatuses() {
         microphonePermissionStatus = PermissionDiagnostics.microphoneStatus()
+        speechRecognitionPermissionStatus = PermissionDiagnostics.speechRecognitionStatus()
         accessibilityPermissionStatus = PermissionDiagnostics.accessibilityStatus()
         inputMonitoringPermissionStatus = PermissionDiagnostics.inputMonitoringStatus()
 
@@ -284,6 +305,9 @@ final class DictationController: ObservableObject {
             hotkey.pressToTalkHotkey = preferences.hotkeys.pressToTalkHotkey
             hotkey.globalToggleHotkey = preferences.hotkeys.handsFreeGlobalHotkey
             hotkey.isSubmitActiveRecordingEnabled = false
+            hotkey.aiFinishHotkey = preferences.ai.handsFreeFinishHotkey
+            hotkey.aiWorkflowFinishHotkeys = preferences.ai.workflows.compactMap(\.handsFreeFinishHotkey)
+            hotkey.isAIFinishEnabled = false
             hotkey.start()
         }
     }
@@ -305,7 +329,26 @@ final class DictationController: ObservableObject {
     func submitActiveRecording() {
         guard activeRecordingMode == .handsFree, isRecording else { return }
         guard preferences.hotkeys.enterFinishesHandsFreeAndSubmits else { return }
-        submitCurrentRecordingRequested = true
+        pendingCompletionActionOverride = .insertAndSubmit
+        toggleHandsFree()
+    }
+
+    func finishActiveRecordingWithAI(triggeredBy hotkey: HandsFreeHotkey? = nil) {
+        guard activeRecordingMode == .handsFree, isRecording else { return }
+        guard preferences.ai.isEnabled else { return }
+        let workflowID: UUID?
+        if let hotkey {
+            workflowID = preferences.ai.workflows.first(where: { $0.handsFreeFinishHotkey == hotkey })?.id
+        } else {
+            workflowID = preferences.ai.defaultHandsFreeWorkflowID
+        }
+        guard let workflowID else { return }
+        if let workflowName = preferences.ai.workflows.first(where: { $0.id == workflowID })?.name {
+            status = "Finishing with \(workflowName.lowercased())…"
+        } else {
+            status = "Finishing with AI…"
+        }
+        pendingCompletionActionOverride = .aiWorkflow(id: workflowID)
         toggleHandsFree()
     }
 
@@ -437,25 +480,38 @@ final class DictationController: ObservableObject {
         await learningEngine.corrections()
     }
 
-    func pasteEntry(_ entry: TranscriptEntry) {
-        Task {
-            do {
-                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
-                try await clipboardService.setString(text)
-                status = "Transcript copied to clipboard. Paste with Cmd+V."
-            } catch {
-                status = "Paste failed"
-                lastError = error.localizedDescription
-            }
-        }
-    }
-
     func copyEntry(_ entry: TranscriptEntry) {
         Task {
             do {
                 let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
                 try await clipboardService.setString(text)
                 status = "Selected transcript copied."
+            } catch {
+                status = "Copy failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func copyEntryTranscript(_ entry: TranscriptEntry) {
+        Task {
+            do {
+                let text = (entry.sourceText?.isEmpty == false ? entry.sourceText : entry.rawText) ?? entry.rawText
+                try await clipboardService.setString(text)
+                status = "Transcribed text copied."
+            } catch {
+                status = "Copy failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func copyEntryAIOutput(_ entry: TranscriptEntry) {
+        Task {
+            do {
+                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+                try await clipboardService.setString(text)
+                status = "AI output copied."
             } catch {
                 status = "Copy failed"
                 lastError = error.localizedDescription
@@ -509,7 +565,7 @@ final class DictationController: ObservableObject {
         let capturedContext = AppContextProvider.current()
         activeAppContext = capturedContext
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
-        submitCurrentRecordingRequested = false
+        pendingCompletionActionOverride = nil
 
         // Restore per-app overlay position if the user previously dragged it,
         // otherwise fall back to accessibility-based anchoring.
@@ -539,7 +595,7 @@ final class DictationController: ObservableObject {
                 handsFreeOn = mode == .handsFree
                 menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
                 activeRecordingMode = mode
-                updateSubmitActiveRecordingHotkey()
+                updateActiveRecordingHotkeys()
                 recordingElapsed = 0
                 recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
@@ -600,8 +656,8 @@ final class DictationController: ObservableObject {
                 activeRecordingMode = nil
                 activeAppContext = nil
                 overlayPersistenceBundleIdentifier = nil
-                submitCurrentRecordingRequested = false
-                updateSubmitActiveRecordingHotkey()
+                pendingCompletionActionOverride = nil
+                updateActiveRecordingHotkeys()
                 activePreviewSession = nil
                 activeRollingFinalizer = nil
                 recordingStateMachine.markTranscriptionFailed()
@@ -629,7 +685,7 @@ final class DictationController: ObservableObject {
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
-        updateSubmitActiveRecordingHotkey()
+        updateActiveRecordingHotkeys()
 
         Task {
             await pendingStart?.value
@@ -648,7 +704,7 @@ final class DictationController: ObservableObject {
 
             activeAppContext = nil
             overlayPersistenceBundleIdentifier = nil
-            submitCurrentRecordingRequested = false
+            pendingCompletionActionOverride = nil
 
             recordingStateMachine.markTranscriptionFailed()
             status = streamingFailureStatusMessage(for: error)
@@ -677,7 +733,7 @@ final class DictationController: ObservableObject {
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
-        updateSubmitActiveRecordingHotkey()
+        updateActiveRecordingHotkeys()
 
         Task {
             // Wait for startSession's Task to finish so currentSessionID
@@ -691,10 +747,9 @@ final class DictationController: ObservableObject {
                 return
             }
             currentSessionID = nil
-            let targetAppContext = activeAppContext
-            let shouldSubmitWithReturn = submitCurrentRecordingRequested
+            let preferredCompletionAction = pendingCompletionActionOverride
             activeAppContext = nil
-            submitCurrentRecordingRequested = false
+            pendingCompletionActionOverride = nil
 
             if let token = activeMediaToken {
                 mediaInterruption.endInterruption(token: token)
@@ -715,7 +770,7 @@ final class DictationController: ObservableObject {
                     finalChunk: stopResult.finalChunk,
                     expectedChunkCount: stopResult.totalChunkCount
                 )
-                let result: InsertResult
+                let finalizedTranscript: FinalizedTranscript
                 let processingNote: String?
                 switch rollingTranscript {
                 case .completed(let rollingTranscript):
@@ -729,7 +784,7 @@ final class DictationController: ObservableObject {
                         throw MoonshineTranscriptionError.emptyLiveTranscript
                     }
                     processingNote = nil
-                    result = try await coordinator.processStreamingTranscript(
+                    finalizedTranscript = try await coordinator.processStreamingTranscript(
                         rollingTranscript,
                         sessionID: sessionID,
                         processingNote: processingNote
@@ -738,7 +793,7 @@ final class DictationController: ObservableObject {
                     processingNote = fallbackReason.note
                     await RollingFallbackMetricsStore.shared.increment(reason: fallbackReason)
                     await refreshRollingFallbackMetrics()
-                    result = try await coordinator.processStreamingAudio(
+                    finalizedTranscript = try await coordinator.processStreamingAudio(
                         audioURL: stopResult.captureURL,
                         sessionID: sessionID,
                         processingNote: processingNote
@@ -747,46 +802,63 @@ final class DictationController: ObservableObject {
                     processingNote = RollingChunkFinalizer.FallbackReason.incompleteRollingTranscript.note
                     await RollingFallbackMetricsStore.shared.increment(reason: .incompleteRollingTranscript)
                     await refreshRollingFallbackMetrics()
-                    result = try await coordinator.processStreamingAudio(
+                    finalizedTranscript = try await coordinator.processStreamingAudio(
                         audioURL: stopResult.captureURL,
                         sessionID: sessionID,
                         processingNote: processingNote
                     )
                 }
 
-                lastTranscript = result.insertedText
-                switch result.status {
-                case .inserted:
-                    status = "Transcript inserted."
-                    lastError = ""
-                    overlay.show(state: .inserted)
-                case .copiedOnly:
-                    status = copiedOnlyStatusMessage(for: result)
-                    lastError = result.errorMessage ?? ""
-                    overlay.show(state: .copiedOnly)
-                case .failed:
-                    status = "Transcript ready but insertion failed."
-                    let reason = result.errorMessage ?? "Insertion chain exhausted."
-                    lastError = reason
-                    overlay.show(state: .failure(message: reason))
+                let routedCompletion = try completionRoutingService.route(
+                    finalizedTranscript: finalizedTranscript,
+                    preferredAction: preferredCompletionAction,
+                    leadingPhraseSelectionEnabled: preferences.ai.isEnabled && preferences.ai.leadingPhraseSelectionEnabled,
+                    workflows: preferences.ai.workflows
+                )
+
+                if case .aiWorkflow(let workflowID) = routedCompletion.action {
+                    let workflowName = preferences.ai.workflows.first(where: { $0.id == workflowID })?.name ?? "AI"
+                    status = aiGenerationStatusMessage(for: workflowName)
                 }
 
-                if let fallbackWarning = fallbackWarningText(from: result.cleanupOutcome) {
-                    status = "\(status) \(fallbackWarning)"
-                }
-                if let processingNote {
-                    status = "\(status) \(processingNote)"
-                }
+                do {
+                    let executor = CompletionExecutionService(
+                        insertionService: insertionService,
+                        aiGenerationService: aiGenerationService
+                    )
+                    let execution = try await executor.execute(
+                        routedCompletion: routedCompletion,
+                        finalizedTranscript: finalizedTranscript,
+                        workflows: preferences.ai.workflows
+                    )
 
-                if shouldSubmitWithReturn, result.status == .inserted, let targetAppContext {
-                    let submitOutcome = await MacPasteHelper.activateAndPressReturn(target: targetAppContext)
-                    if case .skipped(let reason) = submitOutcome {
-                        status = "Transcript inserted."
-                        lastError = reason
+                    lastTranscript = execution.finalText
+                    applyExecutionOutcomeStatus(execution)
+                    do {
+                        try await appendHistoryEntry(
+                            finalizedTranscript: finalizedTranscript,
+                            execution: execution
+                        )
+                    } catch {
+                        lastError = error.localizedDescription
                     }
+                    dismissOverlaySoon(pop: execution.insertResult.status == .inserted)
+                } catch let aiError as AIWorkflowError {
+                    lastTranscript = finalizedTranscript.cleanText
+                    status = aiError.errorDescription ?? "AI request failed."
+                    lastError = aiError.errorDescription ?? ""
+                    overlay.show(state: .failure(message: lastError))
+                    do {
+                        try await appendFailedAIHistoryEntry(
+                            finalizedTranscript: finalizedTranscript,
+                            routedCompletion: routedCompletion,
+                            errorMessage: lastError
+                        )
+                    } catch {
+                        lastError = aiError.errorDescription ?? ""
+                    }
+                    dismissOverlaySoon()
                 }
-
-                dismissOverlaySoon(pop: result.status == .inserted)
                 await refreshHistory()
                 recordingStateMachine.markTranscriptionCompleted()
                 await applyDeferredRebuildIfNeeded()
@@ -866,7 +938,9 @@ final class DictationController: ObservableObject {
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
         hotkey.pressToTalkHotkey = newValue.hotkeys.pressToTalkHotkey
         hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
-        updateSubmitActiveRecordingHotkey()
+        hotkey.aiFinishHotkey = newValue.ai.handsFreeFinishHotkey
+        hotkey.aiWorkflowFinishHotkeys = newValue.ai.workflows.compactMap(\.handsFreeFinishHotkey)
+        updateActiveRecordingHotkeys()
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
     }
 
@@ -910,13 +984,12 @@ final class DictationController: ObservableObject {
         transcriptionEngine = transcription
         let cleanupEngine: any CleanupEngine = runtimeFactory.makeCleanupEngine()
         let insertion = InsertionService(transports: runtimeFactory.makeInsertionTransports())
+        insertionService = insertion
 
         coordinator = SessionCoordinator(
             captureService: captureService,
             transcriptionEngine: transcription,
             cleanupEngine: cleanupEngine,
-            insertionService: insertion,
-            historyStore: historyStore,
             lexiconService: lexiconService,
             styleProfileService: styleProfileService,
             snippetService: snippetService,
@@ -951,6 +1024,18 @@ final class DictationController: ObservableObject {
             return nil
         }
         return outcome.warning ?? "Primary cleanup unavailable, used local fallback."
+    }
+
+    var appleIntelligenceAvailabilityText: String {
+        aiGenerationService.availabilityStatus().displayText
+    }
+
+    var aiAvailabilityIsAvailable: Bool {
+        aiGenerationService.availabilityStatus().isAvailable
+    }
+
+    var availableAIWorkflows: [AIWorkflow] {
+        preferences.ai.workflows
     }
 
     private func validateEngineConfiguration() {
@@ -1030,11 +1115,123 @@ final class DictationController: ObservableObject {
         recordingStateMachine.markTranscriptionCompleted()
     }
 
-    private func updateSubmitActiveRecordingHotkey() {
+    private func applyExecutionOutcomeStatus(_ execution: CompletionExecutionOutcome) {
+        let result = execution.insertResult
+        let baseStatus: String
+        switch execution.action {
+        case .insert, .insertAndSubmit:
+            switch result.status {
+            case .inserted:
+                baseStatus = "Transcript inserted."
+                lastError = ""
+            case .copiedOnly:
+                baseStatus = copiedOnlyStatusMessage(for: result)
+                lastError = result.errorMessage ?? ""
+            case .failed:
+                let reason = result.errorMessage ?? "Insertion chain exhausted."
+                baseStatus = "Transcript ready but insertion failed."
+                lastError = reason
+                overlay.show(state: .failure(message: reason))
+            }
+        case .aiWorkflow:
+            switch result.status {
+            case .inserted:
+                baseStatus = "AI result inserted."
+                lastError = ""
+            case .copiedOnly:
+                baseStatus = "AI result copied to clipboard. Paste with Cmd+V."
+                lastError = result.errorMessage ?? ""
+            case .failed:
+                let reason = result.errorMessage ?? "Insertion chain exhausted."
+                baseStatus = "AI result ready but insertion failed."
+                lastError = reason
+                overlay.show(state: .failure(message: reason))
+            }
+        }
+
+        var messages = [baseStatus]
+        if let cleanupWarning = fallbackWarningText(from: result.cleanupOutcome) {
+            messages.append(cleanupWarning)
+        }
+        if let submitWarning = execution.submitWarning, !submitWarning.isEmpty {
+            messages.append(submitWarning)
+        }
+        status = messages.joined(separator: " ")
+    }
+
+    private func aiGenerationStatusMessage(for workflowName: String) -> String {
+        "Generating \(workflowName.lowercased())…"
+    }
+
+    private func appendHistoryEntry(
+        finalizedTranscript: FinalizedTranscript,
+        execution: CompletionExecutionOutcome
+    ) async throws {
+        let entry = TranscriptEntry(
+            appBundleID: finalizedTranscript.appContext.bundleIdentifier,
+            rawText: finalizedTranscript.rawText,
+            sourceText: execution.sourceText,
+            cleanText: execution.finalText,
+            audioURL: finalizedTranscript.audioURL,
+            insertionStatus: execution.insertResult.status,
+            processingNote: finalizedTranscript.processingNote,
+            completionAction: completionActionDescription(execution.action),
+            aiWorkflowName: execution.aiWorkflowName,
+            aiProvider: execution.aiProvider
+        )
+        try await historyStore.append(entry: entry)
+    }
+
+    private func appendFailedAIHistoryEntry(
+        finalizedTranscript: FinalizedTranscript,
+        routedCompletion: RoutedCompletion,
+        errorMessage: String
+    ) async throws {
+        guard case .aiWorkflow(let workflowID) = routedCompletion.action else {
+            return
+        }
+        let workflowName = preferences.ai.workflows.first(where: { $0.id == workflowID })?.name
+        let entry = TranscriptEntry(
+            appBundleID: finalizedTranscript.appContext.bundleIdentifier,
+            rawText: finalizedTranscript.rawText,
+            sourceText: routedCompletion.inputText,
+            cleanText: finalizedTranscript.cleanText,
+            audioURL: finalizedTranscript.audioURL,
+            insertionStatus: .failed,
+            processingNote: finalizedTranscript.processingNote ?? errorMessage,
+            completionAction: completionActionDescription(routedCompletion.action),
+            aiWorkflowName: workflowName,
+            aiProvider: nil
+        )
+        try await historyStore.append(entry: entry)
+    }
+
+    private func completionActionDescription(_ action: CompletionAction) -> String {
+        switch action {
+        case .insert:
+            return "insert"
+        case .insertAndSubmit:
+            return "insertAndSubmit"
+        case .aiWorkflow:
+            return "aiWorkflow"
+        }
+    }
+
+    private func updateActiveRecordingHotkeys() {
         hotkey.isSubmitActiveRecordingEnabled =
             preferences.hotkeys.enterFinishesHandsFreeAndSubmits
             && activeRecordingMode == .handsFree
             && isRecording
+        hotkey.aiFinishHotkey = preferences.ai.handsFreeFinishHotkey
+        hotkey.aiWorkflowFinishHotkeys = preferences.ai.workflows.compactMap(\.handsFreeFinishHotkey)
+        hotkey.isAIFinishEnabled =
+            preferences.ai.isEnabled
+            && activeRecordingMode == .handsFree
+            && isRecording
+            && (
+                preferences.ai.handsFreeFinishHotkey != nil
+                || preferences.ai.workflows.contains(where: { $0.handsFreeFinishHotkey != nil })
+            )
     }
 }
 

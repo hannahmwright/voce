@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.22] - 2026-03-25
+
+### Added
+- Added Apple Intelligence-powered AI workflows with built-in Ask, Rewrite, and Summarize actions, plus support for custom prompt workflows and optional hands-free finish keys.
+- Added an AI settings section so workflows, trigger phrases, availability, and hands-free routing can be configured from the app.
+
+### Changed
+- Dictation finalization now routes through a completion pipeline that can insert normally, insert-and-submit, or send cleaned text through an AI workflow before insertion.
+- History and session flow now keep richer completion metadata so AI-assisted output and alternate finish actions can be tracked more clearly.
+
+### Fixed
+- Media interruption now confirms that playback actually paused before keeping a resume token, which avoids accidental resumes when the pause key press doesn't stick.
+- Settings diagnostics now surface speech recognition and related permission state more clearly alongside the new AI workflow controls.
+
 ## [0.4.21] - 2026-03-25
 
 ### Changed

@@ -14,6 +14,14 @@ struct PermissionsSettingsSection: View {
             )
 
             PermissionStatusCard(
+                title: "Speech Recognition",
+                description: "Used for Apple's live preview transcript while recording before the final local pass.",
+                status: controller.speechRecognitionPermissionStatus,
+                onRequest: { controller.requestSpeechRecognitionPermission() },
+                onOpenSettings: { controller.openSpeechRecognitionSettings() }
+            )
+
+            PermissionStatusCard(
                 title: "Accessibility",
                 description: "Lets Voce type or paste into the app you're using.",
                 status: controller.accessibilityPermissionStatus,

@@ -26,8 +26,6 @@ public actor SessionCoordinator {
     private let transcriptionEngine: TranscriptionEngine
     private let cleanupEngine: CleanupEngine
     private let fallbackCleanupEngine: CleanupEngine
-    private let insertionService: InsertionServiceProtocol
-    private let historyStore: HistoryStoreProtocol
     private let lexiconService: PersonalLexiconService
     private let styleProfileService: StyleProfileService
     private let snippetService: SnippetService
@@ -41,8 +39,6 @@ public actor SessionCoordinator {
         captureService: AudioCaptureService,
         transcriptionEngine: TranscriptionEngine,
         cleanupEngine: CleanupEngine,
-        insertionService: InsertionServiceProtocol,
-        historyStore: HistoryStoreProtocol,
         lexiconService: PersonalLexiconService,
         styleProfileService: StyleProfileService,
         snippetService: SnippetService = SnippetService(),
@@ -53,8 +49,6 @@ public actor SessionCoordinator {
         self.captureService = captureService
         self.transcriptionEngine = transcriptionEngine
         self.cleanupEngine = cleanupEngine
-        self.insertionService = insertionService
-        self.historyStore = historyStore
         self.lexiconService = lexiconService
         self.styleProfileService = styleProfileService
         self.snippetService = snippetService
@@ -78,7 +72,7 @@ public actor SessionCoordinator {
         return sessionID
     }
 
-    public func stopPressToTalk(sessionID: SessionID, languageHints: [String] = ["en-US"]) async throws -> InsertResult {
+    public func stopPressToTalk(sessionID: SessionID, languageHints: [String] = ["en-US"]) async throws -> FinalizedTranscript {
         // Remove session before the first await so actor reentrancy cannot process
         // the same session twice while transcription/cleanup are in flight.
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
@@ -89,20 +83,25 @@ public actor SessionCoordinator {
         defer { try? FileManager.default.removeItem(at: audioURL) }
         let rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
 
-        return try await finaliseTranscript(rawTranscript, active: active)
+        return try await finaliseTranscript(rawTranscript, active: active, sourceSessionID: sessionID)
     }
 
-    /// Accepts a pre-built transcript (e.g. from streaming) and runs cleanup, insertion, and history.
+    /// Accepts a pre-built transcript (e.g. from streaming) and runs cleanup.
     public func processStreamingTranscript(
         _ rawTranscript: RawTranscript,
         sessionID: SessionID,
         processingNote: String? = nil
-    ) async throws -> InsertResult {
+    ) async throws -> FinalizedTranscript {
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
             throw SessionCoordinatorError.sessionNotFound
         }
 
-        return try await finaliseTranscript(rawTranscript, active: active, processingNote: processingNote)
+        return try await finaliseTranscript(
+            rawTranscript,
+            active: active,
+            processingNote: processingNote,
+            sourceSessionID: sessionID
+        )
     }
 
     /// Finalises a streaming session from captured audio written by the UI-layer
@@ -112,21 +111,27 @@ public actor SessionCoordinator {
         sessionID: SessionID,
         languageHints: [String] = ["en-US"],
         processingNote: String? = nil
-    ) async throws -> InsertResult {
+    ) async throws -> FinalizedTranscript {
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
             throw SessionCoordinatorError.sessionNotFound
         }
 
         defer { try? FileManager.default.removeItem(at: audioURL) }
         let rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
-        return try await finaliseTranscript(rawTranscript, active: active, processingNote: processingNote)
+        return try await finaliseTranscript(
+            rawTranscript,
+            active: active,
+            processingNote: processingNote,
+            sourceSessionID: sessionID
+        )
     }
 
     private func finaliseTranscript(
         _ raw: RawTranscript,
         active: ActiveSession,
-        processingNote: String? = nil
-    ) async throws -> InsertResult {
+        processingNote: String? = nil,
+        sourceSessionID: SessionID
+    ) async throws -> FinalizedTranscript {
         var rawTranscript = raw
         rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
 
@@ -143,19 +148,6 @@ public actor SessionCoordinator {
         // Apply voice commands (punctuation, whitespace, "delete that", custom) after cleanup.
         let finalText = voiceCommandService.apply(to: cleanupResult.transcript.text)
 
-        var insertResult = await insertionService.insert(text: finalText, target: active.appContext)
-        insertResult.cleanupOutcome = cleanupResult.outcome
-
-        let entry = TranscriptEntry(
-            appBundleID: active.appContext.bundleIdentifier,
-            rawText: rawTranscript.text,
-            cleanText: finalText,
-            audioURL: nil,
-            insertionStatus: insertResult.status,
-            processingNote: processingNote
-        )
-        try await historyStore.append(entry: entry)
-
         // Feed session data to the learning engine for adaptive improvement.
         if let learningEngine {
             await learningEngine.observeSession(
@@ -167,7 +159,15 @@ public actor SessionCoordinator {
             await learningEngine.save()
         }
 
-        return insertResult
+        return FinalizedTranscript(
+            rawText: rawTranscript.text,
+            cleanText: finalText,
+            cleanupOutcome: cleanupResult.outcome,
+            appContext: active.appContext,
+            audioURL: nil,
+            processingNote: processingNote,
+            sourceSessionID: sourceSessionID
+        )
     }
 
     public func cancel(sessionID: SessionID) async {

@@ -5,10 +5,15 @@ import AppKit
 /// All access occurs on the main thread (tap is on the main run loop),
 /// but the class must be nonisolated because the C callback is nonisolated.
 private final class TapContext: @unchecked Sendable {
+    weak var monitor: MacHotkeyMonitor?
     var hotkey: HandsFreeHotkey?
     var onToggle: (() -> Void)?
     var onSubmit: (() -> Void)?
+    var aiFinishHotkey: HandsFreeHotkey?
+    var aiWorkflowFinishHotkeys: [HandsFreeHotkey] = []
+    var onAIFinish: ((HandsFreeHotkey?) -> Void)?
     var isSubmitEnabled = false
+    var isAIFinishEnabled = false
     var machPort: CFMachPort?
     /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
     /// disable/re-enable cycles that can occur when the system times out the tap.
@@ -24,6 +29,9 @@ public final class MacHotkeyMonitor: HotkeyService {
     }
     public var onSubmitActiveRecording: (() -> Void)? {
         didSet { tapContext.onSubmit = onSubmitActiveRecording }
+    }
+    public var onFinishActiveRecordingWithAI: ((HandsFreeHotkey?) -> Void)? {
+        didSet { tapContext.onAIFinish = onFinishActiveRecordingWithAI }
     }
     public var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)?
 
@@ -51,13 +59,38 @@ public final class MacHotkeyMonitor: HotkeyService {
             updateHandsFreeStatus()
         }
     }
+    public var aiFinishHotkey: HandsFreeHotkey? {
+        didSet {
+            tapContext.aiFinishHotkey = aiFinishHotkey
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
+    public var aiWorkflowFinishHotkeys: [HandsFreeHotkey] = [] {
+        didSet {
+            tapContext.aiWorkflowFinishHotkeys = aiWorkflowFinishHotkeys
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
+    public var isAIFinishEnabled: Bool = false {
+        didSet {
+            tapContext.isAIFinishEnabled = isAIFinishEnabled
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
 
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
+    private var globalKeyDownMonitor: Any?
+    private var localKeyDownMonitor: Any?
     private var isPressToTalkHeld = false
     private var isGlobalToggleModifierHeld = false
     private var toggleModifierGate = HotkeyToggleGate()
     private var callbackGeneration: UInt64 = 0
+    private var lastActiveRecordingKeyCode: UInt16?
+    private var lastActiveRecordingKeyTime: CFAbsoluteTime = 0
 
     private var hasStarted = false
 
@@ -65,8 +98,12 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var runLoopSource: CFRunLoopSource?
     private let tapContext = TapContext()
     public init() {
+        tapContext.monitor = self
         tapContext.hotkey = globalToggleHotkey
         tapContext.isSubmitEnabled = isSubmitActiveRecordingEnabled
+        tapContext.aiFinishHotkey = aiFinishHotkey
+        tapContext.aiWorkflowFinishHotkeys = aiWorkflowFinishHotkeys
+        tapContext.isAIFinishEnabled = isAIFinishEnabled
     }
 
     public func start() {
@@ -74,6 +111,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         callbackGeneration &+= 1
         hasStarted = true
         installPressToTalkMonitors()
+        installActiveRecordingKeyMonitors()
         updateHandsFreeStatus()
     }
 
@@ -82,6 +120,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         hasStarted = false
         uninstallEventTap()
         uninstallPressToTalkMonitors()
+        uninstallActiveRecordingKeyMonitors()
         isPressToTalkHeld = false
         isGlobalToggleModifierHeld = false
         toggleModifierGate.reset()
@@ -111,6 +150,82 @@ public final class MacHotkeyMonitor: HotkeyService {
             NSEvent.removeMonitor(localFlagsMonitor)
             self.localFlagsMonitor = nil
         }
+    }
+
+    private func installActiveRecordingKeyMonitors() {
+        guard globalKeyDownMonitor == nil, localKeyDownMonitor == nil else { return }
+
+        globalKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleActiveRecordingKeyDown(event, canSuppress: false)
+        }
+
+        localKeyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            let shouldSuppress = self.handleActiveRecordingKeyDown(event, canSuppress: true)
+            return shouldSuppress ? nil : event
+        }
+    }
+
+    private func uninstallActiveRecordingKeyMonitors() {
+        if let globalKeyDownMonitor {
+            NSEvent.removeMonitor(globalKeyDownMonitor)
+            self.globalKeyDownMonitor = nil
+        }
+        if let localKeyDownMonitor {
+            NSEvent.removeMonitor(localKeyDownMonitor)
+            self.localKeyDownMonitor = nil
+        }
+    }
+
+    @discardableResult
+    private func handleActiveRecordingKeyDown(_ event: NSEvent, canSuppress: Bool) -> Bool {
+        let keyCode = event.keyCode
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard modifiers.subtracting(.capsLock).isEmpty, !event.isARepeat else {
+            return false
+        }
+
+        if isSubmitActiveRecordingEnabled, isReturnKeyCode(keyCode) {
+            guard shouldHandleActiveRecordingKey(keyCode) else { return false }
+            onSubmitActiveRecording?()
+            return canSuppress
+        }
+
+        if isAIFinishEnabled,
+           let matchedHotkey = matchingAIWorkflowHotkey(for: keyCode) {
+            guard shouldHandleActiveRecordingKey(keyCode) else { return false }
+            onFinishActiveRecordingWithAI?(matchedHotkey)
+            return canSuppress
+        }
+
+        return false
+    }
+
+    private func matchingAIWorkflowHotkey(for keyCode: UInt16) -> HandsFreeHotkey? {
+        if let matchedCustom = aiWorkflowFinishHotkeys.first(where: {
+            if case .keyCode(let customKeyCode) = $0 {
+                return customKeyCode == keyCode
+            }
+            return false
+        }) {
+            return matchedCustom
+        }
+
+        if case .keyCode(let aiKeyCode)? = aiFinishHotkey, aiKeyCode == keyCode {
+            return nil
+        }
+
+        return nil
+    }
+
+    private func shouldHandleActiveRecordingKey(_ keyCode: UInt16) -> Bool {
+        let now = CFAbsoluteTimeGetCurrent()
+        if lastActiveRecordingKeyCode == keyCode, now - lastActiveRecordingKeyTime < 0.15 {
+            return false
+        }
+        lastActiveRecordingKeyCode = keyCode
+        lastActiveRecordingKeyTime = now
+        return true
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
@@ -240,18 +355,64 @@ public final class MacHotkeyMonitor: HotkeyService {
             return
         }
 
+        if isAIFinishEnabled {
+            let allAIHotkeys = ([aiFinishHotkey].compactMap { $0 } + aiWorkflowFinishHotkeys)
+            if allAIHotkeys.isEmpty {
+                uninstallEventTap()
+                onRegistrationStatusChanged?(
+                    .unavailable(reason: "Set an AI finish key on the default AI action or a custom AI workflow.")
+                )
+                return
+            }
+
+            var seenAIKeyCodes: Set<UInt16> = []
+            for hotkey in allAIHotkeys {
+                guard case .keyCode(let aiKeyCode) = hotkey else {
+                    uninstallEventTap()
+                    onRegistrationStatusChanged?(
+                        .unavailable(reason: "AI finish keys must be single keys, not modifiers.")
+                    )
+                    return
+                }
+
+                if !seenAIKeyCodes.insert(aiKeyCode).inserted {
+                    uninstallEventTap()
+                    onRegistrationStatusChanged?(
+                        .unavailable(reason: "Each AI finish key must be unique.")
+                    )
+                    return
+                }
+
+                if case .keyCode(let toggleKeyCode)? = globalToggleHotkey, toggleKeyCode == aiKeyCode {
+                    uninstallEventTap()
+                    onRegistrationStatusChanged?(
+                        .unavailable(reason: "AI finish keys can't match the hands-free key.")
+                    )
+                    return
+                }
+
+                if isSubmitActiveRecordingEnabled, isReturnKeyCode(aiKeyCode) {
+                    uninstallEventTap()
+                    onRegistrationStatusChanged?(
+                        .unavailable(reason: "Return can't be both the end-and-submit key and an AI finish key.")
+                    )
+                    return
+                }
+            }
+        }
+
         switch globalToggleHotkey {
         case .keyCode?:
             installEventTap()
         case .modifier?:
-            if isSubmitActiveRecordingEnabled {
+            if isSubmitActiveRecordingEnabled || isAIFinishEnabled {
                 installEventTap()
             } else {
                 uninstallEventTap()
                 onRegistrationStatusChanged?(.registered)
             }
         case nil:
-            if isSubmitActiveRecordingEnabled {
+            if isSubmitActiveRecordingEnabled || isAIFinishEnabled {
                 installEventTap()
             } else {
                 uninstallEventTap()
@@ -299,7 +460,31 @@ public final class MacHotkeyMonitor: HotkeyService {
            isReturnKeyCode(keyCode),
            flags.intersection(userMods).isEmpty,
            event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-            DispatchQueue.main.async { ctx.onSubmit?() }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let monitor = ctx.monitor
+                    monitor?.markHandledActiveRecordingKey(keyCode)
+                }
+                ctx.onSubmit?()
+            }
+            return nil
+        }
+
+        if ctx.isAIFinishEnabled,
+           flags.intersection(userMods).isEmpty,
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
+           let matchedHotkey = matchingAIWorkflowHotkey(
+                keyCode: keyCode,
+                defaultHotkey: ctx.aiFinishHotkey,
+                workflowHotkeys: ctx.aiWorkflowFinishHotkeys
+           ) {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let monitor = ctx.monitor
+                    monitor?.markHandledActiveRecordingKey(keyCode)
+                }
+                ctx.onAIFinish?(matchedHotkey)
+            }
             return nil
         }
 
@@ -321,12 +506,42 @@ public final class MacHotkeyMonitor: HotkeyService {
         MainActor.assumeIsolated {
             uninstallEventTap()
             uninstallPressToTalkMonitors()
+            uninstallActiveRecordingKeyMonitors()
             // Clear callback state defensively after uninstall.
             tapContext.machPort = nil
             tapContext.onToggle = nil
             tapContext.onSubmit = nil
+            tapContext.onAIFinish = nil
             tapContext.hotkey = nil
+            tapContext.aiFinishHotkey = nil
+            tapContext.monitor = nil
         }
+    }
+
+    private func markHandledActiveRecordingKey(_ keyCode: UInt16) {
+        lastActiveRecordingKeyCode = keyCode
+        lastActiveRecordingKeyTime = CFAbsoluteTimeGetCurrent()
+    }
+
+    private static func matchingAIWorkflowHotkey(
+        keyCode: UInt16,
+        defaultHotkey: HandsFreeHotkey?,
+        workflowHotkeys: [HandsFreeHotkey]
+    ) -> HandsFreeHotkey? {
+        if let matchedCustom = workflowHotkeys.first(where: {
+            if case .keyCode(let customKeyCode) = $0 {
+                return customKeyCode == keyCode
+            }
+            return false
+        }) {
+            return matchedCustom
+        }
+
+        if case .keyCode(let aiKeyCode)? = defaultHotkey, aiKeyCode == keyCode {
+            return nil
+        }
+
+        return nil
     }
 
     // MARK: - Utilities

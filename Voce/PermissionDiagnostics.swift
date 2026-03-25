@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 import Foundation
+import Speech
 
 struct PermissionDiagnostics {
     enum AccessStatus: String {
@@ -31,6 +32,19 @@ struct PermissionDiagnostics {
         CGPreflightListenEventAccess() ? .granted : .denied
     }
 
+    static func speechRecognitionStatus() -> AccessStatus {
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            return .granted
+        case .denied, .restricted:
+            return .denied
+        case .notDetermined:
+            return .unknown
+        @unknown default:
+            return .unknown
+        }
+    }
+
     static func requestMicrophonePermission() async -> Bool {
         await AVCaptureDevice.requestAccess(for: .audio)
     }
@@ -47,6 +61,19 @@ struct PermissionDiagnostics {
         _ = CGRequestListenEventAccess()
         // The request call may return before user action. Check preflight later.
         return false
+    }
+
+    static func requestSpeechRecognitionPermission() async -> Bool {
+        let current = SFSpeechRecognizer.authorizationStatus()
+        guard current == .notDetermined else {
+            return current == .authorized
+        }
+
+        return await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status == .authorized)
+            }
+        }
     }
 
     static func openAccessibilitySettings() {
@@ -74,6 +101,16 @@ struct PermissionDiagnostics {
             candidates: [
                 "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
                 "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity"
+            ]
+        )
+    }
+
+    static func openSpeechRecognitionSettings() {
+        openSettingsURL(
+            candidates: [
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
+                "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_SpeechRecognition",
                 "x-apple.systempreferences:com.apple.settings.PrivacySecurity"
             ]
         )

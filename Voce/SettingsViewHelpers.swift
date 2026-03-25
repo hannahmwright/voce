@@ -241,11 +241,18 @@ final class HotkeyCaptureCoordinator: ObservableObject {
     private var keyMonitor: Any?
     private var flagsMonitor: Any?
     private var resignObserver: NSObjectProtocol?
+    private var allowModifierCapture = true
 
-    func startCapture(onCapture: @escaping (HandsFreeHotkey) -> Void) {
+    func startCapture(
+        allowModifierCapture: Bool = true,
+        onCapture: @escaping (HandsFreeHotkey) -> Void
+    ) {
         stopCapture(clearHelperText: false)
         isCapturing = true
-        helperText = "Press a single key or modifier. Esc cancels."
+        self.allowModifierCapture = allowModifierCapture
+        helperText = allowModifierCapture
+            ? "Press a single key or modifier. Esc cancels."
+            : "Press a single key. Esc cancels."
 
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -319,6 +326,11 @@ final class HotkeyCaptureCoordinator: ObservableObject {
 
         if event.keyCode == 53 {
             stopCapture()
+            return nil
+        }
+
+        if !allowModifierCapture {
+            helperText = "Modifier-only keys aren't supported here. Press a single key."
             return nil
         }
 
@@ -531,6 +543,7 @@ struct PressToTalkHotkeyRecorderField: View {
 
 struct HotkeyRecorderField: View {
     @Binding var hotkey: HandsFreeHotkey?
+    var allowModifierCapture: Bool = true
     @StateObject private var coordinator = HotkeyCaptureCoordinator()
 
     var body: some View {
@@ -540,7 +553,7 @@ struct HotkeyRecorderField: View {
                     if coordinator.isCapturing {
                         coordinator.stopCapture()
                     } else {
-                        coordinator.startCapture { capturedHotkey in
+                        coordinator.startCapture(allowModifierCapture: allowModifierCapture) { capturedHotkey in
                             hotkey = capturedHotkey
                         }
                     }
@@ -601,7 +614,7 @@ struct HotkeyRecorderField: View {
 
     private var fieldTitle: String {
         if coordinator.isCapturing {
-            return "Press a key..."
+            return allowModifierCapture ? "Press a key..." : "Press a single key..."
         }
 
         guard let hotkey else {

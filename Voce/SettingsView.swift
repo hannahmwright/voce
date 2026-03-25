@@ -149,6 +149,8 @@ struct SettingsView: View {
             MediaSettingsSection(preferences: $preferencesDraft)
             CleanupStyleSettingsSection(preferences: $preferencesDraft)
             AnchorOverrideSettingsSection(preferences: $preferencesDraft)
+        case .ai:
+            AISettingsSection(preferences: $preferencesDraft)
         case .vocabulary:
             LexiconSettingsSection(preferences: $preferencesDraft)
             SnippetsSettingsSection(preferences: $preferencesDraft)
@@ -172,6 +174,7 @@ struct SettingsView: View {
 private enum SettingsGroup: String, CaseIterable {
     case setup
     case behavior
+    case ai
     case vocabulary
     case general
 
@@ -179,6 +182,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup: return "Setup"
         case .behavior: return "Behavior"
+        case .ai: return "AI"
         case .vocabulary: return "Vocabulary"
         case .general: return "General"
         }
@@ -188,6 +192,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup: return "Permissions, hotkeys, engine"
         case .behavior: return "Insertion, media, cleanup, overlay"
+        case .ai: return "Workflows, phrases, Apple Intelligence"
         case .vocabulary: return "Lexicon, snippets, voice"
         case .general: return "Launch, visibility, onboarding"
         }
@@ -199,6 +204,8 @@ private enum SettingsGroup: String, CaseIterable {
             return "Get Voce ready to listen: system permissions, recording controls, and the live transcription model."
         case .behavior:
             return "Shape how transcripts are inserted, how media behaves during dictation, and how cleanup is applied."
+        case .ai:
+            return "Configure Apple Intelligence workflows, spoken AI triggers, and hands-free AI finish behavior."
         case .vocabulary:
             return "Teach Voce your preferred words, saved snippets, voice commands, and learned corrections."
         case .general:
@@ -210,6 +217,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup: return "gearshape"
         case .behavior: return "slider.horizontal.3"
+        case .ai: return "sparkles"
         case .vocabulary: return "text.book.closed"
         case .general: return "wrench.and.screwdriver"
         }
@@ -219,7 +227,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup:
             return "Start here"
-        case .behavior, .vocabulary, .general:
+        case .behavior, .ai, .vocabulary, .general:
             return nil
         }
     }
