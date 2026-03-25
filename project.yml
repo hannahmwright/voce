@@ -17,6 +17,8 @@ targets:
     platform: macOS
     sources:
       - path: Voce
+    resources:
+      - path: Voce/processing-background.mp4
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.voceapp.voce
@@ -24,8 +26,8 @@ targets:
         CODE_SIGN_IDENTITY: Apple Development
         CODE_SIGN_ENTITLEMENTS: Voce/Voce.entitlements
         SWIFT_VERSION: 6.0
-        MARKETING_VERSION: 0.4.20
-        CURRENT_PROJECT_VERSION: 23
+        MARKETING_VERSION: 0.4.21
+        CURRENT_PROJECT_VERSION: 24
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Voce/Info.plist
       configs:

@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import ApplicationServices
+import AVFoundation
 import CoreImage
 import QuartzCore
 
@@ -58,6 +59,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var glassHostView: NSView?
     private var backgroundImageLayer: CALayer?
     private var revealedBackgroundImageLayer: CALayer?
+    private var processingVideoLayer: AVPlayerLayer?
     private var scrimLayer: CAGradientLayer?
     private var auraPrimaryLayer: CAGradientLayer?
     private var auraSecondaryLayer: CAGradientLayer?
@@ -83,6 +85,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var userDidDrag = false
     private var repositionModeEnabled = false
     private var repositionModeTask: Task<Void, Never>?
+    private var processingPlayer: AVQueuePlayer?
+    private var processingLooper: AVPlayerLooper?
 
     /// Called when the user finishes dragging the overlay to a new position.
     /// Provides the window origin so the caller can persist it per-app.
@@ -117,6 +121,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             timer = nil
             repositionModeTask?.cancel()
             repositionModeTask = nil
+            processingPlayer?.pause()
+            processingLooper = nil
+            processingPlayer = nil
             NSWorkspace.shared.notificationCenter.removeObserver(self)
         }
     }
@@ -444,6 +451,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassHost.layer?.addSublayer(revealedImageLayer)
         self.revealedBackgroundImageLayer = revealedImageLayer
 
+        let processingVideoLayer = AVPlayerLayer()
+        processingVideoLayer.videoGravity = .resizeAspectFill
+        processingVideoLayer.opacity = 0.0
+        processingVideoLayer.frame = glassHost.bounds
+        processingVideoLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        glassHost.layer?.addSublayer(processingVideoLayer)
+        self.processingVideoLayer = processingVideoLayer
+
         // Light frosted scrim — white/cream, heavier in center for readability,
         // fading at edges so the painting peeks through like the app window.
         let scrimLayer = CAGradientLayer()
@@ -670,8 +685,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func applyDefaultSurfaceAppearance() {
+        stopProcessingVideo()
         backgroundImageLayer?.opacity = 0.70
         revealedBackgroundImageLayer?.opacity = 0.0
+        processingVideoLayer?.opacity = 0.0
         scrimLayer?.colors = [
             NSColor.white.withAlphaComponent(0.82).cgColor,
             NSColor.white.withAlphaComponent(0.62).cgColor,
@@ -688,19 +705,21 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func applyTranscribingSurfaceAppearance() {
-        backgroundImageLayer?.opacity = 0.32
-        revealedBackgroundImageLayer?.opacity = 0.62
+        playProcessingVideoIfNeeded()
+        backgroundImageLayer?.opacity = 0.0
+        revealedBackgroundImageLayer?.opacity = 0.0
+        processingVideoLayer?.opacity = 1.0
         scrimLayer?.colors = [
-            NSColor.white.withAlphaComponent(0.50).cgColor,
-            NSColor.white.withAlphaComponent(0.30).cgColor,
-            NSColor.white.withAlphaComponent(0.14).cgColor
+            NSColor.white.withAlphaComponent(0.28).cgColor,
+            NSColor.white.withAlphaComponent(0.16).cgColor,
+            NSColor.white.withAlphaComponent(0.08).cgColor
         ]
         glassTintLayer?.colors = [
-            Self.accentCyan.withAlphaComponent(0.08).cgColor,
-            NSColor.white.withAlphaComponent(0.02).cgColor,
-            Self.accentWheat.withAlphaComponent(0.11).cgColor
+            Self.accentCyan.withAlphaComponent(0.03).cgColor,
+            NSColor.white.withAlphaComponent(0.01).cgColor,
+            Self.accentWheat.withAlphaComponent(0.04).cgColor
         ]
-        sheenLayer?.opacity = 0.78
+        sheenLayer?.opacity = 0.42
         glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
         glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.56).cgColor
     }
@@ -763,6 +782,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         auraSecondaryLayer?.frame = CGRect(x: rect.width * 0.08, y: -32, width: rect.width * 0.82, height: rect.height + 64)
         backgroundImageLayer?.frame = rect
         revealedBackgroundImageLayer?.frame = rect
+        processingVideoLayer?.frame = rect
         scrimLayer?.frame = rect
         glassTintLayer?.frame = rect
         sheenLayer?.frame = rect
@@ -790,16 +810,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         guard activePulseMode != .transcribing else { return }
         stopDotPulse()
         activePulseMode = .transcribing
-        addBreathingAnimation(to: auraPrimaryLayer, key: "primaryBreath", scale: 1.08, opacity: 1.0)
-        addBreathingAnimation(to: auraSecondaryLayer, key: "secondaryBreath", scale: 1.12, opacity: 0.86, duration: 3.8)
-        addDriftAnimation(to: auraSecondaryLayer)
-        startBorderAnimation()
-        addBubblePulseAnimation(to: containerView?.layer, key: "transcribingBubblePulse")
-        addOpacityPulseAnimation(to: glassHostView?.layer, key: "transcribingGlassPulse")
-        addFieldRevealAnimation(to: revealedBackgroundImageLayer, key: "transcribingFieldReveal")
+        playProcessingVideoIfNeeded()
     }
 
     private func stopDotPulse() {
+        stopProcessingVideo()
         activePulseMode = .none
         auraPrimaryLayer?.removeAllAnimations()
         auraSecondaryLayer?.removeAllAnimations()
@@ -816,6 +831,28 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         containerView?.layer?.shadowRadius = 28
         containerView?.layer?.shadowOpacity = 0.85
         stopBorderAnimation()
+    }
+
+    private func playProcessingVideoIfNeeded() {
+        guard let videoLayer = processingVideoLayer else { return }
+        if processingPlayer == nil,
+           let url = Self.loadProcessingVideoURL() {
+            let asset = AVAsset(url: url)
+            let item = AVPlayerItem(asset: asset)
+            let player = AVQueuePlayer()
+            player.isMuted = true
+            player.actionAtItemEnd = .none
+            processingLooper = AVPlayerLooper(player: player, templateItem: item)
+            processingPlayer = player
+            videoLayer.player = player
+        }
+
+        processingPlayer?.seek(to: .zero)
+        processingPlayer?.play()
+    }
+
+    private func stopProcessingVideo() {
+        processingPlayer?.pause()
     }
 
     private func startBorderAnimation() {
@@ -1308,6 +1345,19 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private static func loadBackgroundCGImage() -> CGImage? {
         guard let image = loadBackgroundImage() else { return nil }
         return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private static func loadProcessingVideoURL() -> URL? {
+        if let url = Bundle.main.url(forResource: "processing-background", withExtension: "mp4") {
+            return url
+        }
+        #if DEBUG
+        let devPath = "/tmp/processing-background.mp4"
+        if FileManager.default.fileExists(atPath: devPath) {
+            return URL(fileURLWithPath: devPath)
+        }
+        #endif
+        return nil
     }
 
     private static func loadBlurredBackgroundImage() -> CGImage? {

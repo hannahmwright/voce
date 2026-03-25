@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.21</title>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>0.4.21</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.4</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.21</h2>
+        <ul>
+          <li>Turns the transcribing state into a looping processing video, so the bubble feels richer and more alive while it finishes the thought</li>
+          <li>Bundles that processing animation as a real app resource, so the effect shows up in release builds instead of depending on a development-only fallback path</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 25 Mar 2026 15:51:30 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.21/Voce-0.4.21.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="9gaK08/yRnr/QfCsFOyoZCmpMM7mMsj4lHWW4QCUTQkBEcePXerzd9f0f5VFfKYuCMKGTqEuRc3bJ7AQEhoBAw=="
+        length="38288705"
+      />
+    </item>
+    <item>
       <title>Version 0.4.20</title>
       <sparkle:version>23</sparkle:version>
       <sparkle:shortVersionString>0.4.20</sparkle:shortVersionString>

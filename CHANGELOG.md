@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-03-25
+
+### Changed
+- The processing state now plays a looping background video instead of the previous layered pulse treatment, giving the bubble a fuller sense of motion while transcription finishes.
+- The processing background video is now bundled as an app resource so release builds show the same effect as local development previews.
+
 ## [0.4.20] - 2026-03-24
 
 ### Changed

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		03986840139C4AA94F78ABB9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 50AD16F1028A28BE2DBDD187 /* Assets.xcassets */; };
+		03F0C41B51C24B2D9C537A10 /* processing-background.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 03F0C41B51C24B2D9C537A0F /* processing-background.mp4 */; };
 		04B1A91240C329A601315488 /* PermissionDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */; };
 		052A3669946558CC70909BF8 /* LexiconSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F778826155A1B6A51FAEB312 /* LexiconSettingsSection.swift */; };
 		1AEEA42B54F2CD3B925F30E6 /* RecordTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */; };
@@ -52,6 +53,7 @@
 /* Begin PBXFileReference section */
 		07C77BF174F1612CF321FC97 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		0F8267E63FADBC256B9A7BA6 /* SnippetsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsSettingsSection.swift; sourceTree = "<group>"; };
+		03F0C41B51C24B2D9C537A0F /* processing-background.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = "processing-background.mp4"; sourceTree = "<group>"; };
 		128AD8910D9A8594E0D83AD8 /* VoceKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VoceKit; path = VoceKit; sourceTree = SOURCE_ROOT; };
 		132DA21638FE9F910C3B310F /* DictationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationController.swift; sourceTree = "<group>"; };
 		19FBF88B728F286E86103A70 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -122,6 +124,7 @@
 				4A43BDB5365A4C04B39377D7 /* AppPreferences.swift */,
 				32D6BB3AE4EEE92E50CFFE78 /* AppPreferencesStore.swift */,
 				50AD16F1028A28BE2DBDD187 /* Assets.xcassets */,
+				03F0C41B51C24B2D9C537A0F /* processing-background.mp4 */,
 				F2E1D0C9B8A7F6E5D4C3B2A1 /* AnchorOverrideSettingsSection.swift */,
 				30FC345D5219417D3A6101AD /* CleanupStyleSettingsSection.swift */,
 				7B575DB65BF978A9BCA10827 /* ContentView.swift */,
@@ -247,6 +250,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				03986840139C4AA94F78ABB9 /* Assets.xcassets in Resources */,
+				03F0C41B51C24B2D9C537A10 /* processing-background.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -307,7 +311,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 24;
 				ENABLE_APP_INTENTS_METADATA_GENERATION = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -316,7 +320,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.20;
+				MARKETING_VERSION = 0.4.21;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
@@ -387,7 +391,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 23;
+				CURRENT_PROJECT_VERSION = 24;
 				ENABLE_APP_INTENTS_METADATA_GENERATION = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
@@ -395,7 +399,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.20;
+				MARKETING_VERSION = 0.4.21;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
