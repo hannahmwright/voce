@@ -13,7 +13,7 @@ struct AISettingsSection: View {
 
         init(from workflow: AIWorkflow) {
             title = workflow.name
-            prompt = workflow.promptTemplate ?? ""
+            prompt = workflow.effectivePromptTemplate ?? ""
             triggerPhrase = workflow.leadingPhrases.first ?? ""
             endKey = workflow.handsFreeFinishHotkey
             isEnabled = workflow.isEnabled
@@ -107,8 +107,8 @@ struct AISettingsSection: View {
                     .frame(width: 90, alignment: .leading)
                 Text("Finish Key")
                     .frame(width: 72, alignment: .leading)
-                Text("Status")
-                    .frame(width: 48, alignment: .center)
+                Text("Enabled")
+                    .frame(width: 60, alignment: .center)
                 Spacer()
                     .frame(width: 52)
             }
@@ -170,34 +170,17 @@ struct AISettingsSection: View {
             .lineLimit(1)
             .frame(width: 72, alignment: .leading)
 
-            // Enabled badge
-            Text(workflow.isEnabled ? "On" : "Off")
-                .font(VoceDesign.label())
-                .padding(.horizontal, VoceDesign.sm)
-                .padding(.vertical, VoceDesign.xxs)
-                .background(
-                    Capsule().fill(
-                        workflow.isEnabled
-                            ? VoceDesign.success.opacity(VoceDesign.opacitySubtle)
-                            : VoceDesign.textSecondary.opacity(VoceDesign.opacitySubtle)
-                    )
-                )
-                .foregroundStyle(workflow.isEnabled ? VoceDesign.success : VoceDesign.textSecondary)
-                .frame(width: 48, alignment: .center)
+            Toggle("", isOn: workflowEnabledBinding(at: index))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.mini)
+                .disabled(!preferences.ai.isEnabled)
+                .accessibilityLabel("\(workflow.name) enabled")
+                .frame(width: 60, alignment: .center)
 
-            // Edit button (pencil for custom, toggle for built-in)
-            if workflow.isBuiltIn {
-                Toggle("", isOn: workflowEnabledBinding(at: index))
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.mini)
-                    .disabled(!preferences.ai.isEnabled)
-                    .frame(width: 52, alignment: .center)
-            } else {
-                // Edit
+            HStack(spacing: 0) {
                 Button {
-                    draft = WorkflowDraft(from: workflow)
-                    sheetMode = .edit(index: index)
+                    editWorkflow(at: index)
                 } label: {
                     Image(systemName: "pencil")
                         .font(VoceDesign.caption())
@@ -208,20 +191,25 @@ struct AISettingsSection: View {
                 .accessibilityLabel("Edit \(workflow.name)")
                 .frame(width: 26, alignment: .center)
 
-                // Delete
-                Button(role: .destructive) {
-                    removeWorkflow(at: index)
-                } label: {
-                    Image(systemName: "trash")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(isHovered ? VoceDesign.error : VoceDesign.textSecondary.opacity(0.6))
+                if workflow.isBuiltIn {
+                    Color.clear
+                        .frame(width: 26, height: 1)
+                } else {
+                    Button(role: .destructive) {
+                        removeWorkflow(at: index)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(isHovered ? VoceDesign.error : VoceDesign.textSecondary.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete workflow")
+                    .accessibilityLabel("Delete \(workflow.name)")
+                    .disabled(!preferences.ai.isEnabled)
+                    .frame(width: 26, alignment: .center)
                 }
-                .buttonStyle(.plain)
-                .help("Delete workflow")
-                .accessibilityLabel("Delete \(workflow.name)")
-                .disabled(!preferences.ai.isEnabled)
-                .frame(width: 26, alignment: .center)
             }
+            .frame(width: 52, alignment: .trailing)
         }
         .padding(.horizontal, VoceDesign.sm)
         .padding(.vertical, VoceDesign.sm)
@@ -457,6 +445,11 @@ struct AISettingsSection: View {
             preferences.ai.defaultHandsFreeWorkflowID = workflow.id
         }
         sheetMode = nil
+    }
+
+    private func editWorkflow(at index: Int) {
+        draft = WorkflowDraft(from: preferences.ai.workflows[index])
+        sheetMode = .edit(index: index)
     }
 
     private func applyDraftToWorkflow(at index: Int) {

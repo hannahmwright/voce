@@ -68,9 +68,46 @@ public struct AIWorkflow: Sendable, Codable, Equatable, Identifiable {
 
 extension AIWorkflow {
     public static let askID = UUID(uuidString: "E88BCE11-3870-47E4-8A5D-5A4AB0A183C1")!
+    public static let aiPromptID = UUID(uuidString: "07A82B8B-2B28-4055-834F-BA1D6FD6DA89")!
     public static let rewriteID = UUID(uuidString: "87E578D8-2BEC-4CFD-9D55-01765A8D5759")!
     public static let summarizeID = UUID(uuidString: "1AA3F135-35C4-4B6A-BD33-55E4C7034D36")!
     public static let legacyCustomPromptID = UUID(uuidString: "91204ABC-5ED0-4F31-9760-BA5F97A41630")!
+
+    public static func defaultPromptTemplate(for kind: AIWorkflowKind) -> String? {
+        switch kind {
+        case .ask:
+            return """
+            Answer the user's request clearly and directly.
+
+            User request:
+            {{input}}
+            """
+        case .rewrite:
+            return """
+            Rewrite the following text for clarity and flow while preserving its meaning and tone. Return only the rewritten text.
+
+            Text:
+            {{input}}
+            """
+        case .summarize:
+            return """
+            Summarize the following text concisely. Return only the summary.
+
+            Text:
+            {{input}}
+            """
+        case .customPrompt:
+            return nil
+        }
+    }
+
+    public var effectivePromptTemplate: String? {
+        let trimmedTemplate = promptTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedTemplate.isEmpty {
+            return trimmedTemplate
+        }
+        return Self.defaultPromptTemplate(for: kind)
+    }
 
     public static let builtIns: [AIWorkflow] = [
         AIWorkflow(
@@ -78,6 +115,27 @@ extension AIWorkflow {
             name: "Ask AI",
             kind: .ask,
             leadingPhrases: ["ask ai", "question for ai"],
+            isBuiltIn: true
+        ),
+        AIWorkflow(
+            id: aiPromptID,
+            name: "AI Prompt",
+            kind: .customPrompt,
+            leadingPhrases: ["ai prompt", "prompt for ai"],
+            handsFreeFinishHotkey: .keyCode(47),
+            promptTemplate: """
+            Convert the following transcription into a clear and effective prompt for an AI assistant.
+
+            - Preserve the user's intent exactly
+            - Remove filler words and repetition
+            - Fix grammar and phrasing
+            - Make the request explicit and unambiguous
+
+            Transcription:
+            {{input}}
+
+            Improved Prompt:
+            """,
             isBuiltIn: true
         ),
         AIWorkflow(

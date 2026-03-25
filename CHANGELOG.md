@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.23] - 2026-03-25
+
+### Added
+- Added a built-in `AI Prompt` workflow that turns rough dictation into a clearer prompt for an AI assistant, with a default period-key hands-free finish shortcut.
+
+### Changed
+- AI workflow prompt generation now uses each workflow's effective prompt template consistently, so built-in workflows can ship sensible defaults while still allowing explicit overrides.
+- The AI workflows settings table now uses inline toggles for every workflow and a more consistent edit/delete control layout.
+- Media interruption now only pauses on confirmed `playing` state and only resumes on confirmed `notPlaying` state, avoiding extra play/pause key presses when playback state is merely likely or unknown.
+
 ## [0.4.22] - 2026-03-25
 
 ### Added

@@ -69,7 +69,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         }
 
         switch detection {
-        case .playing, .likelyPlaying:
+        case .playing:
             if Task.isCancelled {
                 Self.logger.debug("Skipping media interruption because task is cancelled before key send.")
                 return nil
@@ -94,20 +94,20 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             }
 
             switch postPauseDetection {
-            case .notPlaying, .unknown:
+            case .notPlaying:
                 activeTokens.insert(token.id)
                 pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
                 Self.logger.debug(
                     "Media interruption confirmed paused. Active tokens: \(self.activeTokens.count, privacy: .public)"
                 )
                 return token
-            case .playing, .likelyPlaying:
+            case .playing, .likelyPlaying, .unknown:
                 Self.logger.debug(
                     "Media interruption pause was not confirmed. Skipping token to avoid unsafe resume. Detection: \(postPauseDetection.logValue, privacy: .public)"
                 )
                 return nil
             }
-        case .notPlaying, .unknown:
+        case .likelyPlaying, .notPlaying, .unknown:
             Self.logger.debug("Media interruption skipped. Detection: \(detection.logValue, privacy: .public)")
             return nil
         }
@@ -177,9 +177,11 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.debug(
                 "Skipping media interruption resume because playback already appears active: \(detection.logValue, privacy: .public)"
             )
-        case .notPlaying, .unknown:
+        case .notPlaying:
             let didSend = sendPlayPauseKey()
             Self.logger.debug("Media interruption resume key send attempted: \(didSend, privacy: .public)")
+        case .unknown:
+            Self.logger.debug("Skipping media interruption resume because playback state is unknown.")
         }
     }
 }

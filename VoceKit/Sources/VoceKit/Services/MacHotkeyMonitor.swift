@@ -360,7 +360,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             if allAIHotkeys.isEmpty {
                 uninstallEventTap()
                 onRegistrationStatusChanged?(
-                    .unavailable(reason: "Set an AI finish key on the default AI action or a custom AI workflow.")
+                    .unavailable(reason: "Set an AI finish key on at least one AI workflow.")
                 )
                 return
             }

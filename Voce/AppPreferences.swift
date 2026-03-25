@@ -358,6 +358,12 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
         existingWorkflows = existingWorkflows.map { workflow in
             var updated = workflow
+            if AIWorkflow.builtInByID[updated.id] != nil {
+                updated.isBuiltIn = true
+            }
+            if updated.id == AIWorkflow.legacyCustomPromptID {
+                updated.isBuiltIn = false
+            }
             if case .modifier? = updated.handsFreeFinishHotkey {
                 updated.handsFreeFinishHotkey = nil
             }

@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.23</title>
+      <sparkle:version>26</sparkle:version>
+      <sparkle:shortVersionString>0.4.23</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.23</h2>
+        <ul>
+          <li>Adds a built-in AI Prompt workflow that turns rough dictation into a cleaner prompt for an AI assistant, with a default period-key hands-free finish shortcut</li>
+          <li>Makes AI workflow prompt generation use each workflow's effective prompt template consistently, so built-ins ship with defaults while explicit overrides still win</li>
+          <li>Tightens media interruption again so pause and resume only happen on confirmed playback states, which reduces stray media key presses when the state is only likely or unknown</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 25 Mar 2026 20:33:43 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.23/Voce-0.4.23.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="sjd4wJZ7knN71s5O4oCxmqbmytQ8zdQQ/y4XcO9EgCem9nqgimC/Hw3K/avvuhNcGtNlfZ7/YWfKiuC9UwiSBQ=="
+        length="38399652"
+      />
+    </item>
+    <item>
       <title>Version 0.4.22</title>
       <sparkle:version>25</sparkle:version>
       <sparkle:shortVersionString>0.4.22</sparkle:shortVersionString>

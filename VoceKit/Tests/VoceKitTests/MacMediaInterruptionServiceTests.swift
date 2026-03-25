@@ -146,19 +146,19 @@ func mediaKeyTapLocationFallsBackToHIDForInvalidOverride() {
 }
 
 @MainActor
-@Test("Media interruption pauses when playback is likely active")
-func mediaInterruptionPausesWhenPlaybackIsLikelyActive() async {
+@Test("Media interruption skips pause when playback is only likely active")
+func mediaInterruptionSkipsPauseWhenPlaybackIsLikelyActive() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: SequencedPlaybackDetector([.likelyPlaying, .notPlaying]),
+        playbackDetector: StaticPlaybackDetector(.likelyPlaying),
         sendPlayPauseKey: { recorder.send() },
         pauseConfirmationDelayNanoseconds: 0
     )
 
     let token = await service.beginInterruption()
 
-    #expect(token != nil)
-    #expect(recorder.sendCalls == 1)
+    #expect(token == nil)
+    #expect(recorder.sendCalls == 0)
 }
 
 @MainActor
@@ -179,8 +179,8 @@ func mediaInterruptionSkipsTokenWhenPauseIsNotConfirmed() async {
 }
 
 @MainActor
-@Test("Media interruption accepts unknown confirmation to avoid unsafe resume")
-func mediaInterruptionAcceptsUnknownPauseConfirmation() async {
+@Test("Media interruption skips token when pause confirmation is unknown")
+func mediaInterruptionSkipsTokenWhenPauseConfirmationIsUnknown() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector([.playing, .unknown, .unknown]),
@@ -189,15 +189,10 @@ func mediaInterruptionAcceptsUnknownPauseConfirmation() async {
         minimumResumeDelayNanoseconds: 0
     )
 
-    guard let token = await service.beginInterruption() else {
-        Issue.record("Expected interruption token when pause confirmation is unknown.")
-        return
-    }
+    let token = await service.beginInterruption()
 
-    service.endInterruption(token: token)
-    try? await Task.sleep(nanoseconds: 20_000_000)
-
-    #expect(recorder.sendCalls == 2)
+    #expect(token == nil)
+    #expect(recorder.sendCalls == 1)
 }
 
 @MainActor
@@ -250,7 +245,7 @@ func unknownPlaybackStateMustNotStartPhantomMediaPlayback() async {
 func mediaInterruptionResumesOnlyForActiveToken() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying]),
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .notPlaying]),
         sendPlayPauseKey: { recorder.send() },
         minimumResumeDelayNanoseconds: 0
     )
@@ -271,7 +266,7 @@ func mediaInterruptionResumesOnlyForActiveToken() async {
 func mediaInterruptionIgnoresInvalidOrDuplicateTokens() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying]),
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .notPlaying]),
         sendPlayPauseKey: { recorder.send() },
         minimumResumeDelayNanoseconds: 0
     )
@@ -297,7 +292,7 @@ func mediaInterruptionIgnoresInvalidOrDuplicateTokens() async {
 func mediaInterruptionResumesAfterLastActiveToken() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying]),
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .notPlaying]),
         sendPlayPauseKey: { recorder.send() },
         minimumResumeDelayNanoseconds: 0
     )
@@ -329,6 +324,28 @@ func mediaInterruptionSkipsResumeIfPlaybackAlreadyActive() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .playing]),
+        sendPlayPauseKey: { recorder.send() },
+        pauseConfirmationDelayNanoseconds: 0,
+        minimumResumeDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for active playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(recorder.sendCalls == 1)
+}
+
+@MainActor
+@Test("Media interruption skips resume when playback state is unknown")
+func mediaInterruptionSkipsResumeWhenPlaybackStateIsUnknown() async {
+    let recorder = MediaKeySendRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .unknown]),
         sendPlayPauseKey: { recorder.send() },
         pauseConfirmationDelayNanoseconds: 0,
         minimumResumeDelayNanoseconds: 0

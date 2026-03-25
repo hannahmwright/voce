@@ -9,6 +9,30 @@ func promptBuilderAskPromptIncludesInput() {
     #expect(prompt.contains("How do I write this?"))
 }
 
+@Test("AI workflow built-ins include AI Prompt with period finish key")
+func aiWorkflowBuiltInsIncludeAIPrompt() {
+    let workflow = AIWorkflow.builtIns.first { $0.id == AIWorkflow.aiPromptID }
+
+    #expect(workflow?.name == "AI Prompt")
+    #expect(workflow?.handsFreeFinishHotkey == .keyCode(47))
+    #expect(workflow?.isBuiltIn == true)
+    #expect(workflow?.promptTemplate?.contains("Convert the following transcription into a clear and effective prompt") == true)
+}
+
+@Test("AIWorkflowPromptBuilder uses explicit prompt template overrides for built-in workflows")
+func promptBuilderUsesBuiltInPromptOverride() {
+    let workflow = AIWorkflow(
+        id: AIWorkflow.askID,
+        name: "Ask AI",
+        kind: .ask,
+        promptTemplate: "Turn this into a sharper request: {{input}}",
+        isBuiltIn: true
+    )
+
+    let prompt = AIWorkflowPromptBuilder.makePrompt(for: workflow, input: "draft request")
+    #expect(prompt == "Turn this into a sharper request: draft request")
+}
+
 @Test("AIWorkflowPromptBuilder interpolates custom templates")
 func promptBuilderInterpolatesCustomTemplate() {
     let workflow = AIWorkflow(
