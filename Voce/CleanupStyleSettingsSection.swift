@@ -6,7 +6,7 @@ struct CleanupStyleSettingsSection: View {
     @State private var newStyleBundleID: String = ""
     @State private var newStyleProfile: StyleProfile = .init(
         name: "App Override",
-        tone: .professional,
+        tone: .natural,
         structureMode: .paragraph,
         fillerPolicy: .balanced,
         commandPolicy: .transform
@@ -15,14 +15,8 @@ struct CleanupStyleSettingsSection: View {
     var body: some View {
         settingsCardWithSubtitle(
             "Cleanup Style",
-            subtitle: "How transcripts are cleaned and formatted"
+            subtitle: "Deterministic local cleanup after transcription"
         ) {
-            describedPicker(
-                "Tone",
-                description: "How formal the cleaned text sounds",
-                selection: $preferences.globalStyleProfile.tone
-            )
-
             describedPicker(
                 "Structure",
                 description: "How the output text is formatted",
@@ -36,8 +30,8 @@ struct CleanupStyleSettingsSection: View {
             )
 
             describedPicker(
-                "Commands",
-                description: "Whether /slash commands pass through raw",
+                "IDE slash commands",
+                description: "In IDEs, keep leading /commands unchanged",
                 selection: $preferences.globalStyleProfile.commandPolicy
             )
 
@@ -65,12 +59,11 @@ struct CleanupStyleSettingsSection: View {
                         .textFieldStyle(.roundedBorder)
 
                     HStack(spacing: VoceDesign.sm) {
-                        enumPicker("Tone", selection: $newStyleProfile.tone)
                         enumPicker("Structure", selection: $newStyleProfile.structureMode)
+                        enumPicker("Filler", selection: $newStyleProfile.fillerPolicy)
                     }
                     HStack(spacing: VoceDesign.sm) {
-                        enumPicker("Filler", selection: $newStyleProfile.fillerPolicy)
-                        enumPicker("Commands", selection: $newStyleProfile.commandPolicy)
+                        enumPicker("Slash Commands", selection: $newStyleProfile.commandPolicy)
                     }
 
                     HStack {
@@ -81,7 +74,7 @@ struct CleanupStyleSettingsSection: View {
                             newStyleBundleID = ""
                             newStyleProfile = .init(
                                 name: "App Override",
-                                tone: .professional,
+                                tone: .natural,
                                 structureMode: .paragraph,
                                 fillerPolicy: .balanced,
                                 commandPolicy: .transform

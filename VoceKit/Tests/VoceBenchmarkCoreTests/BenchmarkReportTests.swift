@@ -20,7 +20,7 @@ func reportRendererIncludesRequiredLabels() throws {
         benchmarkName: "Report Fixture",
         manifestSchemaVersion: manifest.schemaVersion,
         normalizationPolicy: manifest.scoring.normalization,
-        transcriptionConfiguration: .init(modelDirectoryPath: "/tmp/models", modelName: "moonshine-base"),
+        transcriptionConfiguration: .init(modelDirectoryPath: "/tmp/models", modelName: "apple-speech"),
         summary: .init(
             totalSamples: 1,
             succeeded: 1,
@@ -110,4 +110,3 @@ func reportValidationFailsWithoutRequiredLabels() {
         Issue.record("Unexpected error type: \(error)")
     }
 }
-

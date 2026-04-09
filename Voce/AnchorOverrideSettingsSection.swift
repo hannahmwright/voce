@@ -10,7 +10,7 @@ struct AnchorOverrideSettingsSection: View {
             "Overlay Position",
             subtitle: "Remembered overlay positions per app"
         ) {
-            Text("During dictation, click Reposition Overlay to temporarily make the bubble draggable. Voce remembers that position for the current app and restores it next time. Browser apps are excluded since they already report input positions correctly.")
+            Text("During dictation, click Reposition Overlay to temporarily make the badge draggable. Voce remembers that position for the current app and restores it next time.")
                 .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
 

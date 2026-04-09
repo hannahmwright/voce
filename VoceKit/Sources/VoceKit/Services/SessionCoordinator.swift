@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 public enum SessionCoordinatorError: Error, LocalizedError {
     case sessionNotFound
@@ -12,6 +13,7 @@ public enum SessionCoordinatorError: Error, LocalizedError {
 }
 
 public actor SessionCoordinator {
+    private static let logger = Logger(subsystem: "io.voceapp.voce", category: "SessionCoordinator")
     private struct ActiveSession: Sendable {
         var appContext: AppContext
         var startedAt: Date
@@ -132,42 +134,61 @@ public actor SessionCoordinator {
         processingNote: String? = nil,
         sourceSessionID: SessionID
     ) async throws -> FinalizedTranscript {
+        let clock = ContinuousClock()
+        let startedAt = clock.now
         var rawTranscript = raw
-        rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
 
+        let snippetStartedAt = clock.now
+        rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
+        Self.logger.notice(
+            "Snippet expansion finished in \(self.secondsSince(snippetStartedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
+
+        let profileStartedAt = clock.now
         let profile = await styleProfileService.resolve(for: active.appContext)
         let lexicon = await lexiconService.snapshot(for: active.appContext)
+        Self.logger.notice(
+            "Profile + lexicon resolution finished in \(self.secondsSince(profileStartedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
 
+        let cleanupStartedAt = clock.now
         let cleanupResult = try await prepareCleanTranscript(
             raw: rawTranscript,
             profile: profile,
             lexicon: lexicon,
             appContext: active.appContext
         )
+        Self.logger.notice(
+            "Cleanup finished in \(self.secondsSince(cleanupStartedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
 
         // Apply voice commands (punctuation, whitespace, "delete that", custom) after cleanup.
+        let voiceCommandsStartedAt = clock.now
         let finalText = voiceCommandService.apply(to: cleanupResult.transcript.text)
+        Self.logger.notice(
+            "Voice command transform finished in \(self.secondsSince(voiceCommandsStartedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
 
-        // Feed session data to the learning engine for adaptive improvement.
-        if let learningEngine {
-            await learningEngine.observeSession(
-                rawText: rawTranscript.text,
-                cleanText: finalText,
-                removedFillers: cleanupResult.transcript.removedFillers,
-                appBundleID: active.appContext.bundleIdentifier
-            )
-            await learningEngine.save()
-        }
+        Self.logger.notice(
+            "Session finaliseTranscript total \(self.secondsSince(startedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
 
         return FinalizedTranscript(
             rawText: rawTranscript.text,
             cleanText: finalText,
+            removedFillers: cleanupResult.transcript.removedFillers,
             cleanupOutcome: cleanupResult.outcome,
             appContext: active.appContext,
             audioURL: nil,
             processingNote: processingNote,
             sourceSessionID: sourceSessionID
         )
+    }
+
+    private func secondsSince(_ start: ContinuousClock.Instant, clock: ContinuousClock) -> Double {
+        let duration = start.duration(to: clock.now)
+        return Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
     }
 
     public func cancel(sessionID: SessionID) async {

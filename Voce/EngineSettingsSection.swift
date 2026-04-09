@@ -7,222 +7,58 @@ struct EngineSettingsSection: View {
     @State private var testResult: String?
     @State private var testResultIsError = false
     @State private var isTesting = false
-    @StateObject private var downloader = MoonshineModelDownloader()
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
             settingsCard("Engine") {
-                Picker("Model", selection: $preferences.dictation.modelArch) {
-                    ForEach(MoonshineModelPreset.voceSupportedOptions) { preset in
-                        Text(preset.pickerLabel).tag(preset)
-                    }
-                }
-                .pickerStyle(.menu)
-                .onChange(of: preferences.dictation.modelArch) { newArch in
-                    preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
-                }
-
-                selectedModelSummary(for: preferences.dictation.modelArch)
-
-                Toggle("Keep Moonshine warmed in memory", isOn: $preferences.dictation.keepModelWarm)
-                Text("Reduces the first Moonshine background/final transcription delay. Apple live preview still appears immediately. Higher idle memory use.")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-
-                if modelIsReady {
-                    modelReadySection
-                } else {
-                    modelDownloadSection
-                }
-            }
-
-            rollingDiagnosticsSection
-        }
-        .task {
-            await controller.refreshRollingFallbackMetrics()
-        }
-    }
-
-    @ViewBuilder
-    private func selectedModelSummary(for preset: MoonshineModelPreset) -> some View {
-        VStack(alignment: .leading, spacing: VoceDesign.xs) {
-            HStack(spacing: VoceDesign.xs) {
-                Text(preset.pickerTitle)
-                    .font(VoceDesign.bodyEmphasis())
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                if let badge = preset.recommendationBadge {
-                    Text(badge)
-                        .font(VoceDesign.label())
-                        .foregroundStyle(VoceDesign.accent)
-                        .padding(.horizontal, VoceDesign.sm)
-                        .padding(.vertical, VoceDesign.xxs)
-                        .background(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
-                        .clipShape(Capsule())
-                }
-
-                Spacer()
-
-                Text(preset.approxDownloadSize)
-                    .font(VoceDesign.captionEmphasis())
-                    .foregroundStyle(VoceDesign.textSecondary)
-            }
-
-            Text(preset.selectionSummary)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textPrimary)
-
-            Text(preset.selectionFootnote)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-        }
-        .padding(VoceDesign.md)
-        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
-    }
-
-    private var modelReadySection: some View {
-        HStack(spacing: VoceDesign.sm) {
-            Button {
-                runTestSetup()
-            } label: {
-                if isTesting {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: VoceDesign.iconMD, height: VoceDesign.iconMD)
-                } else {
-                    Text("Test Setup")
-                }
-            }
-            .buttonStyle(.bordered)
-            .disabled(isTesting)
-            .accessibilityLabel("Test Moonshine setup")
-
-            if let result = testResult {
-                Text(result)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(testResultIsError ? VoceDesign.error : VoceDesign.success)
-            } else {
-                HStack(spacing: VoceDesign.xs) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(VoceDesign.success)
-                    Text("Model ready")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.success)
-                }
-            }
-        }
-    }
-
-    private var modelIsReady: Bool {
-        MoonshineModelPaths.missingFiles(
-            in: preferences.dictation.modelDirectoryPath,
-            preset: preferences.dictation.modelArch
-        ).isEmpty
-    }
-
-    private var modelDownloadSection: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            switch downloader.status {
-            case .idle, .failed:
-                if case .failed(let message) = downloader.status {
-                    Text(message)
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.error)
-                }
-                Button("Download Model") {
-                    downloader.download(preset: preferences.dictation.modelArch)
-                }
-                .buttonStyle(.bordered)
-            case .downloading:
-                ProgressView(value: downloader.overallProgress)
-                    .progressViewStyle(.linear)
-                HStack {
-                    Text("\(Int(downloader.overallProgress * 100))%")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                    Spacer()
-                    Button("Cancel") {
-                        downloader.cancel()
-                    }
-                    .font(VoceDesign.caption())
-                    .buttonStyle(.plain)
-                    .foregroundStyle(VoceDesign.textSecondary)
-                }
-            case .completed:
-                HStack(spacing: VoceDesign.xs) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(VoceDesign.success)
-                    Text("Download complete")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.success)
-                }
-            }
-        }
-    }
-
-    private var rollingDiagnosticsSection: some View {
-        settingsCard("Live Diagnostics") {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-                    Text("Rolling fallback counts")
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("Apple Speech")
                         .font(VoceDesign.bodyEmphasis())
                         .foregroundStyle(VoceDesign.textPrimary)
-                    Text("Tracks when the live rolling path had to recover with the full final pass.")
+                    Text("Voce now uses Apple Speech for the final transcript and keeps Apple live preview for immediate feedback.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                 }
 
-                Spacer()
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("Locale")
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                    TextField("en-US", text: $preferences.dictation.localeIdentifier)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                    Text("Use a BCP-47 locale like `en-US` or `en-GB`. This locale is used for live preview and final transcription.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
 
-                Button("Refresh") {
-                    Task {
-                        await controller.refreshRollingFallbackMetrics()
+                HStack(spacing: VoceDesign.sm) {
+                    Button {
+                        runTestSetup()
+                    } label: {
+                        if isTesting {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: VoceDesign.iconMD, height: VoceDesign.iconMD)
+                        } else {
+                            Text("Test Apple Speech")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isTesting)
+
+                    if let result = testResult {
+                        Text(result)
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(testResultIsError ? VoceDesign.error : VoceDesign.success)
                     }
                 }
-                .buttonStyle(.bordered)
+
+                Text("Voce now targets newer macOS releases and no longer requires any bundled model download.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
             }
-
-            let metrics = controller.rollingFallbackMetrics
-
-            LazyVGrid(columns: [
-                GridItem(.flexible(minimum: 120), spacing: VoceDesign.sm),
-                GridItem(.flexible(minimum: 120), spacing: VoceDesign.sm)
-            ], alignment: .leading, spacing: VoceDesign.sm) {
-                metricsTile(title: "Total", value: "\(metrics.totalFallbacks)")
-                metricsTile(title: "Weak seam", value: "\(metrics.weakSeamFallbacks)")
-                metricsTile(title: "Chunk failed", value: "\(metrics.chunkTranscriptionFailureFallbacks)")
-                metricsTile(title: "Incomplete", value: "\(metrics.incompleteRollingTranscriptFallbacks)")
-            }
-
-            Text(lastUpdatedText(for: metrics))
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
         }
-    }
-
-    private func metricsTile(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-            Text(title)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-            Text(value)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(VoceDesign.textPrimary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(VoceDesign.md)
-        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
-    }
-
-    private func lastUpdatedText(for metrics: RollingFallbackMetricsSnapshot) -> String {
-        guard metrics.updatedAt != .distantPast else {
-            return "No rolling fallbacks recorded yet."
-        }
-
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        let relative = formatter.localizedString(for: metrics.updatedAt, relativeTo: Date())
-        return "Last updated \(relative)."
     }
 
     private func runTestSetup() {
@@ -241,20 +77,18 @@ struct EngineSettingsSection: View {
             }
 
             do {
-                let modelDirectoryPath = preferences.dictation.modelDirectoryPath
-                let modelArch = preferences.dictation.modelArch
+                let localeIdentifier = preferences.dictation.localeIdentifier
                 try await Task.detached(priority: .userInitiated) {
-                    try MoonshineTranscriptionEngine.preflightCheck(
-                        modelDirectoryPath: modelDirectoryPath,
-                        modelArch: modelArch
+                    try await AppleSpeechTranscriptionEngine.preflightCheck(
+                        localeIdentifier: localeIdentifier
                     )
                 }.value
 
                 await MainActor.run {
-                    testResult = "Moonshine model is ready."
+                    testResult = "Apple Speech is ready."
                     testResultIsError = false
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if testResult == "Moonshine model is ready." {
+                        if testResult == "Apple Speech is ready." {
                             testResult = nil
                         }
                     }
@@ -262,13 +96,13 @@ struct EngineSettingsSection: View {
                 }
             } catch is CancellationError {
                 await MainActor.run {
-                    testResult = "Moonshine test cancelled."
+                    testResult = "Apple Speech test cancelled."
                     testResultIsError = true
                     isTesting = false
                 }
             } catch {
                 await MainActor.run {
-                    testResult = "Failed to load Moonshine model: \(error.localizedDescription)"
+                    testResult = "Apple Speech setup failed: \(error.localizedDescription)"
                     testResultIsError = true
                     isTesting = false
                 }

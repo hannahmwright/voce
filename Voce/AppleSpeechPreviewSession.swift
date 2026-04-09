@@ -22,34 +22,17 @@ enum AppleSpeechPreviewError: Error, LocalizedError {
     }
 }
 
-struct CapturedAudioChunk: Sendable {
-    let index: Int
-    let url: URL
-    let durationMS: Int
-    let leadingOverlapMS: Int
-}
-
 struct AppleSpeechPreviewStopResult: Sendable {
     let captureURL: URL
     let captureDurationMS: Int
-    let finalChunk: CapturedAudioChunk?
-    let totalChunkCount: Int
 }
 
 /// Uses Apple's on-device speech recognizer for low-latency partial text while
-/// recording raw microphone audio to disk for the final Moonshine pass.
+/// recording raw microphone audio to disk for the final Apple Speech pass.
 final class AppleSpeechPreviewSession: @unchecked Sendable {
-    private static let rollingChunkDuration: TimeInterval = 8.0
-    private static let rollingChunkMaximumDuration: TimeInterval = 12.0
-    private static let rollingChunkOverlapDuration: TimeInterval = 1.5
-    private static let minimumSilenceThreshold: Float = 0.002
-    private static let maximumSilenceThreshold: Float = 0.02
-    private static let adaptiveSilenceMultiplier: Float = 2.5
-    private static let noiseFloorSampleLimit = 120
-
     private let onPartialText: @Sendable (String) -> Void
-    private let onSealedChunk: @Sendable (CapturedAudioChunk) -> Void
     private let onTerminalError: @Sendable (Error) -> Void
+    private let localeIdentifier: String
     private let stateLock = NSLock()
 
     private var audioEngine: AVAudioEngine?
@@ -60,23 +43,14 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private var outputURL: URL?
     private var hasStopped = false
     private var latestWriteError: Error?
-    private var activeChunkFile: AVAudioFile?
-    private var activeChunkURL: URL?
-    private var activeChunkIndex = 0
-    private var activeChunkFrameCount: AVAudioFramePosition = 0
-    private var activeChunkSampleRate: Double = 0
-    private var activeChunkLastActivityRMS: Float = 0
-    private var recentActivityRMSValues: [Float] = []
-    private var recentOverlapBuffers: [PCMBufferSnapshot] = []
-    private var recentOverlapDuration: TimeInterval = 0
 
     init(
+        localeIdentifier: String = "en-US",
         onPartialText: @escaping @Sendable (String) -> Void,
-        onSealedChunk: @escaping @Sendable (CapturedAudioChunk) -> Void = { _ in },
         onTerminalError: @escaping @Sendable (Error) -> Void = { _ in }
     ) {
+        self.localeIdentifier = localeIdentifier
         self.onPartialText = onPartialText
-        self.onSealedChunk = onSealedChunk
         self.onTerminalError = onTerminalError
     }
 
@@ -84,9 +58,6 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         stateLock.withLock {
             hasStopped = false
             latestWriteError = nil
-            recentActivityRMSValues.removeAll(keepingCapacity: true)
-            recentOverlapBuffers.removeAll(keepingCapacity: true)
-            recentOverlapDuration = 0
         }
 
         let engine = AVAudioEngine()
@@ -103,13 +74,12 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
 
         self.outputURL = outputURL
         self.audioFile = audioFile
-        try prepareActiveChunkFile(inputFormat: inputFormat)
 
         let authorizationStatus = await Self.requestSpeechAuthorizationIfNeeded()
         let speechRecognitionAvailable = authorizationStatus == .authorized
 
         if speechRecognitionAvailable {
-            let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+            let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
             if let recognizer, recognizer.supportsOnDeviceRecognition {
                 let request = SFSpeechAudioBufferRecognitionRequest()
                 request.shouldReportPartialResults = true
@@ -128,7 +98,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
                     }
 
                     // Ignore recognizer errors for preview-only mode. Raw audio is still
-                    // being captured for the final Moonshine transcription pass.
+                    // being captured for the final Apple Speech transcription pass.
                     if error != nil {
                         return
                     }
@@ -149,8 +119,6 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
 
             do {
                 try audioFile?.write(from: buffer)
-                try self.writeToActiveChunk(buffer)
-                self.noteRecentOverlapBuffer(buffer)
             } catch {
                 self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
             }
@@ -206,14 +174,10 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         }
 
         let captureDurationMS = Self.captureDurationMS(for: outputURL)
-        let finalChunk = try sealActiveChunk()
-        let totalChunkCount = finalChunk.map { $0.index + 1 } ?? activeChunkIndex
         self.outputURL = nil
         return AppleSpeechPreviewStopResult(
             captureURL: outputURL,
-            captureDurationMS: captureDurationMS,
-            finalChunk: finalChunk,
-            totalChunkCount: totalChunkCount
+            captureDurationMS: captureDurationMS
         )
     }
 
@@ -237,12 +201,6 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             audioFile = nil
             self.outputURL = nil
             latestWriteError = nil
-            activeChunkFile = nil
-            activeChunkURL = nil
-            activeChunkFrameCount = 0
-            recentOverlapBuffers.removeAll(keepingCapacity: true)
-            recentOverlapDuration = 0
-            recentActivityRMSValues.removeAll(keepingCapacity: true)
         }
 
         cleanupOutputFile(at: outputURL)
@@ -266,115 +224,9 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
-    private func prepareActiveChunkFile(inputFormat: AVAudioFormat) throws {
-        let chunkURL = Self.makeChunkURL(index: activeChunkIndex)
-        do {
-            activeChunkFile = try AVAudioFile(forWriting: chunkURL, settings: inputFormat.settings)
-            activeChunkURL = chunkURL
-            activeChunkFrameCount = 0
-            activeChunkSampleRate = inputFormat.sampleRate
-            activeChunkLastActivityRMS = 0
-            try seedChunkWithOverlap()
-        } catch {
-            throw AppleSpeechPreviewError.failedToCreateOutputFile
-        }
-    }
-
-    private func writeToActiveChunk(_ buffer: AVAudioPCMBuffer) throws {
-        try activeChunkFile?.write(from: buffer)
-        activeChunkFrameCount += AVAudioFramePosition(buffer.frameLength)
-        activeChunkLastActivityRMS = Self.windowedActivityRMS(for: buffer)
-        noteRecentActivityRMS(activeChunkLastActivityRMS)
-
-        let bufferedDuration = Double(activeChunkFrameCount) / max(activeChunkSampleRate, 1)
-        guard bufferedDuration >= Self.rollingChunkDuration else { return }
-        let adaptiveSilenceThreshold = currentAdaptiveSilenceThreshold()
-        guard bufferedDuration >= Self.rollingChunkMaximumDuration
-            || activeChunkLastActivityRMS < adaptiveSilenceThreshold else { return }
-
-        if let sealedChunk = try sealActiveChunk() {
-            onSealedChunk(sealedChunk)
-        }
-
-        if let audioEngine {
-            try prepareActiveChunkFile(inputFormat: audioEngine.inputNode.inputFormat(forBus: 0))
-        }
-    }
-
-    private func sealActiveChunk() throws -> CapturedAudioChunk? {
-        guard let activeChunkURL else { return nil }
-
-        let durationMS = Int((Double(activeChunkFrameCount) / max(activeChunkSampleRate, 1)) * 1_000)
-        let leadingOverlapMS = activeChunkIndex == 0 ? 0 : Int(Self.rollingChunkOverlapDuration * 1_000)
-        let chunkURL = activeChunkURL
-        activeChunkFile = nil
-        self.activeChunkURL = nil
-        activeChunkFrameCount = 0
-        activeChunkLastActivityRMS = 0
-
-        guard durationMS > 0 else {
-            cleanupOutputFile(at: chunkURL)
-            return nil
-        }
-
-        defer { activeChunkIndex += 1 }
-        return CapturedAudioChunk(
-            index: activeChunkIndex,
-            url: chunkURL,
-            durationMS: durationMS,
-            leadingOverlapMS: min(leadingOverlapMS, durationMS)
-        )
-    }
-
-    private func noteRecentOverlapBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let snapshot = PCMBufferSnapshot.make(from: buffer) else { return }
-        recentOverlapBuffers.append(snapshot)
-        recentOverlapDuration += snapshot.duration
-
-        while recentOverlapDuration > Self.rollingChunkOverlapDuration, !recentOverlapBuffers.isEmpty {
-            let removed = recentOverlapBuffers.removeFirst()
-            recentOverlapDuration -= removed.duration
-        }
-    }
-
-    private func noteRecentActivityRMS(_ rms: Float) {
-        recentActivityRMSValues.append(rms)
-        if recentActivityRMSValues.count > Self.noiseFloorSampleLimit {
-            recentActivityRMSValues.removeFirst(recentActivityRMSValues.count - Self.noiseFloorSampleLimit)
-        }
-    }
-
-    private func currentAdaptiveSilenceThreshold() -> Float {
-        guard !recentActivityRMSValues.isEmpty else { return Self.minimumSilenceThreshold }
-
-        let sorted = recentActivityRMSValues.sorted()
-        let percentileIndex = min(sorted.count - 1, max(0, Int(Double(sorted.count - 1) * 0.2)))
-        let noiseFloorEstimate = sorted[percentileIndex]
-        let adaptiveThreshold = max(
-            Self.minimumSilenceThreshold,
-            min(Self.maximumSilenceThreshold, noiseFloorEstimate * Self.adaptiveSilenceMultiplier)
-        )
-        return adaptiveThreshold
-    }
-
-    private func seedChunkWithOverlap() throws {
-        guard activeChunkIndex > 0 else { return }
-        for snapshot in recentOverlapBuffers {
-            guard let buffer = snapshot.makePCMBuffer() else { continue }
-            try activeChunkFile?.write(from: buffer)
-            activeChunkFrameCount += AVAudioFramePosition(buffer.frameLength)
-        }
-    }
-
     private static func makeOutputURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("voce-live-preview-\(UUID().uuidString)")
-            .appendingPathExtension("caf")
-    }
-
-    private static func makeChunkURL(index: Int) -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("voce-live-chunk-\(index)-\(UUID().uuidString)")
             .appendingPathExtension("caf")
     }
 
@@ -382,42 +234,6 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         guard let audioFile = try? AVAudioFile(forReading: url) else { return 0 }
         let durationSeconds = Double(audioFile.length) / max(audioFile.processingFormat.sampleRate, 1)
         return Int((durationSeconds * 1_000).rounded())
-    }
-
-    private static func windowedActivityRMS(for buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData else { return 0 }
-
-        let frameLength = Int(buffer.frameLength)
-        let channelCount = Int(buffer.format.channelCount)
-        guard frameLength > 0, channelCount > 0 else { return 0 }
-
-        let windowSize = max(1, Int((buffer.format.sampleRate * 0.025).rounded()))
-        var bestRMS: Float = 0
-        var index = 0
-
-        while index < frameLength {
-            let endIndex = min(frameLength, index + windowSize)
-            var sumOfSquares: Float = 0
-            var sampleCount = 0
-
-            for channel in 0..<channelCount {
-                let channelSamples = UnsafeBufferPointer(start: channelData[channel], count: frameLength)
-                for sampleIndex in index..<endIndex {
-                    let sample = channelSamples[sampleIndex]
-                    sumOfSquares += sample * sample
-                    sampleCount += 1
-                }
-            }
-
-            if sampleCount > 0 {
-                let rms = sqrt(sumOfSquares / Float(sampleCount))
-                bestRMS = max(bestRMS, rms)
-            }
-
-            index += windowSize
-        }
-
-        return bestRMS
     }
 
     private static func requestSpeechAuthorizationIfNeeded() async -> SFSpeechRecognizerAuthorizationStatus {
@@ -439,63 +255,5 @@ private extension NSLock {
         lock()
         defer { unlock() }
         return try body()
-    }
-}
-
-private struct PCMBufferSnapshot: Sendable {
-    let sampleRate: Double
-    let channelCount: AVAudioChannelCount
-    let frameLength: AVAudioFrameCount
-    let samples: [Float]
-
-    var duration: TimeInterval {
-        Double(frameLength) / max(sampleRate, 1)
-    }
-
-    static func make(from buffer: AVAudioPCMBuffer) -> PCMBufferSnapshot? {
-        guard let channelData = buffer.floatChannelData else { return nil }
-        let channelCount = Int(buffer.format.channelCount)
-        let frameLength = Int(buffer.frameLength)
-        var samples: [Float] = []
-        samples.reserveCapacity(channelCount * frameLength)
-
-        for channel in 0..<channelCount {
-            let channelSamples = UnsafeBufferPointer(start: channelData[channel], count: frameLength)
-            samples.append(contentsOf: channelSamples)
-        }
-
-        return PCMBufferSnapshot(
-            sampleRate: buffer.format.sampleRate,
-            channelCount: buffer.format.channelCount,
-            frameLength: buffer.frameLength,
-            samples: samples
-        )
-    }
-
-    func makePCMBuffer() -> AVAudioPCMBuffer? {
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: channelCount,
-            interleaved: false
-        ) else {
-            return nil
-        }
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else {
-            return nil
-        }
-        buffer.frameLength = frameLength
-        guard let channelData = buffer.floatChannelData else { return nil }
-
-        let framesPerChannel = Int(frameLength)
-        for channel in 0..<Int(channelCount) {
-            let start = channel * framesPerChannel
-            let end = start + framesPerChannel
-            samples[start..<end].withUnsafeBufferPointer { src in
-                channelData[channel].update(from: src.baseAddress!, count: framesPerChannel)
-            }
-        }
-
-        return buffer
     }
 }

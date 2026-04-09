@@ -254,7 +254,6 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             return (email, [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "email")])
         }
     }
-
     private func splitIntoClauses(_ text: String) -> [String] {
         let separators = CharacterSet(charactersIn: ",.;")
         let pieces = text.components(separatedBy: separators)

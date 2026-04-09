@@ -2,7 +2,7 @@
 
 Fast macOS voice-to-text with smart app-aware insertion and optional text cleanup.
 
-Voce is built for a premium dictation workflow without subscription lock-in: high-accuracy local transcription with [Moonshine](https://github.com/moonshine-ai/moonshine), fast hotkeys, and reliable text output across apps.
+Voce is built for a premium dictation workflow with Apple-native speech transcription, fast hotkeys, and reliable text output across apps.
 
 [![Swift Tests](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml/badge.svg)](https://github.com/Ankit-Cherian/steno/actions/workflows/swift-tests.yml)
 
@@ -13,8 +13,8 @@ Voce is built for a premium dictation workflow without subscription lock-in: hig
 
 ## What Voce Does
 
-- High-accuracy local transcription with Moonshine (audio never leaves your Mac)
-- Automatic model download on first launch (~160 MB for the recommended model)
+- Apple live preview while you speak
+- Apple Speech final transcription on supported macOS releases
 - Smart app-aware paste (target-aware insertion): terminals prefer paste, editors use direct typing or accessibility insertion
 - Local transcript cleanup (no cloud dependency)
 - Global hotkeys: configurable hold-to-talk and configurable hands-free toggle
@@ -38,7 +38,7 @@ Voce is built for a premium dictation workflow without subscription lock-in: hig
 
 ## Requirements
 
-- macOS 13.0+
+- macOS 26.0+
 - Xcode 26+ (Swift 6.2+)
 - XcodeGen (`brew install xcodegen`)
 
@@ -61,7 +61,7 @@ Voce is built for a premium dictation workflow without subscription lock-in: hig
 
 5. The onboarding wizard will guide you through:
    - Granting permissions (Microphone, Accessibility, Input Monitoring)
-   - Downloading the Moonshine transcription model (~160 MB)
+   - Confirming your Apple Speech locale
 
 ## Usage
 

@@ -75,9 +75,8 @@ enum VoceBenchmarkCLI {
     }
 
     private static func runRaw(_ command: ParsedCommand) async throws {
-        // TODO: Update to accept --model-dir and --model-arch and create a MoonshineTranscriptionEngine.
-        // MoonshineTranscriptionEngine lives in the app target and cannot be imported here yet.
-        fatalError("Benchmark CLI not yet updated for Moonshine")
+        // TODO: Wire the benchmark CLI to an app-provided transcription engine.
+        fatalError("Benchmark CLI raw transcription is not yet implemented")
     }
 
     private static func runPipeline(_ command: ParsedCommand) async throws {
@@ -173,9 +172,8 @@ enum VoceBenchmarkCLI {
     }
 
     private static func runAll(_ command: ParsedCommand) async throws {
-        // TODO: Update to create a MoonshineTranscriptionEngine for the raw run.
-        // MoonshineTranscriptionEngine lives in the app target and cannot be imported here yet.
-        fatalError("Benchmark CLI not yet updated for Moonshine")
+        // TODO: Wire the benchmark CLI to an app-provided transcription engine for the raw run.
+        fatalError("Benchmark CLI raw transcription is not yet implemented")
     }
 
     private static func parseProfile(_ command: ParsedCommand) throws -> StyleProfile {
@@ -265,7 +263,7 @@ enum VoceBenchmarkCLI {
             --model-dir <path>
             --model-arch <name>
             [--default-language <code>]
-            (NOTE: not yet updated for Moonshine)
+            (NOTE: raw transcription benchmarking is not wired yet)
 
           run-pipeline
             --manifest <path>
@@ -312,7 +310,7 @@ enum VoceBenchmarkCLI {
             [--structure-mode natural|paragraph|bullets|email|command]
             [--filler-policy minimal|balanced|aggressive]
             [--command-policy passthrough|transform]
-            (NOTE: not yet updated for Moonshine)
+            (NOTE: raw transcription benchmarking is not wired yet)
         """
     }
 

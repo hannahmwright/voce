@@ -158,6 +158,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         guard let window else { return }
         repositionModeTask?.cancel()
         repositionModeEnabled = true
+        sessionPinnedOrigin = window.frame.origin
         window.ignoresMouseEvents = false
         window.isMovableByWindowBackground = true
 
@@ -176,60 +177,47 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         switch state {
         case .listening(let handsFree, _):
-            applyDefaultSurfaceAppearance()
             listeningHandsFree = handsFree
             listeningStartDate = Date()
             lastLiveTranscriptText = ""
             hasShownLiveTranscriptInSession = false
             resetTranscriptBubbleGrowth()
-            transcriptBubbleHeight = max(transcriptBubbleHeight, Self.initialTranscriptShellHeight)
-            updateTranscript("Transcribing…", preserveBubbleShell: true)
             stopTimer()
-            animateAura(color: Self.accentBlue)
-            resetBorderToAccent()
-            startDotPulse()
+            showCompactVideoBadge()
 
         case .liveTranscript(let text, _):
-            applyDefaultSurfaceAppearance()
             stopTimer()
             lastLiveTranscriptText = text
-            updateTranscript(text, preserveBubbleShell: !hasShownLiveTranscriptInSession)
             hasShownLiveTranscriptInSession = true
-            animateAura(color: Self.accentBlue)
-            resetBorderToAccent()
-            startDotPulse()
+            showCompactVideoBadge()
 
         case .transcribing:
             stopTimer()
-            applyContinuousBubbleLayout()
-            hideContent()
-            resetBorderToAccent()
-            applyTranscribingSurfaceAppearance()
-            startTranscribingPulse()
+            showCompactVideoBadge()
 
         case .inserted:
             applyDefaultSurfaceAppearance()
-            applyContinuousBubbleLayout()
+            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
-            updateText("Inserted")
+            hideContent()
             resetBorderToAccent()
             playSuccessBounce()
 
         case .copiedOnly:
             applyDefaultSurfaceAppearance()
-            applyContinuousBubbleLayout()
+            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
-            updateText("Copied to clipboard")
+            hideContent()
             resetBorderToAccent()
 
-        case .failure(let message):
+        case .failure:
             applyDefaultSurfaceAppearance()
-            applyContinuousBubbleLayout()
+            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
-            updateText("Error: \(message)")
+            hideContent()
             animateAura(color: .systemRed)
             updateBorderColors(for: .systemRed)
         }
@@ -759,6 +747,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func resetTranscriptBubbleGrowth() {
         transcriptBubbleHeight = TranscriptOverlayLayout.minimumTranscriptHeight
+    }
+
+    private func showCompactVideoBadge() {
+        applyLayout(.compact)
+        hideContent()
+        resetBorderToAccent()
+        applyTranscribingSurfaceAppearance()
+        startTranscribingPulse()
     }
 
     private func applyContinuousBubbleLayout() {
@@ -1390,6 +1386,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private func notifyDragIfNeeded() {
         guard userDidDrag, let position = userDraggedPosition else { return }
         userDidDrag = false
+        sessionPinnedOrigin = position
         onUserDraggedToPosition?(position)
     }
 

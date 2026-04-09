@@ -17,52 +17,16 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
                 rulePathID: "raw-pass-through"
             )
         ]
-
-        let variants = profileVariants(from: profile)
-        for (pathID, variantProfile) in variants {
-            let candidate = engine.buildCandidate(
+        candidates.append(
+            engine.buildCandidate(
                 raw: raw,
-                profile: variantProfile,
+                profile: profile,
                 lexicon: lexicon,
-                rulePathID: pathID
+                rulePathID: "configured-profile"
             )
-            candidates.append(candidate)
-        }
+        )
 
         return deduplicated(candidates)
-    }
-
-    private func profileVariants(from base: StyleProfile) -> [(String, StyleProfile)] {
-        var variants: [(String, StyleProfile)] = []
-
-        let minimal = StyleProfile(
-            name: "\(base.name)-minimal",
-            tone: base.tone,
-            structureMode: base.structureMode,
-            fillerPolicy: .minimal,
-            commandPolicy: base.commandPolicy
-        )
-        variants.append(("profile-minimal", minimal))
-
-        let balanced = StyleProfile(
-            name: "\(base.name)-balanced",
-            tone: base.tone,
-            structureMode: base.structureMode,
-            fillerPolicy: .balanced,
-            commandPolicy: base.commandPolicy
-        )
-        variants.append(("profile-balanced", balanced))
-
-        let aggressive = StyleProfile(
-            name: "\(base.name)-aggressive",
-            tone: base.tone,
-            structureMode: base.structureMode,
-            fillerPolicy: .aggressive,
-            commandPolicy: base.commandPolicy
-        )
-        variants.append(("profile-aggressive", aggressive))
-
-        return variants
     }
 
     private func deduplicated(_ candidates: [CleanupCandidate]) -> [CleanupCandidate] {

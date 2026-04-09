@@ -1,11 +1,13 @@
 import AppKit
 import Foundation
+import OSLog
 import SwiftUI
 import VoceKit
 
 @MainActor
 final class DictationController: ObservableObject {
     private static let minimumVisibleEmptyTranscriptDurationMS = 3_000
+    private static let logger = Logger(subsystem: "io.voceapp.voce", category: "DictationController")
 
     private enum RecordingStartError: LocalizedError {
         case microphonePermissionDenied
@@ -33,7 +35,6 @@ final class DictationController: ObservableObject {
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var recordingElapsed: TimeInterval = 0
     @Published var hasBootstrapped = false
-    @Published var rollingFallbackMetrics = RollingFallbackMetricsSnapshot.empty
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService = MacClipboardService()
@@ -50,7 +51,7 @@ final class DictationController: ObservableObject {
     private var voiceCommandService: VoiceCommandService
     private var insertionService: any InsertionServiceProtocol = InsertionService(transports: [])
     private var coordinator: SessionCoordinator?
-    private var transcriptionEngine: MoonshineTranscriptionEngine?
+    private var transcriptionEngine: AppleSpeechTranscriptionEngine?
     private let learningEngine = LearningEngine()
     private let completionRoutingService = CompletionRoutingService()
     private let aiGenerationService = AppleFoundationModelsService()
@@ -63,7 +64,6 @@ final class DictationController: ObservableObject {
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activePreviewSession: AppleSpeechPreviewSession?
-    private var activeRollingFinalizer: RollingChunkFinalizer?
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
@@ -116,10 +116,6 @@ final class DictationController: ObservableObject {
                 self?.hotkeyRegistrationMessage = ""
             case .unavailable(let reason):
                 self?.hotkeyRegistrationMessage = reason
-                guard let self else { return }
-                guard !self.isOverlayReservedForDictationSession else { return }
-                self.overlay.show(state: .failure(message: reason))
-                self.dismissOverlaySoon()
             }
         }
         hotkey.start()
@@ -156,15 +152,12 @@ final class DictationController: ObservableObject {
         activeStartTask = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
-        activeRollingFinalizer = nil
         if let token = activeMediaToken {
             mediaInterruption.endInterruption(token: token)
             activeMediaToken = nil
         }
         recordingTimer?.invalidate()
         recordingTimer = nil
-        MoonshineTranscriberCache.shared.invalidate()
-
         // Persist learning data before exit.
         Task { await learningEngine.save() }
     }
@@ -187,7 +180,6 @@ final class DictationController: ObservableObject {
         validateEngineConfiguration()
         await rebuildRuntime()
         await refreshHistory()
-        await refreshRollingFallbackMetrics()
         overlay.prepareWindow()
         hasBootstrapped = true
     }
@@ -364,8 +356,6 @@ final class DictationController: ObservableObject {
             } catch {
                 status = "Paste last failed"
                 lastError = error.localizedDescription
-                overlay.show(state: .failure(message: error.localizedDescription))
-                dismissOverlaySoon()
             }
         }
     }
@@ -525,10 +515,6 @@ final class DictationController: ObservableObject {
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
     }
 
-    func refreshRollingFallbackMetrics() async {
-        rollingFallbackMetrics = await RollingFallbackMetricsStore.shared.snapshot()
-    }
-
     private var currentTranscriptText: String {
         if !lastTranscript.isEmpty {
             return lastTranscript
@@ -590,6 +576,27 @@ final class DictationController: ObservableObject {
             do {
                 try await ensureMicrophonePermission()
 
+                status = "Arming microphone..."
+                let session = AppleSpeechPreviewSession(
+                    localeIdentifier: preferences.dictation.localeIdentifier,
+                    onPartialText: { [weak self] partialText in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isRecording else { return }
+                            self.overlay.show(state: .listening(
+                                handsFree: mode == .handsFree,
+                                elapsedSeconds: Int(self.recordingElapsed)
+                            ))
+                        }
+                    },
+                    onTerminalError: { [weak self] error in
+                        Task { @MainActor [weak self] in
+                            self?.handleStreamingFailure(error)
+                        }
+                    }
+                )
+                activePreviewSession = session
+                try await session.start()
+
                 status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
                 isRecording = true
                 handsFreeOn = mode == .handsFree
@@ -612,36 +619,6 @@ final class DictationController: ObservableObject {
                 let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
                 currentSessionID = sessionID
-                if let transcriptionEngine {
-                    activeRollingFinalizer = RollingChunkFinalizer(transcriptionEngine: transcriptionEngine)
-                } else {
-                    activeRollingFinalizer = nil
-                }
-
-                let session = AppleSpeechPreviewSession(
-                    onPartialText: { [weak self] partialText in
-                        Task { @MainActor [weak self] in
-                            guard let self, self.isRecording else { return }
-                            self.overlay.show(state: .liveTranscript(
-                                text: partialText,
-                                handsFree: mode == .handsFree
-                            ))
-                        }
-                    },
-                    onSealedChunk: { [weak self] chunk in
-                        guard let self else { return }
-                        Task {
-                            await self.activeRollingFinalizer?.enqueue(chunk: chunk)
-                        }
-                    },
-                    onTerminalError: { [weak self] error in
-                        Task { @MainActor [weak self] in
-                            self?.handleStreamingFailure(error)
-                        }
-                    }
-                )
-                try await session.start()
-                activePreviewSession = session
             } catch {
                 if let token = activeMediaToken {
                     mediaInterruption.endInterruption(token: token)
@@ -659,12 +636,10 @@ final class DictationController: ObservableObject {
                 pendingCompletionActionOverride = nil
                 updateActiveRecordingHotkeys()
                 activePreviewSession = nil
-                activeRollingFinalizer = nil
                 recordingStateMachine.markTranscriptionFailed()
                 status = "Failed to start"
                 lastError = error.localizedDescription
-                overlay.show(state: .failure(message: error.localizedDescription))
-                dismissOverlaySoon()
+                overlay.hide()
             }
             activeStartTask = nil
         }
@@ -676,7 +651,6 @@ final class DictationController: ObservableObject {
         let pendingStart = activeStartTask
         activeStartTask = nil
         activePreviewSession = nil
-        activeRollingFinalizer = nil
 
         recordingTimer?.invalidate()
         recordingTimer = nil
@@ -709,8 +683,7 @@ final class DictationController: ObservableObject {
             recordingStateMachine.markTranscriptionFailed()
             status = streamingFailureStatusMessage(for: error)
             lastError = error.localizedDescription
-            overlay.show(state: .failure(message: error.localizedDescription))
-            dismissOverlaySoon()
+            overlay.hide()
             await applyDeferredRebuildIfNeeded()
         }
     }
@@ -722,9 +695,6 @@ final class DictationController: ObservableObject {
         // Capture streaming session before clearing state.
         let previewSession = activePreviewSession
         activePreviewSession = nil
-        let rollingFinalizer = activeRollingFinalizer
-        activeRollingFinalizer = nil
-
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
         recordingTimer = nil
@@ -762,58 +732,44 @@ final class DictationController: ObservableObject {
 
             var captureDurationMS = 0
             do {
+                let clock = ContinuousClock()
+                let stopBeganAt = clock.now
                 guard let stopResult = try previewSession?.stop() else {
                     throw AppleSpeechPreviewError.missingOutputFile
                 }
                 captureDurationMS = stopResult.captureDurationMS
-                let rollingTranscript = await rollingFinalizer?.finish(
-                    finalChunk: stopResult.finalChunk,
-                    expectedChunkCount: stopResult.totalChunkCount
+                let stopElapsed = stopBeganAt.duration(to: clock.now)
+                let stopElapsedSeconds = Double(stopElapsed.components.seconds)
+                    + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                Self.logger.notice(
+                    "Preview stop completed in \(stopElapsedSeconds, format: .fixed(precision: 2))s; captured \(captureDurationMS)ms"
                 )
-                let finalizedTranscript: FinalizedTranscript
-                let processingNote: String?
-                switch rollingTranscript {
-                case .completed(let rollingTranscript):
-                    if rollingTranscript.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        await coordinator.cancel(sessionID: sessionID)
-                        if shouldSuppressEmptyTranscriptError(captureDurationMS: stopResult.captureDurationMS) {
-                            handleShortSilentCapture()
-                            await applyDeferredRebuildIfNeeded()
-                            return
-                        }
-                        throw MoonshineTranscriptionError.emptyLiveTranscript
-                    }
-                    processingNote = nil
-                    finalizedTranscript = try await coordinator.processStreamingTranscript(
-                        rollingTranscript,
-                        sessionID: sessionID,
-                        processingNote: processingNote
-                    )
-                case .fallback(let fallbackReason):
-                    processingNote = fallbackReason.note
-                    await RollingFallbackMetricsStore.shared.increment(reason: fallbackReason)
-                    await refreshRollingFallbackMetrics()
-                    finalizedTranscript = try await coordinator.processStreamingAudio(
-                        audioURL: stopResult.captureURL,
-                        sessionID: sessionID,
-                        processingNote: processingNote
-                    )
-                case nil:
-                    processingNote = RollingChunkFinalizer.FallbackReason.incompleteRollingTranscript.note
-                    await RollingFallbackMetricsStore.shared.increment(reason: .incompleteRollingTranscript)
-                    await refreshRollingFallbackMetrics()
-                    finalizedTranscript = try await coordinator.processStreamingAudio(
-                        audioURL: stopResult.captureURL,
-                        sessionID: sessionID,
-                        processingNote: processingNote
-                    )
-                }
 
+                let transcriptionBeganAt = clock.now
+                let finalizedTranscript = try await coordinator.processStreamingAudio(
+                    audioURL: stopResult.captureURL,
+                    sessionID: sessionID,
+                    languageHints: [preferences.dictation.localeIdentifier]
+                )
+                let transcriptionElapsed = transcriptionBeganAt.duration(to: clock.now)
+                let transcriptionElapsedSeconds = Double(transcriptionElapsed.components.seconds)
+                    + Double(transcriptionElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                Self.logger.notice(
+                    "Coordinator finalized transcript in \(transcriptionElapsedSeconds, format: .fixed(precision: 2))s"
+                )
+
+                let routingBeganAt = clock.now
                 let routedCompletion = try completionRoutingService.route(
                     finalizedTranscript: finalizedTranscript,
                     preferredAction: preferredCompletionAction,
                     leadingPhraseSelectionEnabled: preferences.ai.isEnabled && preferences.ai.leadingPhraseSelectionEnabled,
                     workflows: preferences.ai.workflows
+                )
+                let routingElapsed = routingBeganAt.duration(to: clock.now)
+                let routingElapsedSeconds = Double(routingElapsed.components.seconds)
+                    + Double(routingElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                Self.logger.notice(
+                    "Completion routing finished in \(routingElapsedSeconds, format: .fixed(precision: 2))s"
                 )
 
                 if case .aiWorkflow(let workflowID) = routedCompletion.action {
@@ -822,6 +778,7 @@ final class DictationController: ObservableObject {
                 }
 
                 do {
+                    let executionBeganAt = clock.now
                     let executor = CompletionExecutionService(
                         insertionService: insertionService,
                         aiGenerationService: aiGenerationService
@@ -830,6 +787,12 @@ final class DictationController: ObservableObject {
                         routedCompletion: routedCompletion,
                         finalizedTranscript: finalizedTranscript,
                         workflows: preferences.ai.workflows
+                    )
+                    let executionElapsed = executionBeganAt.duration(to: clock.now)
+                    let executionElapsedSeconds = Double(executionElapsed.components.seconds)
+                        + Double(executionElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                    Self.logger.notice(
+                        "Completion execution finished in \(executionElapsedSeconds, format: .fixed(precision: 2))s"
                     )
 
                     lastTranscript = execution.finalText
@@ -842,12 +805,13 @@ final class DictationController: ObservableObject {
                     } catch {
                         lastError = error.localizedDescription
                     }
+                    scheduleLearningUpdate(for: finalizedTranscript)
                     dismissOverlaySoon(pop: execution.insertResult.status == .inserted)
                 } catch let aiError as AIWorkflowError {
                     lastTranscript = finalizedTranscript.cleanText
                     status = aiError.errorDescription ?? "AI request failed."
                     lastError = aiError.errorDescription ?? ""
-                    overlay.show(state: .failure(message: lastError))
+                    overlay.hide()
                     do {
                         try await appendFailedAIHistoryEntry(
                             finalizedTranscript: finalizedTranscript,
@@ -857,6 +821,7 @@ final class DictationController: ObservableObject {
                     } catch {
                         lastError = aiError.errorDescription ?? ""
                     }
+                    scheduleLearningUpdate(for: finalizedTranscript)
                     dismissOverlaySoon()
                 }
                 await refreshHistory()
@@ -870,8 +835,7 @@ final class DictationController: ObservableObject {
                 }
                 status = "Transcription failed"
                 lastError = error.localizedDescription
-                overlay.show(state: .failure(message: error.localizedDescription))
-                dismissOverlaySoon()
+                overlay.hide()
                 recordingStateMachine.markTranscriptionFailed()
                 await applyDeferredRebuildIfNeeded()
             }
@@ -908,22 +872,9 @@ final class DictationController: ObservableObject {
 
     /// Bundle IDs for browsers — these work well with accessibility APIs
     /// so we don't save per-app drag overrides for them.
-    private static let browserBundleIDs: Set<String> = [
-        "com.apple.Safari",
-        "com.google.Chrome",
-        "org.mozilla.firefox",
-        "com.microsoft.edgemac",
-        "com.brave.Browser",
-        "com.operasoftware.Opera",
-        "company.thebrowser.Browser",     // Arc
-        "com.vivaldi.Vivaldi",
-        "com.nickvision.nicegram",
-    ]
-
     private func saveOverlayDragPosition(_ position: NSPoint) {
         guard let bundleID = activeAppContext?.bundleIdentifier ?? overlayPersistenceBundleIdentifier,
-              bundleID != "unknown",
-              !Self.browserBundleIDs.contains(bundleID) else { return }
+              bundleID != "unknown" else { return }
 
         // Save the exact window origin so we can restore it next time.
         // width/height = 0 signals a drag-saved position (vs manual anchor).
@@ -998,17 +949,6 @@ final class DictationController: ObservableObject {
             learningEngine: learningEngine
         )
 
-        MoonshineTranscriberCache.shared.invalidate()
-        if snapshot.dictation.keepModelWarm {
-            MoonshineTranscriberCache.shared.warm(
-                config: MoonshineTranscriptionEngine.Configuration(
-                    modelDirectoryPath: snapshot.dictation.modelDirectoryPath,
-                    modelArch: snapshot.dictation.modelArch,
-                    keepModelWarm: snapshot.dictation.keepModelWarm
-                )
-            )
-        }
-
         do {
             try launchAtLoginService.setEnabled(snapshot.general.launchAtLoginEnabled)
             launchAtLoginWarning = ""
@@ -1016,7 +956,7 @@ final class DictationController: ObservableObject {
             launchAtLoginWarning = error.localizedDescription
         }
 
-        status = "Running Apple live preview + Moonshine final transcription + local cleanup."
+        status = "Running Apple preview + Apple Speech final transcription + local cleanup."
     }
 
     private func fallbackWarningText(from outcome: CleanupOutcome?) -> String? {
@@ -1039,12 +979,10 @@ final class DictationController: ObservableObject {
     }
 
     private func validateEngineConfiguration() {
-        let missing = MoonshineModelPaths.missingFiles(
-            in: preferences.dictation.modelDirectoryPath,
-            preset: preferences.dictation.modelArch
-        )
-        guard missing.isEmpty else {
-            status = "Moonshine model not downloaded. Check Settings \u{2192} Engine."
+        let localeIdentifier = preferences.dictation.localeIdentifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !localeIdentifier.isEmpty else {
+            status = "Apple Speech locale is missing. Check Settings \u{2192} Engine."
             return
         }
     }
@@ -1084,10 +1022,7 @@ final class DictationController: ObservableObject {
     }
 
     private func streamingFailureStatusMessage(for error: Error) -> String {
-        if case MoonshineTranscriptionError.liveCaptureOverloaded = error {
-            return "System overloaded. Recording stopped, please try again."
-        }
-
+        _ = error
         return "Recording stopped"
     }
 
@@ -1100,7 +1035,7 @@ final class DictationController: ObservableObject {
             return true
         }
 
-        if case MoonshineTranscriptionError.emptyLiveTranscript = error {
+        if case AppleSpeechTranscriptionError.emptyTranscript = error {
             return true
         }
 
@@ -1113,6 +1048,28 @@ final class DictationController: ObservableObject {
         overlay.hide()
         overlayPersistenceBundleIdentifier = nil
         recordingStateMachine.markTranscriptionCompleted()
+    }
+
+    private func scheduleLearningUpdate(for finalizedTranscript: FinalizedTranscript) {
+        let transcript = finalizedTranscript
+        Task(priority: .utility) {
+            let clock = ContinuousClock()
+            let startedAt = clock.now
+            await self.learningEngine.observeSession(
+                rawText: transcript.rawText,
+                cleanText: transcript.cleanText,
+                removedFillers: transcript.removedFillers,
+                appBundleID: transcript.appContext.bundleIdentifier
+            )
+            await self.learningEngine.save()
+
+            let elapsed = startedAt.duration(to: clock.now)
+            let elapsedSeconds = Double(elapsed.components.seconds)
+                + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+            Self.logger.notice(
+                "Deferred learning update + save finished in \(elapsedSeconds, format: .fixed(precision: 2))s"
+            )
+        }
     }
 
     private func applyExecutionOutcomeStatus(_ execution: CompletionExecutionOutcome) {
@@ -1131,7 +1088,6 @@ final class DictationController: ObservableObject {
                 let reason = result.errorMessage ?? "Insertion chain exhausted."
                 baseStatus = "Transcript ready but insertion failed."
                 lastError = reason
-                overlay.show(state: .failure(message: reason))
             }
         case .aiWorkflow:
             switch result.status {
@@ -1145,7 +1101,6 @@ final class DictationController: ObservableObject {
                 let reason = result.errorMessage ?? "Insertion chain exhausted."
                 baseStatus = "AI result ready but insertion failed."
                 lastError = reason
-                overlay.show(state: .failure(message: reason))
             }
         }
 
@@ -1235,440 +1190,6 @@ final class DictationController: ObservableObject {
     }
 }
 
-private actor RollingChunkFinalizer {
-    enum FinishOutcome: Sendable {
-        case completed(RawTranscript)
-        case fallback(FallbackReason)
-    }
-
-    enum FallbackReason: String, Sendable {
-        case weakSeam = "Recovered with full final pass after a weak live chunk seam."
-        case chunkTranscriptionFailed = "Recovered with full final pass after a rolling chunk transcription failure."
-        case incompleteRollingTranscript = "Recovered with full final pass because rolling chunk finalization was incomplete."
-
-        var note: String { rawValue }
-    }
-
-    private struct SeamDecision: Sendable {
-        enum Strategy: String, Sendable {
-            case initial
-            case appendWithoutOverlap
-            case tokenOverlap
-            case splitWordStitch
-            case weakAppend
-        }
-
-        let mergedText: String
-        let strategy: Strategy
-        let score: Double
-        let overlapTokens: Int
-    }
-
-    private struct ProcessedChunk: Sendable {
-        let transcript: RawTranscript
-        let durationMS: Int
-        let leadingOverlapMS: Int
-    }
-
-    private struct CombinedTranscriptResult: Sendable {
-        let transcript: RawTranscript
-        let weakBoundaryCount: Int
-        let weakestBoundaryScore: Double
-    }
-
-    private let transcriptionEngine: MoonshineTranscriptionEngine
-    private var queuedChunks: [CapturedAudioChunk] = []
-    private var processedChunks: [Int: ProcessedChunk] = [:]
-    private var failure: Error?
-    private var workerTask: Task<Void, Never>?
-    private let diagnostics = RollingSeamDiagnostics()
-    private static let minimumAcceptableBoundaryScore = 0.45
-    private static let weakBoundaryThreshold = 0.70
-
-    init(transcriptionEngine: MoonshineTranscriptionEngine) {
-        self.transcriptionEngine = transcriptionEngine
-    }
-
-    func enqueue(chunk: CapturedAudioChunk) {
-        queuedChunks.append(chunk)
-        startWorkerIfNeeded()
-    }
-
-    func finish(finalChunk: CapturedAudioChunk?, expectedChunkCount: Int) async -> FinishOutcome {
-        diagnostics.reset()
-
-        if let finalChunk {
-            enqueue(chunk: finalChunk)
-        }
-
-        while let workerTask {
-            await workerTask.value
-        }
-
-        if failure != nil {
-            diagnostics.record("rolling transcript unavailable reason=chunkTranscriptionFailed failure=\(String(describing: failure)) expectedChunks=\(expectedChunkCount) processedChunks=\(processedChunks.count)")
-            diagnostics.flush()
-            return .fallback(.chunkTranscriptionFailed)
-        }
-
-        guard expectedChunkCount > 0, processedChunks.count == expectedChunkCount else {
-            diagnostics.record("rolling transcript unavailable reason=incompleteRollingTranscript expectedChunks=\(expectedChunkCount) processedChunks=\(processedChunks.count)")
-            diagnostics.flush()
-            return .fallback(.incompleteRollingTranscript)
-        }
-
-        let combinedResult = buildCombinedTranscript(expectedChunkCount: expectedChunkCount)
-        if combinedResult.weakBoundaryCount > 0 {
-            diagnostics.record(
-                "weak boundaries detected count=\(combinedResult.weakBoundaryCount) weakestScore=\(String(format: "%.2f", combinedResult.weakestBoundaryScore))"
-            )
-        }
-
-        guard combinedResult.weakestBoundaryScore >= Self.minimumAcceptableBoundaryScore else {
-            diagnostics.record(
-                "rolling transcript rejected due to low seam score threshold=\(String(format: "%.2f", Self.minimumAcceptableBoundaryScore))"
-            )
-            diagnostics.flush()
-            return .fallback(.weakSeam)
-        }
-
-        if combinedResult.weakBoundaryCount > 0 {
-            diagnostics.flush()
-        }
-
-        return .completed(combinedResult.transcript)
-    }
-
-    private func startWorkerIfNeeded() {
-        guard workerTask == nil else { return }
-        workerTask = Task { [weak self] in
-            await self?.drainQueue()
-        }
-    }
-
-    private func drainQueue() async {
-        while !queuedChunks.isEmpty {
-            let chunk = queuedChunks.removeFirst()
-            defer { try? FileManager.default.removeItem(at: chunk.url) }
-
-            do {
-                let rawTranscript = try await transcriptionEngine.transcribe(
-                    audioURL: chunk.url,
-                    languageHints: ["en-US"]
-                )
-                processedChunks[chunk.index] = ProcessedChunk(
-                    transcript: rawTranscript,
-                    durationMS: chunk.durationMS,
-                    leadingOverlapMS: chunk.leadingOverlapMS
-                )
-            } catch {
-                failure = error
-            }
-        }
-
-        workerTask = nil
-    }
-
-    private func buildCombinedTranscript(expectedChunkCount: Int) -> CombinedTranscriptResult {
-        var combinedSegments: [TranscriptSegment] = []
-        var mergedText = ""
-        var offsetMS = 0
-        var weakestBoundaryScore = 1.0
-        var weakBoundaryCount = 0
-
-        for chunkIndex in 0..<expectedChunkCount {
-            guard let processedChunk = processedChunks[chunkIndex] else { continue }
-            let normalizedChunkText = processedChunk.transcript.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let seamDecision = Self.mergeText(
-                accumulated: mergedText,
-                next: normalizedChunkText,
-                hasLeadingOverlap: processedChunk.leadingOverlapMS > 0
-            )
-            mergedText = seamDecision.mergedText
-
-            if chunkIndex > 0 {
-                weakestBoundaryScore = min(weakestBoundaryScore, seamDecision.score)
-                if seamDecision.score < Self.weakBoundaryThreshold {
-                    weakBoundaryCount += 1
-                    diagnostics.record(
-                        "boundary chunk=\(chunkIndex - 1)->\(chunkIndex) strategy=\(seamDecision.strategy.rawValue) score=\(String(format: "%.2f", seamDecision.score)) overlapTokens=\(seamDecision.overlapTokens) leadingOverlapMS=\(processedChunk.leadingOverlapMS)"
-                    )
-                }
-            }
-
-            let visibleAdvanceMS = max(0, processedChunk.durationMS - processedChunk.leadingOverlapMS)
-            combinedSegments.append(
-                contentsOf: processedChunk.transcript.segments.compactMap { segment in
-                    guard segment.endMS > processedChunk.leadingOverlapMS else { return nil }
-                    let adjustedStartMS = max(0, segment.startMS - processedChunk.leadingOverlapMS)
-                    let adjustedEndMS = max(0, segment.endMS - processedChunk.leadingOverlapMS)
-                    return TranscriptSegment(
-                        startMS: adjustedStartMS + offsetMS,
-                        endMS: adjustedEndMS + offsetMS,
-                        text: segment.text,
-                        confidence: segment.confidence
-                    )
-                }
-            )
-            offsetMS += visibleAdvanceMS
-        }
-
-        return CombinedTranscriptResult(
-            transcript: RawTranscript(
-                text: ConsecutivePhraseDeduplicator.collapse(mergedText),
-                segments: combinedSegments,
-                durationMS: offsetMS
-            ),
-            weakBoundaryCount: weakBoundaryCount,
-            weakestBoundaryScore: weakestBoundaryScore
-        )
-    }
-
-    private static func mergeText(accumulated: String, next: String, hasLeadingOverlap: Bool) -> SeamDecision {
-        let trimmedAccumulated = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedNext = next.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedAccumulated.isEmpty else {
-            return SeamDecision(mergedText: trimmedNext, strategy: .initial, score: 1.0, overlapTokens: 0)
-        }
-        guard !trimmedNext.isEmpty else {
-            return SeamDecision(mergedText: trimmedAccumulated, strategy: .initial, score: 1.0, overlapTokens: 0)
-        }
-        guard hasLeadingOverlap else {
-            return SeamDecision(
-                mergedText: "\(trimmedAccumulated) \(trimmedNext)",
-                strategy: .appendWithoutOverlap,
-                score: 1.0,
-                overlapTokens: 0
-            )
-        }
-
-        let accumulatedTokens = tokenComponents(for: trimmedAccumulated)
-        let nextTokens = tokenComponents(for: trimmedNext)
-
-        let maxOverlap = min(accumulatedTokens.count, nextTokens.count, 12)
-        var bestOverlap = 0
-
-        if maxOverlap > 0 {
-            for overlap in stride(from: maxOverlap, through: 1, by: -1) {
-                let accumulatedSuffix = Array(accumulatedTokens.suffix(overlap))
-                let nextPrefix = Array(nextTokens.prefix(overlap))
-                if normalized(accumulatedSuffix) == normalized(nextPrefix) {
-                    bestOverlap = overlap
-                    break
-                }
-            }
-        }
-
-        if bestOverlap > 0 {
-            let mergedTokens = accumulatedTokens + nextTokens.dropFirst(bestOverlap)
-            let score = bestOverlap >= 2 ? 1.0 : 0.85
-            return SeamDecision(
-                mergedText: mergedTokens.joined(separator: " "),
-                strategy: .tokenOverlap,
-                score: score,
-                overlapTokens: bestOverlap
-            )
-        }
-
-        // Fallback for split words where token overlap cannot match.
-        if let stitched = stitchSplitWord(accumulated: trimmedAccumulated, next: trimmedNext) {
-            return SeamDecision(
-                mergedText: stitched,
-                strategy: .splitWordStitch,
-                score: 0.75,
-                overlapTokens: 0
-            )
-        }
-
-        return SeamDecision(
-            mergedText: "\(trimmedAccumulated) \(trimmedNext)",
-            strategy: .weakAppend,
-            score: 0.20,
-            overlapTokens: 0
-        )
-    }
-
-    private static func tokenComponents(for text: String) -> [String] {
-        text.split(whereSeparator: \.isWhitespace).map(String.init)
-    }
-
-    private static func normalized(_ tokens: [String]) -> [String] {
-        tokens.map {
-            $0.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.symbols))
-        }
-    }
-
-    private static func stitchSplitWord(accumulated: String, next: String) -> String? {
-        guard let lastAccumulatedToken = accumulated.split(whereSeparator: \.isWhitespace).last,
-              let firstNextToken = next.split(whereSeparator: \.isWhitespace).first else {
-            return nil
-        }
-
-        let left = String(lastAccumulatedToken)
-        let right = String(firstNextToken)
-        guard left.last?.isLetter == true, right.first?.isLetter == true else {
-            return nil
-        }
-        guard left.count <= 12, right.count <= 12 else {
-            return nil
-        }
-
-        let accumulatedPrefix = accumulated.dropLast(left.count).trimmingCharacters(in: .whitespacesAndNewlines)
-        let nextSuffix = next.dropFirst(right.count).trimmingCharacters(in: .whitespacesAndNewlines)
-        let stitchedWord = left + right
-
-        if accumulatedPrefix.isEmpty {
-            return nextSuffix.isEmpty ? stitchedWord : "\(stitchedWord) \(nextSuffix)"
-        }
-
-        if nextSuffix.isEmpty {
-            return "\(accumulatedPrefix) \(stitchedWord)"
-        }
-
-        return "\(accumulatedPrefix) \(stitchedWord) \(nextSuffix)"
-    }
-}
-
-private final class RollingSeamDiagnostics: @unchecked Sendable {
-    private let lock = NSLock()
-    private var lines: [String] = []
-    private let sessionID = UUID().uuidString
-
-    func reset() {
-        lock.lock()
-        lines.removeAll(keepingCapacity: true)
-        lock.unlock()
-    }
-
-    func record(_ message: String) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
-        lock.lock()
-        lines.append("[\(timestamp)] \(message)")
-        if lines.count > 200 {
-            lines.removeFirst(lines.count - 200)
-        }
-        lock.unlock()
-    }
-
-    func flush() {
-        lock.lock()
-        let content = lines.joined(separator: "\n")
-        lock.unlock()
-
-        guard !content.isEmpty else { return }
-
-        let fileManager = FileManager.default
-        let baseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Voce/Diagnostics", isDirectory: true)
-        guard let directory = baseDirectory else { return }
-
-        do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            let logURL = directory.appendingPathComponent("rolling-seams-\(sessionID).log")
-            try content.write(to: logURL, atomically: true, encoding: .utf8)
-        } catch {
-            return
-        }
-    }
-}
-
-struct RollingFallbackMetricsSnapshot: Codable, Sendable {
-    var totalFallbacks: Int
-    var weakSeamFallbacks: Int
-    var chunkTranscriptionFailureFallbacks: Int
-    var incompleteRollingTranscriptFallbacks: Int
-    var updatedAt: Date
-
-    static let empty = RollingFallbackMetricsSnapshot(
-        totalFallbacks: 0,
-        weakSeamFallbacks: 0,
-        chunkTranscriptionFailureFallbacks: 0,
-        incompleteRollingTranscriptFallbacks: 0,
-        updatedAt: .distantPast
-    )
-}
-
-private actor RollingFallbackMetricsStore {
-
-    static let shared = RollingFallbackMetricsStore()
-
-    private let storageURL: URL
-    private var cachedSnapshot: RollingFallbackMetricsSnapshot?
-
-    init(storageURL: URL? = nil) {
-        if let storageURL {
-            self.storageURL = storageURL
-        } else {
-            let baseDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-                .appendingPathComponent("Voce/Diagnostics", isDirectory: true)
-            self.storageURL = (baseDirectory ?? FileManager.default.temporaryDirectory)
-                .appendingPathComponent("rolling-fallback-metrics.json")
-        }
-    }
-
-    func increment(reason: RollingChunkFinalizer.FallbackReason) {
-        var snapshot = loadSnapshot()
-        snapshot.totalFallbacks += 1
-        snapshot.updatedAt = Date()
-
-        switch reason {
-        case .weakSeam:
-            snapshot.weakSeamFallbacks += 1
-        case .chunkTranscriptionFailed:
-            snapshot.chunkTranscriptionFailureFallbacks += 1
-        case .incompleteRollingTranscript:
-            snapshot.incompleteRollingTranscriptFallbacks += 1
-        }
-
-        persist(snapshot)
-    }
-
-    func snapshot() -> RollingFallbackMetricsSnapshot {
-        loadSnapshot()
-    }
-
-    private func loadSnapshot() -> RollingFallbackMetricsSnapshot {
-        if let cachedSnapshot {
-            return cachedSnapshot
-        }
-
-        guard FileManager.default.fileExists(atPath: storageURL.path) else {
-            cachedSnapshot = .empty
-            return .empty
-        }
-
-        do {
-            let data = try Data(contentsOf: storageURL)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let snapshot = try decoder.decode(RollingFallbackMetricsSnapshot.self, from: data)
-            cachedSnapshot = snapshot
-            return snapshot
-        } catch {
-            cachedSnapshot = .empty
-            return .empty
-        }
-    }
-
-    private func persist(_ snapshot: RollingFallbackMetricsSnapshot) {
-        do {
-            try FileManager.default.createDirectory(
-                at: storageURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(snapshot)
-            try data.write(to: storageURL, options: .atomic)
-            cachedSnapshot = snapshot
-        } catch {
-            return
-        }
-    }
-}
-
 private struct DictationRuntimeFactory {
     let snapshot: AppPreferences
     let clipboardService: any ClipboardService
@@ -1693,12 +1214,10 @@ private struct DictationRuntimeFactory {
         VoiceCommandService(commands: snapshot.voiceCommands)
     }
 
-    func makeTranscriptionEngine() -> MoonshineTranscriptionEngine {
-        MoonshineTranscriptionEngine(
+    func makeTranscriptionEngine() -> AppleSpeechTranscriptionEngine {
+        AppleSpeechTranscriptionEngine(
             config: .init(
-                modelDirectoryPath: snapshot.dictation.modelDirectoryPath,
-                modelArch: snapshot.dictation.modelArch,
-                keepModelWarm: snapshot.dictation.keepModelWarm
+                localeIdentifier: snapshot.dictation.localeIdentifier
             )
         )
     }

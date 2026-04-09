@@ -210,7 +210,8 @@ struct HistoryTab: View {
                     .font(VoceDesign.label())
                     .foregroundStyle(VoceDesign.textSecondary.opacity(0.8))
 
-                if let processingNote = entry.processingNote, !processingNote.isEmpty {
+                if let processingNote = visibleProcessingNote(for: entry),
+                   !processingNote.isEmpty {
                     processingNoteBadge(processingNote)
                 }
 
@@ -287,7 +288,7 @@ struct HistoryTab: View {
     }
 
     private func processingNoteBadge(_ note: String) -> some View {
-        Text("Recovered")
+        Text("Note")
             .font(VoceDesign.label())
             .foregroundStyle(VoceDesign.warning)
             .padding(.horizontal, VoceDesign.xs)
@@ -302,6 +303,20 @@ struct HistoryTab: View {
             )
             .help(note)
             .accessibilityLabel(note)
+    }
+
+    private func visibleProcessingNote(for entry: TranscriptEntry) -> String? {
+        guard let note = entry.processingNote, !note.isEmpty else {
+            return nil
+        }
+
+        // Hide stale rolling-chunk recovery notes from older builds now that
+        // dictation always runs a single final Apple Speech pass.
+        guard !note.hasPrefix("Recovered with full final pass") else {
+            return nil
+        }
+
+        return note
     }
 
     private func aiWorkflowBadge(_ name: String) -> some View {

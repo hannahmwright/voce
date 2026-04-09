@@ -109,21 +109,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
     }
 
     struct Dictation: Codable, Sendable, Equatable {
-        var modelDirectoryPath: String
-        var modelArch: MoonshineModelPreset
-        var keepModelWarm: Bool
+        var localeIdentifier: String
 
-        init(
-            modelDirectoryPath: String,
-            modelArch: MoonshineModelPreset = .smallStreaming,
-            keepModelWarm: Bool = true
-        ) {
-            self.modelDirectoryPath = modelDirectoryPath
-            self.modelArch = modelArch
-            self.keepModelWarm = keepModelWarm
+        init(localeIdentifier: String = "en-US") {
+            self.localeIdentifier = localeIdentifier
         }
 
         enum CodingKeys: String, CodingKey {
+            case localeIdentifier
             case modelDirectoryPath
             case modelArch
             case keepModelWarm
@@ -134,36 +127,12 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            let defaultModelArch: MoonshineModelPreset = .smallStreaming
-            let defaultPath = MoonshineModelPaths.defaultModelDirectoryPath(for: defaultModelArch)
-
-            let decodedPath = try container.decodeIfPresent(String.self, forKey: .modelDirectoryPath)
-            let legacyPath = try container.decodeIfPresent(String.self, forKey: .modelPath)
-            let resolvedPath: String
-
-            if let decodedPath, !decodedPath.isEmpty {
-                resolvedPath = decodedPath
-            } else if let legacyPath, !legacyPath.isEmpty {
-                var isDirectory: ObjCBool = false
-                if FileManager.default.fileExists(atPath: legacyPath, isDirectory: &isDirectory), isDirectory.boolValue {
-                    resolvedPath = legacyPath
-                } else {
-                    resolvedPath = defaultPath
-                }
-            } else {
-                resolvedPath = defaultPath
-            }
-
-            modelDirectoryPath = resolvedPath
-            modelArch = try container.decodeIfPresent(MoonshineModelPreset.self, forKey: .modelArch) ?? defaultModelArch
-            keepModelWarm = try container.decodeIfPresent(Bool.self, forKey: .keepModelWarm) ?? true
+            localeIdentifier = try container.decodeIfPresent(String.self, forKey: .localeIdentifier) ?? "en-US"
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(modelDirectoryPath, forKey: .modelDirectoryPath)
-            try container.encode(modelArch, forKey: .modelArch)
-            try container.encode(keepModelWarm, forKey: .keepModelWarm)
+            try container.encode(localeIdentifier, forKey: .localeIdentifier)
         }
     }
 
@@ -299,9 +268,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 enterFinishesHandsFreeAndSubmits: false
             ),
             dictation: .init(
-                modelDirectoryPath: MoonshineModelPaths.defaultModelDirectoryPath(for: .smallStreaming),
-                modelArch: .smallStreaming,
-                keepModelWarm: true
+                localeIdentifier: "en-US"
             ),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
@@ -378,16 +345,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
         if case .modifier? = ai.handsFreeFinishHotkey {
             ai.handsFreeFinishHotkey = nil
         }
-        let originalArch = dictation.modelArch
-        let normalizedArch = originalArch.normalizedForVoce
-        if normalizedArch != originalArch {
-            dictation.modelArch = normalizedArch
-            dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: normalizedArch)
-            return
-        }
 
-        if dictation.modelDirectoryPath.isEmpty {
-            dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: normalizedArch)
+        dictation.localeIdentifier = dictation.localeIdentifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if dictation.localeIdentifier.isEmpty {
+            dictation.localeIdentifier = "en-US"
         }
     }
 }

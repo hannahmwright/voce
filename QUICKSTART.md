@@ -19,11 +19,11 @@ Expected result: local `Voce.xcodeproj` is up to date (it is generated from `pro
 3. Run scheme `Voce` (`Cmd+R`).
 4. The onboarding wizard will guide you through:
    - Granting permissions (Microphone, Accessibility, Input Monitoring)
-   - Downloading the Moonshine transcription model (~160 MB)
+   - Confirming your Apple Speech locale
 
 ## Cleanup behavior
 
-Voce runs transcription and cleanup fully locally with no cloud text cleanup step.
+Voce runs transcription and cleanup fully locally with Apple-native speech and no cloud cleanup step.
 
 ## Verify setup quickly
 
@@ -35,4 +35,4 @@ Voce runs transcription and cleanup fully locally with no cloud text cleanup ste
 
 - `xcodegen: command not found`: run `brew install xcodegen`.
 - Hotkeys not responding: check Accessibility + Input Monitoring permissions in macOS Settings and relaunch Voce.
-- Model download failing: check your internet connection and try again from Settings > Engine.
+- Apple Speech setup failing: check your speech recognition permissions and locale in Settings > Engine.

@@ -29,7 +29,7 @@ Before you begin, ensure you have:
 
 4. In Xcode, set your own Apple Developer Team in Signing & Capabilities.
 
-5. Build and run (Cmd+R). The onboarding wizard will download the Moonshine transcription model automatically.
+5. Build and run (Cmd+R). The onboarding wizard will verify Apple Speech setup automatically.
 
 ## Code Style
 

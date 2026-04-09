@@ -3,6 +3,7 @@ import Foundation
 public struct FinalizedTranscript: Sendable, Codable, Equatable {
     public var rawText: String
     public var cleanText: String
+    public var removedFillers: [String]
     public var cleanupOutcome: CleanupOutcome?
     public var appContext: AppContext
     public var audioURL: URL?
@@ -12,6 +13,7 @@ public struct FinalizedTranscript: Sendable, Codable, Equatable {
     public init(
         rawText: String,
         cleanText: String,
+        removedFillers: [String] = [],
         cleanupOutcome: CleanupOutcome? = nil,
         appContext: AppContext,
         audioURL: URL? = nil,
@@ -20,6 +22,7 @@ public struct FinalizedTranscript: Sendable, Codable, Equatable {
     ) {
         self.rawText = rawText
         self.cleanText = cleanText
+        self.removedFillers = removedFillers
         self.cleanupOutcome = cleanupOutcome
         self.appContext = appContext
         self.audioURL = audioURL

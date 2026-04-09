@@ -1,13 +1,10 @@
 name: Voce
 options:
   deploymentTarget:
-    macOS: "13.0"
+    macOS: "26.0"
 packages:
   VoceKit:
     path: ./VoceKit
-  Moonshine:
-    url: https://github.com/moonshine-ai/moonshine-swift.git
-    from: 0.0.49
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle.git
     from: 2.6.4
@@ -26,8 +23,8 @@ targets:
         CODE_SIGN_IDENTITY: Apple Development
         CODE_SIGN_ENTITLEMENTS: Voce/Voce.entitlements
         SWIFT_VERSION: 6.0
-        MARKETING_VERSION: 0.4.24
-        CURRENT_PROJECT_VERSION: 27
+        MARKETING_VERSION: 0.4.25
+        CURRENT_PROJECT_VERSION: 28
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Voce/Info.plist
       configs:
@@ -36,7 +33,5 @@ targets:
     dependencies:
       - package: VoceKit
         product: VoceKit
-      - package: Moonshine
-        product: Moonshine
       - package: Sparkle
         product: Sparkle

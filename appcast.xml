@@ -3,6 +3,29 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.25</title>
+      <sparkle:version>28</sparkle:version>
+      <sparkle:shortVersionString>0.4.25</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.25</h2>
+        <ul>
+          <li>Moves final transcription to Apple Speech and removes the old Moonshine model dependency</li>
+          <li>Cleans up legacy Moonshine model files on upgrade so they no longer take up storage</li>
+          <li>Shrinks the recording overlay into a compact badge, removes live transcript text, and stops noisy bubble errors</li>
+          <li>Fixes long-stop latency by removing hidden chunk finalization work and optimizing cleanup performance</li>
+          <li>Makes cleanup settings deterministic so filler removal and formatting behave exactly as configured</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 09 Apr 2026 05:58:46 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.25/Voce-0.4.25.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="uaZgxpP3EzXe9zbTAL7KpyaN7V5c0rwkxR8SkpdfThPOpCwq1sWIEq9J66z0VAN6x7sIk9RuvkqqWQDVHC2IBA=="
+        length="12095582"
+      />
+    </item>
+    <item>
       <title>Version 0.4.24</title>
       <sparkle:version>27</sparkle:version>
       <sparkle:shortVersionString>0.4.24</sparkle:shortVersionString>

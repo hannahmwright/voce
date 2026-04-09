@@ -5,8 +5,6 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var currentStep: OnboardingStep = .welcome
-    @State private var modelArch: MoonshineModelPreset = .smallStreaming
-    @StateObject private var downloader = MoonshineModelDownloader()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -51,9 +49,6 @@ struct OnboardingView: View {
             reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85, blendDuration: 0),
             value: currentStep
         )
-        .onAppear {
-            modelArch = controller.preferences.dictation.modelArch
-        }
     }
 
     // MARK: - Progress Bar
@@ -109,7 +104,7 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
                 featureRow(icon: "lock.shield", title: "Private by default", detail: "Audio and transcript cleanup stay on your Mac.")
-                featureRow(icon: "bolt", title: "Fast", detail: "Moonshine transcribes locally with low-latency models.")
+                featureRow(icon: "bolt", title: "Fast", detail: "Apple preview appears immediately and Apple Speech handles the final transcript.")
                 featureRow(icon: "text.cursor", title: "Works across apps", detail: "Types or pastes into editors, terminals, and most text fields.")
             }
             .cardStyle()
@@ -200,43 +195,39 @@ struct OnboardingView: View {
             Spacer()
 
             VStack(spacing: VoceDesign.sm) {
-                Text("Moonshine Model")
+                Text("Apple Speech")
                     .font(VoceDesign.heading1())
                     .foregroundStyle(VoceDesign.textPrimary)
                     .accessibilityAddTraits(.isHeader)
 
-                Text("Choose a model size and Voce will download it automatically.")
+                Text("Voce now targets newer macOS releases and uses Apple's speech stack for final transcription.")
                     .font(VoceDesign.subheadline())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
                 VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                    Text("Model")
+                    Text("Locale")
                         .font(VoceDesign.bodyEmphasis())
                         .foregroundStyle(VoceDesign.textPrimary)
-                    Picker("Model", selection: $modelArch) {
-                        ForEach(MoonshineModelPreset.voceSupportedOptions) { preset in
-                            Text(preset.pickerLabel).tag(preset)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .disabled(isDownloading)
+                    TextField("en-US", text: localeBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
                 }
 
-                selectedModelSummary
-
-                if MoonshineModelDownloader.isModelReady(preset: modelArch) {
-                    HStack(spacing: VoceDesign.xs) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(VoceDesign.success)
-                        Text("Model ready")
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(VoceDesign.success)
-                    }
-                } else {
-                    downloadSection
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("What changed")
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                    Text("Voce no longer downloads a local transcription model. Apple live preview stays instant, and Apple Speech now produces the final transcript too.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                    Text("Use a BCP-47 locale like `en-US` or `en-GB` if you want to override the default transcription locale.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
                 }
+                .padding(VoceDesign.md)
+                .glassBackground(cornerRadius: VoceDesign.radiusMedium)
             }
             .cardStyle()
 
@@ -244,104 +235,11 @@ struct OnboardingView: View {
         }
     }
 
-    private var selectedModelSummary: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.xs) {
-            HStack(spacing: VoceDesign.xs) {
-                Text(modelArch.pickerTitle)
-                    .font(VoceDesign.bodyEmphasis())
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                if let badge = modelArch.recommendationBadge {
-                    Text(badge)
-                        .font(VoceDesign.label())
-                        .foregroundStyle(VoceDesign.accent)
-                        .padding(.horizontal, VoceDesign.sm)
-                        .padding(.vertical, VoceDesign.xxs)
-                        .background(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
-                        .clipShape(Capsule())
-                }
-
-                Spacer()
-
-                Text(modelArch.approxDownloadSize)
-                    .font(VoceDesign.captionEmphasis())
-                    .foregroundStyle(VoceDesign.textSecondary)
-            }
-
-            Text(modelArch.selectionSummary)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textPrimary)
-
-            Text(modelArch.selectionFootnote)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-        }
-        .padding(VoceDesign.md)
-        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
-    }
-
-    private var downloadSection: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            switch downloader.status {
-            case .idle:
-                Button("Download Model") {
-                    downloader.download(preset: modelArch)
-                }
-                .buttonStyle(.bordered)
-            case .downloading:
-                VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                    ProgressView(value: downloader.overallProgress)
-                        .progressViewStyle(.linear)
-                    HStack {
-                        Text(downloadStatusText)
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(VoceDesign.textSecondary)
-                        Spacer()
-                        Button("Cancel") {
-                            downloader.cancel()
-                        }
-                        .font(VoceDesign.caption())
-                        .buttonStyle(.plain)
-                        .foregroundStyle(VoceDesign.textSecondary)
-                    }
-                }
-            case .completed:
-                HStack(spacing: VoceDesign.xs) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(VoceDesign.success)
-                    Text("Download complete")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.success)
-                }
-            case .failed(let message):
-                VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                    HStack(spacing: VoceDesign.xs) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(VoceDesign.error)
-                        Text(message)
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(VoceDesign.error)
-                    }
-                    Button("Retry") {
-                        downloader.download(preset: modelArch)
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-        }
-    }
-
-    private var downloadStatusText: String {
-        if case .downloading(let fileIndex, let fileCount, _) = downloader.status {
-            let percent = Int(downloader.overallProgress * 100)
-            return "Downloading file \(fileIndex + 1) of \(fileCount) (\(percent)%)"
-        }
-        return ""
-    }
-
-    private var isDownloading: Bool {
-        if case .downloading = downloader.status { return true }
-        return false
+    private var localeBinding: Binding<String> {
+        Binding(
+            get: { controller.preferences.dictation.localeIdentifier },
+            set: { controller.preferences.dictation.localeIdentifier = $0 }
+        )
     }
 
     // MARK: - Step 4: Feature Tour
@@ -452,7 +350,9 @@ struct OnboardingView: View {
         case .permissions:
             return controller.microphonePermissionStatus == .granted
         case .modelSetup:
-            return MoonshineModelDownloader.isModelReady(preset: modelArch)
+            return !controller.preferences.dictation.localeIdentifier
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
         case .featureTour:
             return true
         }
@@ -478,14 +378,6 @@ struct OnboardingView: View {
     }
 
     private func completeOnboarding() {
-        let modelDir = MoonshineModelPaths.defaultModelDirectoryPath(for: modelArch)
-        if modelDir != controller.preferences.dictation.modelDirectoryPath {
-            controller.preferences.dictation.modelDirectoryPath = modelDir
-        }
-        if modelArch != controller.preferences.dictation.modelArch {
-            controller.preferences.dictation.modelArch = modelArch
-        }
-
         controller.completeOnboarding()
     }
 }

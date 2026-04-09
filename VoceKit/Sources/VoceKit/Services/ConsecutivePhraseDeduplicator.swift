@@ -12,6 +12,7 @@ public enum ConsecutivePhraseDeduplicator {
         guard tokens.count >= minimumRepeatedTokenCount * 2 else {
             return trimmed
         }
+        var normalizedTokens = tokens.map(normalizeToken)
 
         var changed = true
         while changed {
@@ -24,14 +25,15 @@ public enum ConsecutivePhraseDeduplicator {
 
                 var removedSpan = false
                 for span in stride(from: maxSpan, through: minimumRepeatedTokenCount, by: -1) {
-                    let lhs = Array(tokens[index..<(index + span)])
-                    let rhs = Array(tokens[(index + span)..<(index + (span * 2))])
-                    guard normalized(lhs) == normalized(rhs) else { continue }
+                    let lhsRange = index..<(index + span)
+                    let rhsRange = (index + span)..<(index + (span * 2))
+                    guard normalizedTokens[lhsRange].elementsEqual(normalizedTokens[rhsRange]) else { continue }
 
-                    let repeatedText = lhs.joined(separator: " ")
+                    let repeatedText = tokens[lhsRange].joined(separator: " ")
                     guard repeatedText.count >= minimumRepeatedCharacterCount else { continue }
 
-                    tokens.removeSubrange((index + span)..<(index + (span * 2)))
+                    tokens.removeSubrange(rhsRange)
+                    normalizedTokens.removeSubrange(rhsRange)
                     changed = true
                     removedSpan = true
                     break
@@ -46,9 +48,7 @@ public enum ConsecutivePhraseDeduplicator {
         return tokens.joined(separator: " ")
     }
 
-    private static func normalized(_ tokens: [String]) -> [String] {
-        tokens.map {
-            $0.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.symbols))
-        }
+    private static func normalizeToken(_ token: String) -> String {
+        token.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.symbols))
     }
 }

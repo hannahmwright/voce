@@ -5,6 +5,7 @@ actor AppPreferencesStore {
     private let storageURL: URL
     private var hasPreparedStorageDirectory = false
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "AppPreferencesStore")
+    private static let legacyModelCleanupMarkerName = ".legacy-model-cleanup-v2"
 
     init(storageURL: URL = AppPreferencesStore.defaultStorageURL()) {
         self.storageURL = storageURL
@@ -12,6 +13,7 @@ actor AppPreferencesStore {
 
     func load() -> AppPreferences {
         Self.migrateIfNeeded()
+        Self.cleanupLegacyTranscriptionModelFilesIfNeeded()
         guard FileManager.default.fileExists(atPath: storageURL.path) else {
             return .default
         }
@@ -85,5 +87,38 @@ actor AppPreferencesStore {
                 )
             }
         }
+    }
+
+    private static func cleanupLegacyTranscriptionModelFilesIfNeeded() {
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+
+        let voceDir = appSupport.appendingPathComponent("Voce", isDirectory: true)
+        let markerURL = voceDir.appendingPathComponent(legacyModelCleanupMarkerName)
+        guard !fm.fileExists(atPath: markerURL.path) else { return }
+
+        do {
+            try fm.createDirectory(at: voceDir, withIntermediateDirectories: true)
+        } catch {
+            logger.error(
+                "Legacy model cleanup could not prepare Voce directory \(voceDir.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+            )
+            return
+        }
+
+        let legacyModelsURL = voceDir.appendingPathComponent("MoonshineModels", isDirectory: true)
+        if fm.fileExists(atPath: legacyModelsURL.path) {
+            do {
+                try fm.removeItem(at: legacyModelsURL)
+                logger.log("Removed legacy transcription models at \(legacyModelsURL.path, privacy: .private).")
+            } catch {
+                logger.error(
+                    "Legacy model cleanup failed for \(legacyModelsURL.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+                )
+                return
+            }
+        }
+
+        fm.createFile(atPath: markerURL.path, contents: Data())
     }
 }

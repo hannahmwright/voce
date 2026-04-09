@@ -66,7 +66,7 @@ func pipelineRunComputesExpectedSummaries() async {
         normalizationPolicy: manifest.scoring.normalization,
         transcriptionConfiguration: .init(
             modelDirectoryPath: "/tmp/models",
-            modelName: "moonshine-base"
+            modelName: "apple-speech"
         ),
         summary: .init(
             totalSamples: 1,
@@ -121,4 +121,3 @@ func pipelineRunComputesExpectedSummaries() async {
     #expect(output.summary.lexicon.totalAppliedEdits == 1)
     #expect(output.summary.fillerImpact.samplesWithFillerRemovals == 1)
 }
-

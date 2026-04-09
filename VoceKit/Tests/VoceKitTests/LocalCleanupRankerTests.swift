@@ -159,7 +159,9 @@ func candidateGeneratorDeterministicDeduped() async throws {
     #expect(first == second)
     #expect(first.isEmpty == false)
     #expect(first.first?.rulePathID == "raw-pass-through")
-    #expect(first.contains(where: { !$0.removedFillers.isEmpty }))
+    #expect(first.count == 2)
+    #expect(first.last?.rulePathID == "configured-profile")
+    #expect(first.last?.removedFillers.isEmpty == false)
 
     let uniqueTexts = Set(first.map(\.text))
     #expect(uniqueTexts.count == first.count)

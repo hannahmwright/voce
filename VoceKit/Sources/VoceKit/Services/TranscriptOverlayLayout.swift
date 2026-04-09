@@ -2,7 +2,7 @@
 import AppKit
 
 enum TranscriptOverlayLayout {
-    static let compactSize = NSSize(width: 286, height: 52)
+    static let compactSize = NSSize(width: 88, height: 44)
     static let maximumTranscriptSize = NSSize(width: 372, height: 102)
     static let minimumTranscriptHeight: CGFloat = 58
     static let transcriptTextInset: CGFloat = 4
