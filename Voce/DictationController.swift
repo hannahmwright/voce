@@ -1,8 +1,162 @@
 import AppKit
+import AVFoundation
 import Foundation
 import OSLog
 import SwiftUI
 import VoceKit
+
+@MainActor
+private final class ClipboardRecoveryPromptPresenter: NSObject {
+    private var panel: NSPanel?
+    private var globalClickMonitor: Any?
+    private var pendingPasteTask: Task<Void, Never>?
+    private var pasteAfterRefocus: (() async -> Bool)?
+    private var copyToClipboard: (() -> Void)?
+
+    func show(
+        onCopy: @escaping () -> Void,
+        onPasteAfterRefocus: @escaping () async -> Bool
+    ) {
+        ensurePanel()
+        copyToClipboard = onCopy
+        pasteAfterRefocus = onPasteAfterRefocus
+        startMonitoring()
+        positionPanel()
+        panel?.alphaValue = 1
+        panel?.orderFrontRegardless()
+    }
+
+    func hide() {
+        pendingPasteTask?.cancel()
+        pendingPasteTask = nil
+        pasteAfterRefocus = nil
+        copyToClipboard = nil
+
+        if let globalClickMonitor {
+            NSEvent.removeMonitor(globalClickMonitor)
+            self.globalClickMonitor = nil
+        }
+
+        panel?.orderOut(nil)
+    }
+
+    @objc
+    private func handleCopyButton() {
+        copyToClipboard?()
+        hide()
+    }
+
+    private func ensurePanel() {
+        guard panel == nil else { return }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 248, height: 52),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.ignoresMouseEvents = false
+
+        let root = NSView(frame: panel.contentView?.bounds ?? .zero)
+        root.wantsLayer = true
+        root.layer?.cornerRadius = 16
+        root.layer?.masksToBounds = true
+        root.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.94).cgColor
+        root.layer?.borderWidth = 1
+        root.layer?.borderColor = NSColor.white.withAlphaComponent(0.8).cgColor
+        root.layer?.shadowOpacity = 0.12
+        root.layer?.shadowRadius = 18
+        root.layer?.shadowOffset = .zero
+        root.layer?.shadowColor = NSColor.black.cgColor
+
+        let blur = NSVisualEffectView(frame: root.bounds)
+        blur.autoresizingMask = [.width, .height]
+        blur.material = .hudWindow
+        blur.state = .active
+        blur.blendingMode = .behindWindow
+        root.addSubview(blur)
+
+        let label = NSTextField(labelWithString: "Click the input again")
+        label.font = NSFont(name: "Manrope SemiBold", size: 13) ?? .systemFont(ofSize: 13, weight: .semibold)
+        label.textColor = NSColor(calibratedWhite: 0.16, alpha: 1)
+        label.alignment = .left
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let button = NSButton(title: "Copy", target: self, action: #selector(handleCopyButton))
+        button.bezelStyle = .rounded
+        button.font = NSFont(name: "Manrope SemiBold", size: 12) ?? .systemFont(ofSize: 12, weight: .semibold)
+        button.contentTintColor = NSColor(calibratedWhite: 0.12, alpha: 1)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setButtonType(.momentaryPushIn)
+
+        root.addSubview(label)
+        root.addSubview(button)
+
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
+            label.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            button.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor, constant: 12),
+            button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            button.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            button.heightAnchor.constraint(equalToConstant: 28),
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 62)
+        ])
+
+        panel.contentView = root
+        self.panel = panel
+    }
+
+    private func startMonitoring() {
+        guard globalClickMonitor == nil else { return }
+
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleGlobalClick()
+            }
+        }
+    }
+
+    private func handleGlobalClick() {
+        guard let panel, panel.isVisible else { return }
+        guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
+        guard pendingPasteTask == nil else { return }
+        guard let pasteAfterRefocus else { return }
+
+        pendingPasteTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            let didPaste = await pasteAfterRefocus()
+            guard let self else { return }
+            self.pendingPasteTask = nil
+            if didPaste {
+                self.hide()
+            }
+        }
+    }
+
+    private func positionPanel() {
+        guard let panel else { return }
+        let screen = NSApp.keyWindow?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return }
+
+        let visibleFrame = screen.visibleFrame
+        let origin = NSPoint(
+            x: visibleFrame.midX - (panel.frame.width / 2),
+            y: visibleFrame.maxY - panel.frame.height - 72
+        )
+        panel.setFrameOrigin(origin)
+    }
+}
 
 @MainActor
 final class DictationController: ObservableObject {
@@ -44,6 +198,7 @@ final class DictationController: ObservableObject {
     private let mediaInterruption: MediaInterruptionService
     private let preferencesStore: AppPreferencesStore
     private let launchAtLoginService: LaunchAtLoginService
+    private let clipboardRecoveryPrompt = ClipboardRecoveryPromptPresenter()
 
     private var lexiconService: PersonalLexiconService
     private var styleProfileService: StyleProfileService
@@ -64,6 +219,7 @@ final class DictationController: ObservableObject {
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activePreviewSession: AppleSpeechPreviewSession?
+    private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
@@ -147,6 +303,7 @@ final class DictationController: ObservableObject {
         overlayDismissTask?.cancel()
         overlayDismissTask = nil
         overlay.hide()
+        clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
         activeStartTask = nil
@@ -180,6 +337,8 @@ final class DictationController: ObservableObject {
         validateEngineConfiguration()
         await rebuildRuntime()
         await refreshHistory()
+        await backfillLifetimeRecordingMetricsIfNeeded()
+        await inferLifetimeTrackingStartIfNeeded()
         overlay.prepareWindow()
         hasBootstrapped = true
     }
@@ -203,6 +362,18 @@ final class DictationController: ObservableObject {
         Task {
             await preferencesStore.save(snapshot)
             await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
+        }
+    }
+
+    /// Persist preferences to disk without rebuilding the dictation runtime.
+    /// Use this for non-runtime fields like scratchPadContent, userName, and metrics.
+    func savePreferencesQuietly(preferences draft: AppPreferences) {
+        var snapshot = draft
+        snapshot.normalize()
+        preferences = snapshot
+
+        Task {
+            await preferencesStore.save(snapshot)
         }
     }
 
@@ -318,6 +489,17 @@ final class DictationController: ObservableObject {
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
     }
 
+    func stopActiveRecording() {
+        switch recordingLifecycleState {
+        case .recordingHandsFree:
+            toggleHandsFree()
+        case .recordingPressToTalk:
+            pressToTalkStop()
+        case .idle, .transcribing:
+            break
+        }
+    }
+
     func submitActiveRecording() {
         guard activeRecordingMode == .handsFree, isRecording else { return }
         guard preferences.hotkeys.enterFinishesHandsFreeAndSubmits else { return }
@@ -327,7 +509,7 @@ final class DictationController: ObservableObject {
 
     func finishActiveRecordingWithAI(triggeredBy hotkey: HandsFreeHotkey? = nil) {
         guard activeRecordingMode == .handsFree, isRecording else { return }
-        guard preferences.ai.isEnabled else { return }
+        guard aiRuntimeEnabled else { return }
         let workflowID: UUID?
         if let hotkey {
             workflowID = preferences.ai.workflows.first(where: { $0.handsFreeFinishHotkey == hotkey })?.id
@@ -442,11 +624,17 @@ final class DictationController: ObservableObject {
 
     func acceptSnippetSuggestion(_ suggestion: SnippetSuggestion) async {
         let snippet = Snippet(
-            trigger: suggestion.phrase,
+            trigger: suggestion.suggestedTrigger,
             expansion: suggestion.phrase,
             scope: .global
         )
-        preferences.snippets.append(snippet)
+        if let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
+        }) {
+            preferences.snippets[existingIndex] = snippet
+        } else {
+            preferences.snippets.append(snippet)
+        }
         savePreferences()
         status = "Shortcut added for \"\(suggestion.phrase)\"."
     }
@@ -511,6 +699,7 @@ final class DictationController: ObservableObject {
 
     func refreshHistory() async {
         let all = await historyStore.recent(limit: 500)
+        metricEntries = all
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
     }
@@ -546,6 +735,7 @@ final class DictationController: ObservableObject {
         }
 
         cancelPendingOverlayDismissal()
+        clipboardRecoveryPrompt.hide()
         status = "Checking microphone..."
         lastError = ""
         let capturedContext = AppContextProvider.current()
@@ -579,15 +769,8 @@ final class DictationController: ObservableObject {
                 status = "Arming microphone..."
                 let session = AppleSpeechPreviewSession(
                     localeIdentifier: preferences.dictation.localeIdentifier,
-                    onPartialText: { [weak self] partialText in
-                        Task { @MainActor [weak self] in
-                            guard let self, self.isRecording else { return }
-                            self.overlay.show(state: .listening(
-                                handsFree: mode == .handsFree,
-                                elapsedSeconds: Int(self.recordingElapsed)
-                            ))
-                        }
-                    },
+                    previewTranscriptionEnabled: false,
+                    onPartialText: { _ in },
                     onTerminalError: { [weak self] error in
                         Task { @MainActor [weak self] in
                             self?.handleStreamingFailure(error)
@@ -640,6 +823,7 @@ final class DictationController: ObservableObject {
                 status = "Failed to start"
                 lastError = error.localizedDescription
                 overlay.hide()
+                clipboardRecoveryPrompt.hide()
             }
             activeStartTask = nil
         }
@@ -684,6 +868,7 @@ final class DictationController: ObservableObject {
             status = streamingFailureStatusMessage(for: error)
             lastError = error.localizedDescription
             overlay.hide()
+            clipboardRecoveryPrompt.hide()
             await applyDeferredRebuildIfNeeded()
         }
     }
@@ -698,6 +883,7 @@ final class DictationController: ObservableObject {
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
         recordingTimer = nil
+        accumulateRecordingSeconds(recordingElapsed)
         recordingElapsed = 0
         isRecording = false
         handsFreeOn = false
@@ -762,7 +948,7 @@ final class DictationController: ObservableObject {
                 let routedCompletion = try completionRoutingService.route(
                     finalizedTranscript: finalizedTranscript,
                     preferredAction: preferredCompletionAction,
-                    leadingPhraseSelectionEnabled: preferences.ai.isEnabled && preferences.ai.leadingPhraseSelectionEnabled,
+                    leadingPhraseSelectionEnabled: aiRuntimeEnabled && preferences.ai.leadingPhraseSelectionEnabled,
                     workflows: preferences.ai.workflows
                 )
                 let routingElapsed = routingBeganAt.duration(to: clock.now)
@@ -796,7 +982,10 @@ final class DictationController: ObservableObject {
                     )
 
                     lastTranscript = execution.finalText
-                    applyExecutionOutcomeStatus(execution)
+                    applyExecutionOutcomeStatus(
+                        execution,
+                        targetAppContext: finalizedTranscript.appContext
+                    )
                     do {
                         try await appendHistoryEntry(
                             finalizedTranscript: finalizedTranscript,
@@ -812,6 +1001,7 @@ final class DictationController: ObservableObject {
                     status = aiError.errorDescription ?? "AI request failed."
                     lastError = aiError.errorDescription ?? ""
                     overlay.hide()
+                    clipboardRecoveryPrompt.hide()
                     do {
                         try await appendFailedAIHistoryEntry(
                             finalizedTranscript: finalizedTranscript,
@@ -836,6 +1026,7 @@ final class DictationController: ObservableObject {
                 status = "Transcription failed"
                 lastError = error.localizedDescription
                 overlay.hide()
+                clipboardRecoveryPrompt.hide()
                 recordingStateMachine.markTranscriptionFailed()
                 await applyDeferredRebuildIfNeeded()
             }
@@ -974,6 +1165,10 @@ final class DictationController: ObservableObject {
         aiGenerationService.availabilityStatus().isAvailable
     }
 
+    private var aiRuntimeEnabled: Bool {
+        preferences.ai.isEnabled && aiAvailabilityIsAvailable
+    }
+
     var availableAIWorkflows: [AIWorkflow] {
         preferences.ai.workflows
     }
@@ -1010,6 +1205,10 @@ final class DictationController: ObservableObject {
     }
 
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {
+        if result.recoveryAction == .refocusToPaste {
+            return "Click the input again."
+        }
+
         guard let reason = result.errorMessage?.lowercased() else {
             return "Transcript copied to clipboard. Paste with Cmd+V."
         }
@@ -1046,6 +1245,7 @@ final class DictationController: ObservableObject {
         status = "Recording stopped"
         lastError = ""
         overlay.hide()
+        clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
         recordingStateMachine.markTranscriptionCompleted()
     }
@@ -1072,9 +1272,13 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func applyExecutionOutcomeStatus(_ execution: CompletionExecutionOutcome) {
+    private func applyExecutionOutcomeStatus(
+        _ execution: CompletionExecutionOutcome,
+        targetAppContext: AppContext
+    ) {
         let result = execution.insertResult
         let baseStatus: String
+        clipboardRecoveryPrompt.hide()
         switch execution.action {
         case .insert, .insertAndSubmit:
             switch result.status {
@@ -1084,6 +1288,7 @@ final class DictationController: ObservableObject {
             case .copiedOnly:
                 baseStatus = copiedOnlyStatusMessage(for: result)
                 lastError = result.errorMessage ?? ""
+                presentClipboardRecoveryPromptIfNeeded(for: result, targetAppContext: targetAppContext)
             case .failed:
                 let reason = result.errorMessage ?? "Insertion chain exhausted."
                 baseStatus = "Transcript ready but insertion failed."
@@ -1095,8 +1300,11 @@ final class DictationController: ObservableObject {
                 baseStatus = "AI result inserted."
                 lastError = ""
             case .copiedOnly:
-                baseStatus = "AI result copied to clipboard. Paste with Cmd+V."
+                baseStatus = result.recoveryAction == .refocusToPaste
+                    ? "Click the input again."
+                    : "AI result copied to clipboard. Paste with Cmd+V."
                 lastError = result.errorMessage ?? ""
+                presentClipboardRecoveryPromptIfNeeded(for: result, targetAppContext: targetAppContext)
             case .failed:
                 let reason = result.errorMessage ?? "Insertion chain exhausted."
                 baseStatus = "AI result ready but insertion failed."
@@ -1112,6 +1320,51 @@ final class DictationController: ObservableObject {
             messages.append(submitWarning)
         }
         status = messages.joined(separator: " ")
+    }
+
+    private func presentClipboardRecoveryPromptIfNeeded(
+        for result: InsertResult,
+        targetAppContext: AppContext
+    ) {
+        guard result.recoveryAction == .refocusToPaste else { return }
+
+        clipboardRecoveryPrompt.show(
+            onCopy: { [weak self] in
+                self?.copyCurrentTranscriptToClipboardForRecovery()
+            },
+            onPasteAfterRefocus: { [weak self] in
+                guard let self else { return false }
+                return await self.completeClipboardRecoveryPaste(into: targetAppContext)
+            }
+        )
+    }
+
+    private func copyCurrentTranscriptToClipboardForRecovery() {
+        let transcript = currentTranscriptText
+        guard !transcript.isEmpty else { return }
+
+        Task {
+            do {
+                try await clipboardService.setString(transcript)
+                status = "Copied to clipboard."
+                lastError = ""
+            } catch {
+                status = "Copy failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private func completeClipboardRecoveryPaste(into targetAppContext: AppContext) async -> Bool {
+        let outcome = await MacPasteHelper.activateAndPaste(target: targetAppContext)
+        switch outcome {
+        case .attempted:
+            status = "Transcript inserted."
+            lastError = ""
+            return true
+        case .skipped:
+            return false
+        }
     }
 
     private func aiGenerationStatusMessage(for workflowName: String) -> String {
@@ -1180,13 +1433,149 @@ final class DictationController: ObservableObject {
         hotkey.aiFinishHotkey = preferences.ai.handsFreeFinishHotkey
         hotkey.aiWorkflowFinishHotkeys = preferences.ai.workflows.compactMap(\.handsFreeFinishHotkey)
         hotkey.isAIFinishEnabled =
-            preferences.ai.isEnabled
+            aiRuntimeEnabled
             && activeRecordingMode == .handsFree
             && isRecording
             && (
                 preferences.ai.handsFreeFinishHotkey != nil
                 || preferences.ai.workflows.contains(where: { $0.handsFreeFinishHotkey != nil })
             )
+    }
+
+    // MARK: - Metrics
+
+    private static let metricsDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    var displayName: String {
+        let name = preferences.general.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        let fullName = NSFullUserName()
+        let firstName = fullName.components(separatedBy: " ").first ?? fullName
+        return firstName.isEmpty ? "there" : firstName
+    }
+
+    var totalWordsDictated: Int {
+        metricEntries
+            .reduce(0) { total, entry in
+                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+                return total + text.split(whereSeparator: \.isWhitespace).count
+            }
+    }
+
+    private var timedWordsDictated: Int {
+        guard let trackingStartedAt = preferences.metricsLifetimeTrackingStartedAt else {
+            return 0
+        }
+
+        return metricEntries
+            .filter { $0.createdAt >= trackingStartedAt }
+            .reduce(0) { total, entry in
+                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+                return total + text.split(whereSeparator: \.isWhitespace).count
+            }
+    }
+
+    var wordsPerMinute: Int {
+        let lifetimeSeconds = preferences.metricsRecordingSecondsLifetime
+        guard lifetimeSeconds > 0 else {
+            return 0
+        }
+        let minutes = lifetimeSeconds / 60.0
+        guard minutes > 0.1 else { return 0 }
+        let timedWords = timedWordsDictated
+        guard timedWords > 0 else { return 0 }
+        return Int(Double(timedWords) / minutes)
+    }
+
+    var daysUsed: Int {
+        let calendar = Calendar.current
+        let uniqueDays = Set(metricEntries.map { calendar.startOfDay(for: $0.createdAt) })
+        return uniqueDays.count
+    }
+
+    var primaryHotkeyLabel: String {
+        let hotkeys = preferences.hotkeys
+        if hotkeys.optionPressToTalkEnabled {
+            return hotkeys.pressToTalkHotkey.displayName
+        }
+        if let hf = hotkeys.handsFreeGlobalHotkey {
+            return handsFreeToggleDisplayName(for: hf)
+        }
+        return "your hotkey"
+    }
+
+    var tapToTalkHotkeyLabel: String {
+        if let hotkey = preferences.hotkeys.handsFreeGlobalHotkey {
+            return handsFreeToggleDisplayName(for: hotkey)
+        }
+        return primaryHotkeyLabel
+    }
+
+    func accumulateRecordingSeconds(_ seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        if preferences.metricsLifetimeTrackingStartedAt == nil {
+            preferences.metricsLifetimeTrackingStartedAt = Date()
+        }
+        let todayString = Self.metricsDateFormatter.string(from: Date())
+        if preferences.metricsLastRecordingDate != todayString {
+            preferences.metricsRecordingSecondsToday = 0
+            preferences.metricsLastRecordingDate = todayString
+        }
+        preferences.metricsRecordingSecondsToday += seconds
+        preferences.metricsRecordingSecondsLifetime += seconds
+
+        Task {
+            await preferencesStore.save(preferences)
+        }
+    }
+
+    private func backfillLifetimeRecordingMetricsIfNeeded() async {
+        guard preferences.metricsRecordingSecondsLifetime <= 0,
+              !metricEntries.isEmpty else {
+            return
+        }
+
+        var totalSeconds = 0.0
+        for entry in metricEntries {
+            guard let url = entry.audioURL,
+                  FileManager.default.fileExists(atPath: url.path) else {
+                continue
+            }
+
+            let asset = AVURLAsset(url: url)
+            guard let duration = try? await asset.load(.duration) else {
+                continue
+            }
+
+            let seconds = CMTimeGetSeconds(duration)
+            if seconds.isFinite, seconds > 0 {
+                totalSeconds += seconds
+            }
+        }
+
+        guard totalSeconds > 0 else { return }
+        preferences.metricsRecordingSecondsLifetime = totalSeconds
+        preferences.metricsLifetimeTrackingStartedAt = metricEntries.map(\.createdAt).min()
+        await preferencesStore.save(preferences)
+    }
+
+    private func inferLifetimeTrackingStartIfNeeded() async {
+        guard preferences.metricsRecordingSecondsLifetime > 0,
+              preferences.metricsLifetimeTrackingStartedAt == nil else {
+            return
+        }
+
+        if let inferredDate = Self.metricsDateFormatter.date(from: preferences.metricsLastRecordingDate) {
+            preferences.metricsLifetimeTrackingStartedAt = inferredDate
+        } else {
+            preferences.metricsLifetimeTrackingStartedAt = Date()
+        }
+
+        await preferencesStore.save(preferences)
     }
 }
 

@@ -40,7 +40,7 @@ public protocol HotkeyService: AnyObject {
 
     var isOptionPressToTalkEnabled: Bool { get set }
     var pressToTalkHotkey: PressToTalkHotkey { get set }
-    var globalToggleHotkey: HandsFreeHotkey? { get set }
+    var globalToggleHotkey: HandsFreeToggleHotkey? { get set }
     var isSubmitActiveRecordingEnabled: Bool { get set }
     var aiFinishHotkey: HandsFreeHotkey? { get set }
     var aiWorkflowFinishHotkeys: [HandsFreeHotkey] { get set }

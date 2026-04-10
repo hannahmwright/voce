@@ -85,8 +85,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var userDidDrag = false
     private var repositionModeEnabled = false
     private var repositionModeTask: Task<Void, Never>?
-    private var processingPlayer: AVQueuePlayer?
-    private var processingLooper: AVPlayerLooper?
+    private var processingPlayer: AVPlayer?
+    private var processingBoundaryObserver: Any?
+    private var processingTimeObserver: Any?
 
     /// Called when the user finishes dragging the overlay to a new position.
     /// Provides the window origin so the caller can persist it per-app.
@@ -122,7 +123,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             repositionModeTask?.cancel()
             repositionModeTask = nil
             processingPlayer?.pause()
-            processingLooper = nil
+            removeProcessingObservers()
             processingPlayer = nil
             NSWorkspace.shared.notificationCenter.removeObserver(self)
         }
@@ -225,11 +226,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         positionWindow()
 
         if isFirstShow && !reduceMotion {
-            // Entrance animation: fade in + slide up + gentle scale
+            // Entrance animation: fade in + gentle scale without shifting position.
             window?.alphaValue = 0
-            let finalOrigin = window?.frame.origin ?? .zero
-            isPositioningProgrammatically = true
-            window?.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y - 12))
             containerView?.layer?.transform = CATransform3DMakeScale(0.96, 0.96, 1)
             window?.orderFrontRegardless()
 
@@ -237,7 +235,6 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
                 context.duration = 0.4
                 context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1) // spring-like
                 self.window?.animator().alphaValue = 1
-                self.window?.animator().setFrameOrigin(finalOrigin)
             } completionHandler: {
                 Task { @MainActor [weak self] in
                     self?.isPositioningProgrammatically = false
@@ -309,8 +306,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         userDraggedPosition = nil
 
         if !reduceMotion {
-            // Exit: fade out + subtle scale down + slide down
-            let currentOrigin = window?.frame.origin ?? .zero
+            // Exit: fade out + subtle scale down without shifting position.
 
             CATransaction.begin()
             CATransaction.setAnimationDuration(0.25)
@@ -322,7 +318,6 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
                 context.duration = 0.25
                 context.timingFunction = CAMediaTimingFunction(name: .easeIn)
                 self.window?.animator().alphaValue = 0
-                self.window?.animator().setFrameOrigin(NSPoint(x: currentOrigin.x, y: currentOrigin.y - 6))
             }, completionHandler: { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.window?.orderOut(nil)
@@ -835,20 +830,74 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
            let url = Self.loadProcessingVideoURL() {
             let asset = AVAsset(url: url)
             let item = AVPlayerItem(asset: asset)
-            let player = AVQueuePlayer()
+            let player = AVPlayer(playerItem: item)
             player.isMuted = true
-            player.actionAtItemEnd = .none
-            processingLooper = AVPlayerLooper(player: player, templateItem: item)
+            player.actionAtItemEnd = .pause
             processingPlayer = player
             videoLayer.player = player
+            installProcessingBoundaryObserver()
         }
 
+        processingPlayer?.rate = 1.0
         processingPlayer?.seek(to: .zero)
         processingPlayer?.play()
     }
 
     private func stopProcessingVideo() {
         processingPlayer?.pause()
+    }
+
+    /// Observe both ends of the video so we can ping-pong playback
+    /// (forward → reverse → forward …) for a seamless loop.
+    private func installProcessingBoundaryObserver() {
+        guard let player = processingPlayer else { return }
+        removeProcessingObservers()
+
+        processingBoundaryObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: player.currentItem,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleProcessingVideoReachedEnd()
+            }
+        }
+
+        // Also observe when reverse playback reaches the start.
+        processingTimeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(value: 1, timescale: 30),
+            queue: .main
+        ) { [weak player, weak self] time in
+            guard let player, player.rate < 0, time <= .zero else { return }
+            Task { @MainActor [weak self] in
+                self?.handleProcessingVideoReachedStart()
+            }
+        }
+    }
+
+    private func removeProcessingObservers() {
+        if let observer = processingBoundaryObserver {
+            NotificationCenter.default.removeObserver(observer)
+            processingBoundaryObserver = nil
+        }
+
+        if let observer = processingTimeObserver {
+            processingPlayer?.removeTimeObserver(observer)
+            processingTimeObserver = nil
+        }
+    }
+
+    private func handleProcessingVideoReachedEnd() {
+        guard let player = processingPlayer else { return }
+        // Reverse playback from the end.
+        player.rate = -1.0
+    }
+
+    private func handleProcessingVideoReachedStart() {
+        guard let player = processingPlayer else { return }
+        // Forward playback from the start.
+        player.seek(to: .zero)
+        player.rate = 1.0
     }
 
     private func startBorderAnimation() {
@@ -1083,13 +1132,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         isPositioningProgrammatically = true
         defer { isPositioningProgrammatically = false }
 
-        if let anchoredOrigin = anchoredWindowOrigin(for: window) {
-            window.setFrameOrigin(anchoredOrigin)
-            sessionPinnedOrigin = anchoredOrigin
-            return
-        }
-
-        centerWindowNearTop()
+        centerWindowAtBottom()
         sessionPinnedOrigin = window.frame.origin
     }
 
@@ -1309,13 +1352,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         NSScreen.screens.first { NSMouseInRect(point, $0.frame, false) }
     }
 
-    private func centerWindowNearTop() {
+    private func centerWindowAtBottom() {
         guard let window,
               let screen = NSScreen.main else { return }
 
         let screenFrame = screen.visibleFrame
+        let margin: CGFloat = 12
         let x = screenFrame.origin.x + (screenFrame.width - window.frame.width) / 2
-        let y = screenFrame.origin.y + screenFrame.height - window.frame.height - 40
+        let y = screenFrame.origin.y + margin
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 

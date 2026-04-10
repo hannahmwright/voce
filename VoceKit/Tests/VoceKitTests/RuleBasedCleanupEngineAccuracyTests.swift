@@ -232,6 +232,39 @@ func balancedPolicyLeavesAggressiveFillers() async throws {
     #expect(cleaned.removedFillers.isEmpty)
 }
 
+@Test("Cleanup auto-formats explicit bullet list cues")
+func cleanupAutoFormatsExplicitBulletListCue() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "bullet list fix onboarding, test permissions, ship update",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "- Fix onboarding\n- Test permissions\n- Ship update")
+    #expect(cleaned.edits.contains(where: { $0.kind == .structureRewrite && $0.to == "auto-bullets" }))
+}
+
+@Test("Cleanup auto-formats ordinal lists into numbered output")
+func cleanupAutoFormatsOrdinalList() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "first fix onboarding second test permissions third ship update",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "1. Fix onboarding\n2. Test permissions\n3. Ship update")
+    #expect(cleaned.edits.contains(where: { $0.kind == .structureRewrite && $0.to == "auto-numbered" }))
+}
+
+@Test("Cleanup does not auto-format ordinary prose with weak ordinal language")
+func cleanupDoesNotAutoFormatWeakOrdinalProse() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "First I want to thank everyone for joining today.",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "First I want to thank everyone for joining today.")
+    #expect(cleaned.edits.contains(where: { $0.kind == .structureRewrite && $0.to.hasPrefix("auto-") }) == false)
+}
+
 private func runLocalCleanup(
     text: String,
     fillerPolicy: FillerPolicy

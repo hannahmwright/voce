@@ -2,60 +2,161 @@ import SwiftUI
 import VoceKit
 
 struct RecordingSettingsSection: View {
+    private let modeColumnWidth: CGFloat = 248
+
+    @EnvironmentObject private var controller: DictationController
     @Binding var preferences: AppPreferences
     let hotkeyRegistrationMessage: String
+    var autoStartHandsFreeCapture: Bool = false
 
     var body: some View {
-        settingsCard("Recording") {
-            Toggle("Enable hold-to-talk", isOn: $preferences.hotkeys.optionPressToTalkEnabled)
+        settingsCard("Transcribing") {
+            if controller.inputMonitoringPermissionStatus != .granted {
+                HStack(spacing: VoceDesign.sm) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(VoceDesign.error)
 
-            if preferences.hotkeys.optionPressToTalkEnabled {
-                VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                    Text("Hold-to-talk keys")
-                        .font(VoceDesign.callout())
-                        .foregroundStyle(VoceDesign.textPrimary)
+                    Text("Hot Keys will not work until Input Monitoring is granted.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.error)
 
-                    PressToTalkHotkeyRecorderField(hotkey: $preferences.hotkeys.pressToTalkHotkey)
+                    Spacer(minLength: 0)
                 }
+                .padding(VoceDesign.md)
+                .glassBackground(cornerRadius: VoceDesign.radiusSmall)
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
+                        .stroke(VoceDesign.errorBorder, lineWidth: VoceDesign.borderThin)
+                )
+            }
 
-                Text("Click the field, then hold one or more modifier keys together and release to save. Control+Option works well when Control is part of other shortcuts.")
-                    .font(VoceDesign.caption())
+            HStack(spacing: VoceDesign.md) {
+                Spacer()
+                    .frame(width: modeColumnWidth)
+
+                Text("Mapping")
+                    .font(VoceDesign.captionEmphasis())
                     .foregroundStyle(VoceDesign.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                Text("Global hands-free key")
-                    .font(VoceDesign.callout())
-                    .foregroundStyle(VoceDesign.textPrimary)
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                Toggle(isOn: holdToTalkBinding) {
+                    settingInlineLabel(
+                        "Hold to talk",
+                        glyphStyle: .holdKey,
+                        help: "Hold one or more modifier keys together to dictate, then release to stop."
+                    )
+                }
+                .frame(width: modeColumnWidth, alignment: .leading)
+                .disabled(!tapToTalkEnabled)
 
-                HotkeyRecorderField(hotkey: handsFreeKeyBinding)
+                PressToTalkHotkeyRecorderField(hotkey: $preferences.hotkeys.pressToTalkHotkey)
+                    .disabled(!preferences.hotkeys.optionPressToTalkEnabled)
+                    .opacity(preferences.hotkeys.optionPressToTalkEnabled ? 1 : 0.45)
             }
 
-            Text("Click the field, then press the key or modifier you want. This works well for unknown mic or Globe/Fn keys too.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                Toggle(isOn: tapToTalkBinding) {
+                    settingInlineLabel(
+                        "Tap to talk",
+                        glyphStyle: .tapKey,
+                        help: "Tap once to start or stop. For modifier keys, tap twice quickly to save an x2 toggle."
+                    )
+                }
+                .frame(width: modeColumnWidth, alignment: .leading)
+                .disabled(!preferences.hotkeys.optionPressToTalkEnabled)
 
-            Toggle(
-                "Press Return to end hands-free dictation and submit",
-                isOn: $preferences.hotkeys.enterFinishesHandsFreeAndSubmits
-            )
+                HandsFreeToggleHotkeyRecorderField(
+                    hotkey: handsFreeKeyBinding,
+                    autoStartCapture: autoStartCaptureForTapToTalk
+                )
+                .disabled(!tapToTalkEnabled)
+                .opacity(tapToTalkEnabled ? 1 : 0.45)
+            }
 
-            Text("When hands-free dictation is active, Return will stop recording, insert the finished transcript, then send one final Return to the current app. This is best for chat boxes and command bars.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                HStack(spacing: VoceDesign.sm) {
+                    HStack(spacing: VoceDesign.xs) {
+                        keyboardKeyCap("return", systemImage: "arrow.turn.down.left")
+                        Text("to send")
+                            .font(VoceDesign.callout())
+                            .foregroundStyle(VoceDesign.textPrimary)
+                            .lineLimit(1)
+                        HelpBubbleButton(text: "When tap-to-talk is active, Return stops recording, inserts the transcript, then sends one final Return to the current app. Best for chat boxes and command bars.")
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 0)
 
-            if !hotkeyRegistrationMessage.isEmpty {
+                    Toggle("", isOn: $preferences.hotkeys.enterFinishesHandsFreeAndSubmits)
+                        .labelsHidden()
+                        .accessibilityLabel("Return to send")
+                }
+                .frame(width: modeColumnWidth, alignment: .leading)
+                .disabled(!tapToTalkEnabled)
+                .opacity(tapToTalkEnabled ? 1 : 0.55)
+
+                Spacer(minLength: 0)
+            }
+
+            if shouldShowHotkeyRegistrationMessage {
                 Text(hotkeyRegistrationMessage)
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.error)
             }
         }
+        .onAppear {
+            ensureAtLeastOneModeEnabled()
+        }
     }
 
-    private var handsFreeKeyBinding: Binding<HandsFreeHotkey?> {
+    private var handsFreeKeyBinding: Binding<HandsFreeToggleHotkey?> {
         Binding(
             get: { preferences.hotkeys.handsFreeGlobalHotkey },
             set: { preferences.hotkeys.handsFreeGlobalHotkey = $0 }
         )
+    }
+
+    private var holdToTalkBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.hotkeys.optionPressToTalkEnabled },
+            set: { isEnabled in
+                if !isEnabled && !tapToTalkEnabled { return }
+                preferences.hotkeys.optionPressToTalkEnabled = isEnabled
+                ensureAtLeastOneModeEnabled()
+            }
+        )
+    }
+
+    private var tapToTalkBinding: Binding<Bool> {
+        Binding(
+            get: { tapToTalkEnabled },
+            set: { isEnabled in
+                if !isEnabled && !preferences.hotkeys.optionPressToTalkEnabled { return }
+                preferences.hotkeys.handsFreeGlobalHotkey = isEnabled
+                    ? (preferences.hotkeys.handsFreeGlobalHotkey ?? .init(hotkey: .keyCode(79)))
+                    : nil
+                ensureAtLeastOneModeEnabled()
+            }
+        )
+    }
+
+    private var tapToTalkEnabled: Bool {
+        preferences.hotkeys.handsFreeGlobalHotkey != nil
+    }
+
+    private var autoStartCaptureForTapToTalk: Bool {
+        autoStartHandsFreeCapture && tapToTalkEnabled
+    }
+
+    private func ensureAtLeastOneModeEnabled() {
+        if !preferences.hotkeys.optionPressToTalkEnabled && preferences.hotkeys.handsFreeGlobalHotkey == nil {
+            preferences.hotkeys.handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
+        }
+    }
+
+    private var shouldShowHotkeyRegistrationMessage: Bool {
+        guard !hotkeyRegistrationMessage.isEmpty else { return false }
+        return hotkeyRegistrationMessage != "Input Monitoring permission required for shortcuts."
     }
 }

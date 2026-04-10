@@ -7,14 +7,10 @@ struct AnchorOverrideSettingsSection: View {
 
     var body: some View {
         settingsCardWithSubtitle(
-            "Overlay Position",
-            subtitle: "Remembered overlay positions per app"
+            "Overlay",
+            subtitle: "Move the floating badge during dictation. Voce remembers a separate position for each app."
         ) {
-            Text("During dictation, click Reposition Overlay to temporarily make the badge draggable. Voce remembers that position for the current app and restores it next time.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-
-            Button("Reposition Overlay") {
+            Button("Move overlay") {
                 controller.beginOverlayRepositionMode()
             }
             .buttonStyle(.borderedProminent)
@@ -24,7 +20,7 @@ struct AnchorOverrideSettingsSection: View {
                     Image(systemName: "hand.draw")
                         .font(.system(size: VoceDesign.iconMD))
                         .foregroundStyle(VoceDesign.textSecondary)
-                    Text("No saved positions yet. Start dictation, choose Reposition Overlay, then drag the bubble to save a position.")
+                    Text("No saved positions yet.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                 }
@@ -39,7 +35,7 @@ struct AnchorOverrideSettingsSection: View {
                 if preferences.appAnchorOverrides.count > 1 {
                     HStack {
                         Spacer()
-                        Button("Reset All", role: .destructive) {
+                        Button("Reset all", role: .destructive) {
                             preferences.appAnchorOverrides.removeAll()
                         }
                         .buttonStyle(.link)

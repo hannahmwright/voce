@@ -33,15 +33,22 @@ struct AppAnchorOverride: Codable, Sendable, Equatable {
 }
 
 struct AppPreferences: Codable, Sendable, Equatable {
+    static let seededHiddenLexiconEntries: [LexiconEntry] = [
+        LexiconEntry(term: "voceh", preferred: "Voce", scope: .global),
+        LexiconEntry(term: "vochay", preferred: "Voce", scope: .global)
+    ]
+
     struct General: Codable, Sendable, Equatable {
         var launchAtLoginEnabled: Bool
         var showDockIcon: Bool
         var showOnboarding: Bool
+        var userName: String
 
-        init(launchAtLoginEnabled: Bool, showDockIcon: Bool, showOnboarding: Bool) {
+        init(launchAtLoginEnabled: Bool, showDockIcon: Bool, showOnboarding: Bool, userName: String = "") {
             self.launchAtLoginEnabled = launchAtLoginEnabled
             self.showDockIcon = showDockIcon
             self.showOnboarding = showOnboarding
+            self.userName = userName
         }
 
         init(from decoder: Decoder) throws {
@@ -49,13 +56,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
             launchAtLoginEnabled = try container.decodeIfPresent(Bool.self, forKey: .launchAtLoginEnabled) ?? false
             showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? true
             showOnboarding = try container.decodeIfPresent(Bool.self, forKey: .showOnboarding) ?? false
+            userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? ""
         }
     }
 
     struct Hotkeys: Codable, Sendable, Equatable {
         var optionPressToTalkEnabled: Bool
         var pressToTalkHotkey: PressToTalkHotkey
-        var handsFreeGlobalHotkey: HandsFreeHotkey?
+        var handsFreeGlobalHotkey: HandsFreeToggleHotkey?
         var enterFinishesHandsFreeAndSubmits: Bool
 
         enum CodingKeys: String, CodingKey {
@@ -70,7 +78,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         init(
             optionPressToTalkEnabled: Bool,
             pressToTalkHotkey: PressToTalkHotkey = .default,
-            handsFreeGlobalHotkey: HandsFreeHotkey? = .keyCode(79),
+            handsFreeGlobalHotkey: HandsFreeToggleHotkey? = .init(hotkey: .keyCode(79)),
             enterFinishesHandsFreeAndSubmits: Bool = false
         ) {
             self.optionPressToTalkEnabled = optionPressToTalkEnabled
@@ -81,6 +89,9 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            // Preserve the historical default for upgraded installs whose stored
+            // preferences predate this key, while keeping new installs default-off
+            // via AppPreferences.default.
             optionPressToTalkEnabled = try container.decodeIfPresent(Bool.self, forKey: .optionPressToTalkEnabled) ?? true
             if let hotkey = try container.decodeIfPresent(PressToTalkHotkey.self, forKey: .pressToTalkHotkey) {
                 pressToTalkHotkey = hotkey
@@ -89,12 +100,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
             } else {
                 pressToTalkHotkey = .default
             }
-            if let hotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeGlobalHotkey) {
+            if let hotkey = try container.decodeIfPresent(HandsFreeToggleHotkey.self, forKey: .handsFreeGlobalHotkey) {
                 handsFreeGlobalHotkey = hotkey
+            } else if let legacyHotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeGlobalHotkey) {
+                handsFreeGlobalHotkey = .init(hotkey: legacyHotkey)
             } else if let legacyKeyCode = try container.decodeIfPresent(UInt16.self, forKey: .handsFreeGlobalKeyCode) {
-                handsFreeGlobalHotkey = .keyCode(legacyKeyCode)
+                handsFreeGlobalHotkey = .init(hotkey: .keyCode(legacyKeyCode))
             } else {
-                handsFreeGlobalHotkey = .keyCode(79)
+                handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
             }
             enterFinishesHandsFreeAndSubmits = try container.decodeIfPresent(Bool.self, forKey: .enterFinishesHandsFreeAndSubmits) ?? false
         }
@@ -173,7 +186,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var workflows: [AIWorkflow]
 
         init(
-            isEnabled: Bool = false,
+            isEnabled: Bool = true,
             defaultHandsFreeWorkflowID: UUID? = AIWorkflow.askID,
             handsFreeFinishHotkey: HandsFreeHotkey? = nil,
             leadingPhraseSelectionEnabled: Bool = true,
@@ -188,7 +201,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+            isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
             defaultHandsFreeWorkflowID = try container.decodeIfPresent(UUID.self, forKey: .defaultHandsFreeWorkflowID) ?? AIWorkflow.askID
             handsFreeFinishHotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeFinishHotkey)
             leadingPhraseSelectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .leadingPhraseSelectionEnabled) ?? true
@@ -209,6 +222,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var appAnchorOverrides: [String: AppAnchorOverride]
     var snippets: [Snippet]
     var voiceCommands: [VoiceCommand]
+    var scratchPadContent: String
+    var metricsRecordingSecondsToday: Double
+    var metricsRecordingSecondsLifetime: Double
+    var metricsLifetimeTrackingStartedAt: Date?
+    var metricsLastRecordingDate: String
 
     init(
         general: General,
@@ -222,7 +240,12 @@ struct AppPreferences: Codable, Sendable, Equatable {
         appStyleProfiles: [String: StyleProfile],
         appAnchorOverrides: [String: AppAnchorOverride],
         snippets: [Snippet],
-        voiceCommands: [VoiceCommand]
+        voiceCommands: [VoiceCommand],
+        scratchPadContent: String = "",
+        metricsRecordingSecondsToday: Double = 0,
+        metricsRecordingSecondsLifetime: Double = 0,
+        metricsLifetimeTrackingStartedAt: Date? = nil,
+        metricsLastRecordingDate: String = ""
     ) {
         self.general = general
         self.hotkeys = hotkeys
@@ -236,6 +259,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
         self.appAnchorOverrides = appAnchorOverrides
         self.snippets = snippets
         self.voiceCommands = voiceCommands
+        self.scratchPadContent = scratchPadContent
+        self.metricsRecordingSecondsToday = metricsRecordingSecondsToday
+        self.metricsRecordingSecondsLifetime = metricsRecordingSecondsLifetime
+        self.metricsLifetimeTrackingStartedAt = metricsLifetimeTrackingStartedAt
+        self.metricsLastRecordingDate = metricsLastRecordingDate
     }
 
     init(from decoder: Decoder) throws {
@@ -252,6 +280,11 @@ struct AppPreferences: Codable, Sendable, Equatable {
         appAnchorOverrides = try container.decodeIfPresent([String: AppAnchorOverride].self, forKey: .appAnchorOverrides) ?? [:]
         snippets = try container.decodeIfPresent([Snippet].self, forKey: .snippets) ?? []
         voiceCommands = try container.decodeIfPresent([VoiceCommand].self, forKey: .voiceCommands) ?? VoiceCommand.builtIns
+        scratchPadContent = try container.decodeIfPresent(String.self, forKey: .scratchPadContent) ?? ""
+        metricsRecordingSecondsToday = try container.decodeIfPresent(Double.self, forKey: .metricsRecordingSecondsToday) ?? 0
+        metricsRecordingSecondsLifetime = try container.decodeIfPresent(Double.self, forKey: .metricsRecordingSecondsLifetime) ?? 0
+        metricsLifetimeTrackingStartedAt = try container.decodeIfPresent(Date.self, forKey: .metricsLifetimeTrackingStartedAt)
+        metricsLastRecordingDate = try container.decodeIfPresent(String.self, forKey: .metricsLastRecordingDate) ?? ""
     }
 
     static var `default`: AppPreferences {
@@ -262,9 +295,9 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 showOnboarding: true
             ),
             hotkeys: .init(
-                optionPressToTalkEnabled: true,
+                optionPressToTalkEnabled: false,
                 pressToTalkHotkey: .default,
-                handsFreeGlobalHotkey: .keyCode(79),
+                handsFreeGlobalHotkey: .init(hotkey: .keyCode(79)),
                 enterFinishesHandsFreeAndSubmits: false
             ),
             dictation: .init(
@@ -273,10 +306,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
             ai: .init(),
-            lexiconEntries: [
-                LexiconEntry(term: "voceh", preferred: "Voce", scope: .global),
-                LexiconEntry(term: "voce kit", preferred: "VoceKit", scope: .global)
-            ],
+            lexiconEntries: seededHiddenLexiconEntries,
             globalStyleProfile: .init(
                 name: "Default",
                 tone: .natural,
@@ -287,11 +317,18 @@ struct AppPreferences: Codable, Sendable, Equatable {
             appStyleProfiles: [:],
             appAnchorOverrides: [:],
             snippets: [],
-            voiceCommands: VoiceCommand.builtIns
+            voiceCommands: VoiceCommand.builtIns,
+            scratchPadContent: "",
+            metricsRecordingSecondsToday: 0,
+            metricsRecordingSecondsLifetime: 0,
+            metricsLifetimeTrackingStartedAt: nil,
+            metricsLastRecordingDate: ""
         )
     }
 
     mutating func normalize() {
+        migrateCustomInsertTextCommandsToSnippets()
+
         let supported: Set<InsertionMethod> = [.direct, .accessibility, .clipboardPaste]
         var seen: Set<InsertionMethod> = []
         var normalized: [InsertionMethod] = []
@@ -306,6 +343,9 @@ struct AppPreferences: Codable, Sendable, Equatable {
         }
 
         insertion.orderedMethods = normalized
+        if !hotkeys.optionPressToTalkEnabled && hotkeys.handsFreeGlobalHotkey == nil {
+            hotkeys.handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
+        }
         var existingWorkflows = ai.workflows
 
         if let legacyIndex = existingWorkflows.firstIndex(where: { $0.id == AIWorkflow.legacyCustomPromptID }) {
@@ -350,6 +390,64 @@ struct AppPreferences: Codable, Sendable, Equatable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if dictation.localeIdentifier.isEmpty {
             dictation.localeIdentifier = "en-US"
+        }
+    }
+
+    func runtimeRelevantSnapshot() -> AppPreferences {
+        var snapshot = self
+        snapshot.normalize()
+        snapshot.scratchPadContent = ""
+        snapshot.metricsRecordingSecondsToday = 0
+        snapshot.metricsRecordingSecondsLifetime = 0
+        snapshot.metricsLifetimeTrackingStartedAt = nil
+        snapshot.metricsLastRecordingDate = ""
+        snapshot.general.userName = ""
+        return snapshot
+    }
+
+    func requiresRuntimeRebuild(comparedTo other: AppPreferences) -> Bool {
+        runtimeRelevantSnapshot() != other.runtimeRelevantSnapshot()
+    }
+}
+
+extension AppPreferences {
+    var visibleLexiconEntries: [LexiconEntry] {
+        lexiconEntries.filter { entry in
+            !Self.seededHiddenLexiconEntries.contains(entry)
+        }
+    }
+
+    mutating func migrateCustomInsertTextCommandsToSnippets() {
+        let customInsertCommands = voiceCommands.filter { command in
+            !command.isBuiltIn && {
+                if case .insertText = command.action { return true }
+                return false
+            }()
+        }
+
+        guard !customInsertCommands.isEmpty else { return }
+
+        for command in customInsertCommands {
+            guard case .insertText(let text) = command.action else { continue }
+            let trigger = command.trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+            let expansion = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trigger.isEmpty, !expansion.isEmpty else { continue }
+
+            let alreadyExists = snippets.contains { snippet in
+                snippet.scope == .global &&
+                snippet.trigger.caseInsensitiveCompare(trigger) == .orderedSame
+            }
+
+            if !alreadyExists {
+                snippets.append(Snippet(trigger: trigger, expansion: expansion, scope: .global))
+            }
+        }
+
+        voiceCommands.removeAll { command in
+            !command.isBuiltIn && {
+                if case .insertText = command.action { return true }
+                return false
+            }()
         }
     }
 }

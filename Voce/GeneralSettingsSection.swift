@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct GeneralSettingsSection: View {
@@ -7,31 +8,123 @@ struct GeneralSettingsSection: View {
 
     var body: some View {
         Group {
-            settingsCard("General") {
-                Toggle("Launch at login", isOn: $preferences.general.launchAtLoginEnabled)
-                Toggle("Show Dock icon", isOn: $preferences.general.showDockIcon)
-                Toggle("Show onboarding on next launch", isOn: $preferences.general.showOnboarding)
+            settingsCard("Profile") {
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    settingInlineLabel(
+                        "Name",
+                        help: "Shown in the Home greeting. Defaults to your Mac name."
+                    )
+
+                    TextField("Your name", text: displayNameBinding)
+                        .textFieldStyle(.plain)
+                        .font(VoceDesign.callout())
+                        .padding(.horizontal, VoceDesign.md)
+                        .padding(.vertical, VoceDesign.sm)
+                        .background {
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                .fill(VoceDesign.surfaceSecondary)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                        .fill(.regularMaterial.opacity(0.18))
+                                )
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                        )
+                }
+            }
+
+            settingsCard("App") {
+                Toggle(isOn: $preferences.general.launchAtLoginEnabled) {
+                    settingInlineLabel(
+                        "Launch on login",
+                        help: "Open Voce automatically when you sign in."
+                    )
+                }
+
                 if !launchAtLoginWarning.isEmpty {
                     Text(launchAtLoginWarning)
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.error)
+                        .padding(.horizontal, VoceDesign.md)
+                        .padding(.vertical, VoceDesign.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(VoceDesign.errorBackground)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                .stroke(VoceDesign.errorBorder, lineWidth: VoceDesign.borderThin)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
                 }
-                Button("Re-run onboarding wizard") {
+
+                Toggle(isOn: $preferences.general.showDockIcon) {
+                    settingInlineLabel(
+                        "Show in Dock",
+                        help: "Keep Voce visible in the Dock."
+                    )
+                }
+
+                Button {
                     preferences.general.showOnboarding = true
+                } label: {
+                    HStack(spacing: VoceDesign.xs) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 15, weight: .semibold))
+
+                        Text("Show welcome")
+                            .font(VoceDesign.callout())
+                    }
+                    .foregroundStyle(VoceDesign.warmAccentText)
+                    .padding(.horizontal, VoceDesign.lg)
+                    .padding(.vertical, VoceDesign.sm + 1)
+                    .background(
+                        Capsule()
+                            .fill(VoceDesign.warmAccentFill)
+                    )
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
             }
 
-            settingsCardWithSubtitle(
-                "Updates",
-                subtitle: "Check for new Voce releases and install them through Sparkle."
-            ) {
-                Button("Check for Updates…") {
-                    updaterController.checkForUpdates()
+            settingsCard("Updates") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Check for updates")
+                            .font(VoceDesign.callout())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        Text("Get the latest version of Voce.")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                    }
+
+                    Spacer()
+
+                    Button("Check now") {
+                        updaterController.checkForUpdates()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!updaterController.canCheckForUpdates)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!updaterController.canCheckForUpdates)
             }
         }
+    }
+
+    private var displayNameBinding: Binding<String> {
+        Binding(
+            get: {
+                let current = preferences.general.userName.trimmingCharacters(in: .whitespacesAndNewlines)
+                return current.isEmpty ? macOSFirstName : current
+            },
+            set: { newValue in
+                preferences.general.userName = newValue
+            }
+        )
+    }
+
+    private var macOSFirstName: String {
+        let fullName = NSFullUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstName = fullName.components(separatedBy: " ").first ?? fullName
+        return firstName.isEmpty ? "" : firstName
     }
 }

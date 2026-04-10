@@ -1,6 +1,11 @@
 import Foundation
 
 public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
+    private enum AutoListKind {
+        case bullets
+        case numbered
+    }
+
     /// Word frequency data from the learning engine, used to bias candidate ranking
     /// toward the user's familiar vocabulary.
     public var wordFrequencies: [String: Int]
@@ -240,8 +245,14 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     private func applyStructure(text: String, mode: StructureMode) -> (text: String, edits: [TranscriptEdit]) {
         switch mode {
         case .natural, .command:
+            if let automatic = applyAutomaticListFormattingIfNeeded(to: text) {
+                return automatic
+            }
             return (text, [])
         case .paragraph:
+            if let automatic = applyAutomaticListFormattingIfNeeded(to: text) {
+                return automatic
+            }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return (capitalizedSentence(trimmed), [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "paragraph")])
         case .bullets:
@@ -254,6 +265,137 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             return (email, [TranscriptEdit(kind: .structureRewrite, from: "raw", to: "email")])
         }
     }
+
+    private func applyAutomaticListFormattingIfNeeded(to text: String) -> (text: String, edits: [TranscriptEdit])? {
+        if let explicit = explicitListRewrite(from: text) {
+            return explicit
+        }
+
+        if let ordinal = ordinalListRewrite(from: text) {
+            return ordinal
+        }
+
+        return nil
+    }
+
+    private func explicitListRewrite(from text: String) -> (text: String, edits: [TranscriptEdit])? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let lowered = trimmed.lowercased()
+        let bulletPrefixes = [
+            "bullet list ",
+            "bullet points ",
+            "bulleted list ",
+            "bullet point "
+        ]
+        let numberedPrefixes = [
+            "numbered list ",
+            "number list ",
+            "numbered points ",
+            "numbered items "
+        ]
+
+        if let prefix = bulletPrefixes.first(where: { lowered.hasPrefix($0) }) {
+            let remainder = String(trimmed.dropFirst(prefix.count))
+            let items = splitListItems(remainder)
+            guard items.count >= 2 else { return nil }
+            return formatList(items: items, kind: .bullets, source: "auto-bullets")
+        }
+
+        if let prefix = numberedPrefixes.first(where: { lowered.hasPrefix($0) }) {
+            let remainder = String(trimmed.dropFirst(prefix.count))
+            let items = splitListItems(remainder)
+            guard items.count >= 2 else { return nil }
+            return formatList(items: items, kind: .numbered, source: "auto-numbered")
+        }
+
+        return nil
+    }
+
+    private func ordinalListRewrite(from text: String) -> (text: String, edits: [TranscriptEdit])? {
+        let patterns = [
+            ("first", "second", "third"),
+            ("first", "second", nil),
+        ]
+
+        let fullRange = NSRange(text.startIndex..., in: text)
+        for pattern in patterns {
+            let regexPattern = ordinalPattern(first: pattern.0, second: pattern.1, third: pattern.2)
+            guard let regex = try? NSRegularExpression(pattern: regexPattern, options: [.caseInsensitive]) else {
+                continue
+            }
+
+            guard let match = regex.firstMatch(in: text, range: fullRange) else { continue }
+
+            let itemRanges = (1..<match.numberOfRanges).compactMap { index -> Range<String.Index>? in
+                let range = match.range(at: index)
+                guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else {
+                    return nil
+                }
+                return swiftRange
+            }
+
+            let items = itemRanges
+                .map { text[$0].trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .filter { !$0.contains("\n") }
+
+            guard items.count >= 2 else { continue }
+            guard items.allSatisfy({ $0.split(whereSeparator: \.isWhitespace).count <= 12 }) else { continue }
+
+            return formatList(items: items, kind: .numbered, source: "auto-numbered")
+        }
+
+        return nil
+    }
+
+    private func ordinalPattern(first: String, second: String, third: String?) -> String {
+        let base = #"(?is)^\s*"# +
+            first + #"\s+(.+?)\s+"# +
+            second + #"\s+(.+?)"#
+        if let third {
+            return base + #"\s+"# + third + #"\s+(.+?)\s*[.!?]?\s*$"#
+        }
+        return base + #"\s*[.!?]?\s*$"#
+    }
+
+    private func splitListItems(_ text: String) -> [String] {
+        let normalized = text
+            .replacingOccurrences(of: "\n", with: ", ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return [] }
+
+        let separators = CharacterSet(charactersIn: ",;\n")
+        let pieces = normalized.components(separatedBy: separators)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if pieces.count >= 2 {
+            return pieces.map(capitalizedSentence)
+        }
+
+        return splitIntoClauses(normalized)
+    }
+
+    private func formatList(items: [String], kind: AutoListKind, source: String) -> (text: String, edits: [TranscriptEdit]) {
+        let formattedItems = items.map(capitalizedSentence)
+        let text: String
+        switch kind {
+        case .bullets:
+            text = formattedItems.map { "- \($0)" }.joined(separator: "\n")
+        case .numbered:
+            text = formattedItems.enumerated().map { index, item in
+                "\(index + 1). \(item)"
+            }.joined(separator: "\n")
+        }
+
+        return (
+            text,
+            [TranscriptEdit(kind: .structureRewrite, from: "raw", to: source)]
+        )
+    }
+
     private func splitIntoClauses(_ text: String) -> [String] {
         let separators = CharacterSet(charactersIn: ",.;")
         let pieces = text.components(separatedBy: separators)

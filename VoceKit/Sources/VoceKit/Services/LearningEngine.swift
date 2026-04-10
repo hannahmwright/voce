@@ -23,8 +23,20 @@ public actor LearningEngine {
     /// Minimum sessions per app before suggesting a style profile.
     public static let styleSuggestionMinSessions = 10
 
-    /// N-gram sizes to track for snippet suggestions (3-word to 6-word phrases).
-    private static let ngramRange = 3...6
+    /// N-gram sizes to track for snippet suggestions (3-word to 8-word phrases).
+    private static let ngramRange = 3...8
+    private static let snippetStopWords: Set<String> = [
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "if",
+        "in", "into", "is", "it", "its", "me", "my", "of", "on", "or", "that", "the",
+        "their", "them", "there", "this", "to", "up", "us", "we", "with", "you", "your"
+    ]
+    private static let rejectedSnippetPhrases: Set<String> = [
+        "to be able to",
+        "i want to be",
+        "i want to be able",
+        "i need to be",
+        "i need to be able"
+    ]
 
     public init(storageURL: URL? = nil) {
         self.storageURL = storageURL ?? Self.defaultStorageURL()
@@ -124,11 +136,40 @@ public actor LearningEngine {
     /// Returns phrases that have been repeated enough to suggest as snippets.
     public func snippetSuggestions(excluding existingTriggers: Set<String> = []) -> [SnippetSuggestion] {
         let lowercasedTriggers = Set(existingTriggers.map { $0.lowercased() })
-        return data.phraseFrequencies
+        let candidates = data.phraseFrequencies
             .filter { $0.value >= Self.snippetSuggestionThreshold }
-            .filter { !lowercasedTriggers.contains($0.key.lowercased()) }
-            .map { SnippetSuggestion(phrase: $0.key, occurrences: $0.value) }
-            .sorted { $0.occurrences > $1.occurrences }
+            .compactMap { (entry: Dictionary<String, Int>.Element) -> SnippetSuggestion? in
+                let (phrase, occurrences) = entry
+                let normalizedPhrase = phrase.lowercased()
+                guard shouldSuggestSnippetPhrase(normalizedPhrase) else { return nil }
+                guard let suggestedTrigger = makeSuggestedTrigger(for: normalizedPhrase) else { return nil }
+                guard !lowercasedTriggers.contains(normalizedPhrase) else { return nil }
+                guard !lowercasedTriggers.contains(suggestedTrigger.lowercased()) else { return nil }
+                return SnippetSuggestion(
+                    phrase: normalizedPhrase,
+                    suggestedTrigger: suggestedTrigger,
+                    occurrences: occurrences
+                )
+            }
+            .sorted { (lhs: SnippetSuggestion, rhs: SnippetSuggestion) in
+                if lhs.occurrences != rhs.occurrences {
+                    return lhs.occurrences > rhs.occurrences
+                }
+                return wordCount(in: lhs.phrase) > wordCount(in: rhs.phrase)
+            }
+
+        var filtered: [SnippetSuggestion] = []
+        for candidate in candidates {
+            let isOverlappingFragment = filtered.contains { existing in
+                existing.occurrences >= candidate.occurrences
+                    && containsPhrase(existing.phrase, candidate.phrase)
+            }
+            if !isOverlappingFragment {
+                filtered.append(candidate)
+            }
+        }
+
+        return filtered
     }
 
     /// Dismiss a snippet suggestion so it won't be suggested again.
@@ -298,6 +339,62 @@ public actor LearningEngine {
         text.lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { $0.count > 1 }
+    }
+
+    private func shouldSuggestSnippetPhrase(_ phrase: String) -> Bool {
+        guard !Self.rejectedSnippetPhrases.contains(phrase) else { return false }
+
+        let words = tokenize(phrase)
+        guard words.count >= 4 else { return false }
+        guard phrase.count >= 12 else { return false }
+
+        let contentWords = words.filter { !Self.snippetStopWords.contains($0) }
+        let contentRatio = Double(contentWords.count) / Double(words.count)
+
+        guard contentWords.count >= 2 else { return false }
+        guard contentRatio >= 0.4 else { return false }
+        guard Set(words).count >= 3 else { return false }
+
+        return true
+    }
+
+    private func makeSuggestedTrigger(for phrase: String) -> String? {
+        let words = tokenize(phrase)
+        guard words.count >= 4 else { return nil }
+
+        let maximumPrefixLength = min(4, words.count - 2)
+        if maximumPrefixLength >= 2 {
+            for prefixLength in 2...maximumPrefixLength {
+                let prefixWords = Array(words.prefix(prefixLength))
+                guard let lastWord = prefixWords.last, !Self.snippetStopWords.contains(lastWord) else {
+                    continue
+                }
+                let candidate = prefixWords.joined(separator: " ")
+                if wordCount(in: phrase) - prefixLength >= 2 && candidate.count < phrase.count {
+                    return candidate
+                }
+            }
+        }
+
+        let contentWords = words.filter { !Self.snippetStopWords.contains($0) }
+        let fallbackWords = Array(contentWords.prefix(3))
+        guard fallbackWords.count >= 2 else { return nil }
+
+        let fallback = fallbackWords.joined(separator: " ")
+        if fallback != phrase && fallback.count < phrase.count {
+            return fallback
+        }
+        return nil
+    }
+
+    private func containsPhrase(_ fullPhrase: String, _ candidatePhrase: String) -> Bool {
+        let paddedFullPhrase = " \(fullPhrase) "
+        let paddedCandidatePhrase = " \(candidatePhrase) "
+        return paddedFullPhrase.contains(paddedCandidatePhrase)
+    }
+
+    private func wordCount(in phrase: String) -> Int {
+        tokenize(phrase).count
     }
 
     // MARK: - Persistence

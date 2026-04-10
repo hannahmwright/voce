@@ -9,56 +9,102 @@ struct EngineSettingsSection: View {
     @State private var isTesting = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            settingsCard("Engine") {
-                VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                    Text("Apple Speech")
-                        .font(VoceDesign.bodyEmphasis())
-                        .foregroundStyle(VoceDesign.textPrimary)
-                    Text("Voce now uses Apple Speech for the final transcript and keeps Apple live preview for immediate feedback.")
+        settingsCard("Speech") {
+            HStack(alignment: .center, spacing: VoceDesign.md) {
+                speechBrandTile
+
+                VStack(alignment: .leading, spacing: VoceDesign.xxs) {
+                    HStack(spacing: VoceDesign.xs) {
+                        Text("Apple Speech")
+                            .font(VoceDesign.bodyEmphasis())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        Text("Built in")
+                            .font(VoceDesign.label())
+                            .foregroundStyle(VoceDesign.warmAccentText)
+                            .padding(.horizontal, VoceDesign.sm)
+                            .padding(.vertical, VoceDesign.xxs)
+                            .background(VoceDesign.warmAccentFill)
+                            .clipShape(Capsule())
+                    }
+
+                    Text("Uses Apple's speech stack for live transcription.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                 }
 
-                VStack(alignment: .leading, spacing: VoceDesign.xs) {
-                    Text("Locale")
-                        .font(VoceDesign.bodyEmphasis())
-                        .foregroundStyle(VoceDesign.textPrimary)
-                    TextField("en-US", text: $preferences.dictation.localeIdentifier)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                    Text("Use a BCP-47 locale like `en-US` or `en-GB`. This locale is used for live preview and final transcription.")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                }
+                Spacer()
 
-                HStack(spacing: VoceDesign.sm) {
-                    Button {
-                        runTestSetup()
-                    } label: {
+                Button {
+                    runTestSetup()
+                } label: {
+                    HStack(spacing: VoceDesign.sm) {
                         if isTesting {
                             ProgressView()
                                 .controlSize(.small)
-                                .frame(width: VoceDesign.iconMD, height: VoceDesign.iconMD)
+                                .tint(.white)
                         } else {
-                            Text("Test Apple Speech")
+                            Image(systemName: "waveform.badge.magnifyingglass")
+                                .font(.system(size: 13, weight: .semibold))
                         }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isTesting)
 
-                    if let result = testResult {
-                        Text(result)
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(testResultIsError ? VoceDesign.error : VoceDesign.success)
+                        Text(isTesting ? "Testing..." : "Run test")
+                            .font(VoceDesign.captionEmphasis())
                     }
+                    .foregroundStyle(VoceDesign.warmAccentText)
+                    .padding(.horizontal, VoceDesign.md)
+                    .padding(.vertical, VoceDesign.sm)
+                    .background(
+                        Capsule()
+                            .fill(VoceDesign.warmAccentFill)
+                    )
+                    .shadowStyle(.sm)
                 }
+                .buttonStyle(.plain)
+                .disabled(isTesting)
+                .opacity(isTesting ? 0.9 : 1)
+            }
+            .padding(VoceDesign.md)
+            .glassBackground(cornerRadius: VoceDesign.radiusMedium)
 
-                Text("Voce now targets newer macOS releases and no longer requires any bundled model download.")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
+            if let result = testResult {
+                HStack(spacing: VoceDesign.sm) {
+                    Image(systemName: testResultIsError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(testResultIsError ? VoceDesign.error : VoceDesign.success)
+
+                    Text(result)
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(testResultIsError ? VoceDesign.error : VoceDesign.success)
+
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, VoceDesign.sm)
+                .padding(.vertical, VoceDesign.sm)
+                .background(testResultIsError ? VoceDesign.errorBackground : VoceDesign.successBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                        .stroke(testResultIsError ? VoceDesign.errorBorder : VoceDesign.successBorder, lineWidth: VoceDesign.borderThin)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
             }
         }
+    }
+
+    private var speechBrandTile: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.warmAccentFill)
+
+            HStack(spacing: 6) {
+                Image(systemName: "apple.logo")
+                    .font(.system(size: 15, weight: .semibold))
+                Image(systemName: "waveform")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(VoceDesign.warmAccentText)
+        }
+        .frame(width: 52, height: 52)
+        .shadowStyle(.sm)
     }
 
     private func runTestSetup() {

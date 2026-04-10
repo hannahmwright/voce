@@ -8,6 +8,10 @@ struct VoceApp: App {
     @StateObject private var controller = DictationController()
     @StateObject private var updaterController = UpdaterController()
 
+    init() {
+        VoceDesign.registerBundledFonts()
+    }
+
     var body: some Scene {
         WindowGroup("Voce") {
             Group {
@@ -22,6 +26,7 @@ struct VoceApp: App {
                         .environmentObject(updaterController)
                 }
             }
+            .font(VoceDesign.body())
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: VoceDesign.windowIdealWidth, height: VoceDesign.windowIdealHeight)

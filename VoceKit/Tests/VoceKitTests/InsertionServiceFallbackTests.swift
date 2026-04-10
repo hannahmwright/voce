@@ -62,3 +62,48 @@ func insertionServiceFallsBackToClipboard() async {
     #expect(result.method == .clipboardPaste)
     #expect(await recorder.snapshot() == [.direct, .accessibility, .clipboardPaste])
 }
+
+@Test("InsertionService suggests seamless refocus paste after focus-loss fallback")
+func insertionServiceSuggestsRefocusPasteRecovery() async {
+    let clipboard = MemoryClipboardService()
+    let service = InsertionService(transports: [
+        ClosureInsertionTransport(method: .direct) { _, _ in
+            throw MacInsertionError.attributeUpdateFailed
+        },
+        ClosureInsertionTransport(method: .accessibility) { _, _ in
+            throw MacInsertionError.focusedElementUnavailable
+        },
+        ClipboardInsertionTransport(clipboard: clipboard) { _ in
+            .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
+        }
+    ])
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.method == .clipboardPaste)
+    #expect(result.recoveryAction == .refocusToPaste)
+    #expect(await clipboard.latestValue == "hello")
+}
+
+@Test("InsertionService does not suggest refocus paste for permission failures")
+func insertionServiceSkipsRefocusPasteRecoveryForPermissionFailures() async {
+    let clipboard = MemoryClipboardService()
+    let service = InsertionService(transports: [
+        ClosureInsertionTransport(method: .direct) { _, _ in
+            throw MacInsertionError.accessibilityPermissionMissing
+        },
+        ClosureInsertionTransport(method: .accessibility) { _, _ in
+            throw MacInsertionError.accessibilityPermissionMissing
+        },
+        ClipboardInsertionTransport(clipboard: clipboard) { _ in
+            .skipped(reason: "Accessibility permission is required for auto-paste.")
+        }
+    ])
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.recoveryAction == nil)
+    #expect(await clipboard.latestValue == "hello")
+}

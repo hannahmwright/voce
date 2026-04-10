@@ -44,3 +44,27 @@ func hotkeyGateIgnoresReleaseWithoutPress() {
 
     #expect(gate.consume(.released, now: t0) == false)
 }
+
+@Test("Double-tap gate toggles on the second tap")
+func hotkeyDoubleTapGateTogglesOnSecondTap() {
+    var gate = HotkeyDoubleTapGate(activationWindowSeconds: 0.35)
+    let t0 = Date(timeIntervalSince1970: 1000)
+
+    #expect(gate.registerTap(now: t0) == false)
+    #expect(gate.registerTap(now: t0.addingTimeInterval(0.2)) == true)
+}
+
+@Test("Double-tap gate requires the second tap within the activation window")
+func hotkeyDoubleTapGateRequiresSecondTapWithinWindow() {
+    var gate = HotkeyDoubleTapGate(activationWindowSeconds: 0.35)
+    let t0 = Date(timeIntervalSince1970: 1000)
+
+    #expect(gate.consume(.pressed, now: t0) == false)
+    #expect(gate.consume(.released, now: t0.addingTimeInterval(0.01)) == false)
+
+    #expect(gate.consume(.pressed, now: t0.addingTimeInterval(0.50)) == false)
+    #expect(gate.consume(.released, now: t0.addingTimeInterval(0.51)) == false)
+
+    #expect(gate.consume(.pressed, now: t0.addingTimeInterval(0.68)) == false)
+    #expect(gate.consume(.released, now: t0.addingTimeInterval(0.69)) == true)
+}

@@ -2,6 +2,22 @@ import SwiftUI
 import VoceKit
 
 struct AISettingsSection: View {
+    private enum TriggerMode: String, CaseIterable, Identifiable {
+        case hotkeyOnly
+        case hotkeyAndVoice
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .hotkeyOnly:
+                return "Hotkey only"
+            case .hotkeyAndVoice:
+                return "Hotkey + voice"
+            }
+        }
+    }
+
     private struct WorkflowDraft {
         var title: String = ""
         var prompt: String = ""
@@ -26,99 +42,107 @@ struct AISettingsSection: View {
 
         var id: String {
             switch self {
-            case .add: return "add"
-            case .edit(let i): return "edit-\(i)"
+            case .add:
+                return "add"
+            case .edit(let index):
+                return "edit-\(index)"
             }
         }
 
-        var isEditing: Bool {
-            if case .edit = self { return true }
-            return false
+        var title: String {
+            switch self {
+            case .add:
+                return "New prompt"
+            case .edit:
+                return "Edit prompt"
+            }
         }
     }
 
-    @EnvironmentObject private var controller: DictationController
     @Binding var preferences: AppPreferences
     @State private var sheetMode: SheetMode?
     @State private var draft = WorkflowDraft()
     @State private var hoveredWorkflowID: UUID?
 
     var body: some View {
-        settingsCardWithSubtitle(
-            "AI Workflows",
-            subtitle: "Route finished dictation through Apple Intelligence when you want rewritten or summarized output."
-        ) {
-            Toggle("Enable AI workflows", isOn: $preferences.ai.isEnabled)
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            aiHeader
 
-            availabilityRow
+            Toggle(isOn: $preferences.ai.isEnabled) {
+                settingInlineLabel(
+                    "Use AI",
+                    help: "Turns on Apple Intelligence actions."
+                )
+            }
 
-            Toggle("Allow spoken leading phrases", isOn: $preferences.ai.leadingPhraseSelectionEnabled)
-                .disabled(!preferences.ai.isEnabled)
+            voiceTriggerRow
 
-            workflowTable
+            workflowList
+                .opacity(preferences.ai.isEnabled ? 1 : 0.48)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardStyle()
         .sheet(item: $sheetMode) { mode in
             workflowSheet(mode: mode)
         }
     }
 
-    // MARK: - Availability
+    private var workflowList: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            Text("Actions")
+                .font(VoceDesign.heading3())
+                .foregroundStyle(VoceDesign.textPrimary)
 
-    private var availabilityRow: some View {
-        HStack(spacing: VoceDesign.sm) {
-            Circle()
-                .fill(controller.aiAvailabilityIsAvailable ? VoceDesign.success : VoceDesign.warning)
-                .frame(width: 8, height: 8)
+            workflowSection("Built in", indices: builtInWorkflowIndices)
 
-            Text(controller.appleIntelligenceAvailabilityText)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+            if !customWorkflowIndices.isEmpty {
+                workflowSection("Custom", indices: customWorkflowIndices, showsNewButton: true)
+            } else {
+                workflowSection("Custom", indices: [], showsNewButton: true)
+            }
         }
     }
 
-    // MARK: - Unified Workflow Table
-
-    private var workflowTable: some View {
+    private func workflowSection(
+        _ title: String,
+        indices: [Int],
+        showsNewButton: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
             HStack {
-                Text("Workflows")
-                    .font(VoceDesign.callout())
-                    .foregroundStyle(VoceDesign.textPrimary)
+                Text(title)
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .textCase(.uppercase)
 
                 Spacer()
 
-                Button {
-                    draft = WorkflowDraft()
-                    sheetMode = .add
-                } label: {
-                    Label("Add Workflow", systemImage: "plus")
-                        .font(VoceDesign.label())
+                if showsNewButton {
+                    Button {
+                        draft = WorkflowDraft()
+                        sheetMode = .add
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(VoceDesign.accent)
+                    .disabled(!preferences.ai.isEnabled)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(VoceDesign.accent)
-                .disabled(!preferences.ai.isEnabled)
             }
 
-            // Table header
-            HStack(spacing: 0) {
-                Text("Name")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text("Trigger")
-                    .frame(width: 90, alignment: .leading)
-                Text("Finish Key")
-                    .frame(width: 72, alignment: .leading)
-                Text("Enabled")
-                    .frame(width: 60, alignment: .center)
-                Spacer()
-                    .frame(width: 52)
-            }
-            .font(VoceDesign.label())
-            .foregroundStyle(VoceDesign.textSecondary)
-            .padding(.horizontal, VoceDesign.sm)
-
-            // All workflow rows
-            ForEach(Array(preferences.ai.workflows.indices), id: \.self) { index in
-                workflowRow(at: index)
+            if indices.isEmpty {
+                Text("No custom actions")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .padding(.horizontal, VoceDesign.md)
+                    .padding(.vertical, VoceDesign.sm)
+                    .background(VoceDesign.surfaceSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
+            } else {
+                ForEach(indices, id: \.self) { index in
+                    workflowRow(at: index)
+                }
             }
         }
     }
@@ -127,91 +151,56 @@ struct AISettingsSection: View {
         let workflow = preferences.ai.workflows[index]
         let isHovered = hoveredWorkflowID == workflow.id
 
-        return HStack(spacing: 0) {
-            // Name + built-in badge
-            HStack(spacing: VoceDesign.xs) {
-                Text(workflow.name)
+        return HStack(spacing: VoceDesign.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(workflowDisplayName(for: workflow))
                     .font(VoceDesign.callout())
                     .foregroundStyle(VoceDesign.textPrimary)
                     .lineLimit(1)
 
-                if workflow.isBuiltIn {
-                    Text("Default")
-                        .font(VoceDesign.label())
-                        .padding(.horizontal, VoceDesign.xs + VoceDesign.xxs)
-                        .padding(.vertical, 1)
-                        .background(
-                            Capsule().fill(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
-                        )
-                        .foregroundStyle(VoceDesign.accent)
-                }
+                Text(workflowSummary(for: workflow))
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
-            // Trigger phrase
-            Text(workflow.leadingPhrases.first ?? "--")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-                .lineLimit(1)
-                .frame(width: 90, alignment: .leading)
+            workflowSpeechColumn(for: workflow)
 
-            // Finish key
-            Group {
-                if let key = workflow.handsFreeFinishHotkey {
-                    Text(hotkeyDisplayName(for: key))
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                } else {
-                    Text("--")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary.opacity(0.5))
-                }
-            }
-            .lineLimit(1)
-            .frame(width: 72, alignment: .leading)
+            workflowKeyColumn(for: workflow)
 
             Toggle("", isOn: workflowEnabledBinding(at: index))
-                .toggleStyle(.switch)
                 .labelsHidden()
                 .controlSize(.mini)
                 .disabled(!preferences.ai.isEnabled)
                 .accessibilityLabel("\(workflow.name) enabled")
-                .frame(width: 60, alignment: .center)
 
-            HStack(spacing: 0) {
-                Button {
-                    editWorkflow(at: index)
+            Button {
+                editWorkflow(at: index)
+            } label: {
+                Image(systemName: "pencil")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(isHovered ? VoceDesign.accent : VoceDesign.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!preferences.ai.isEnabled)
+
+            if workflow.isBuiltIn {
+                Color.clear
+                    .frame(width: 12, height: 1)
+            } else {
+                Button(role: .destructive) {
+                    removeWorkflow(at: index)
                 } label: {
-                    Image(systemName: "pencil")
+                    Image(systemName: "trash")
                         .font(VoceDesign.caption())
-                        .foregroundStyle(isHovered ? VoceDesign.accent : VoceDesign.textSecondary)
+                        .foregroundStyle(isHovered ? VoceDesign.error : VoceDesign.textSecondary.opacity(0.6))
                 }
                 .buttonStyle(.plain)
-                .help("Edit workflow")
-                .accessibilityLabel("Edit \(workflow.name)")
-                .frame(width: 26, alignment: .center)
-
-                if workflow.isBuiltIn {
-                    Color.clear
-                        .frame(width: 26, height: 1)
-                } else {
-                    Button(role: .destructive) {
-                        removeWorkflow(at: index)
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(isHovered ? VoceDesign.error : VoceDesign.textSecondary.opacity(0.6))
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete workflow")
-                    .accessibilityLabel("Delete \(workflow.name)")
-                    .disabled(!preferences.ai.isEnabled)
-                    .frame(width: 26, alignment: .center)
-                }
+                .disabled(!preferences.ai.isEnabled)
             }
-            .frame(width: 52, alignment: .trailing)
         }
-        .padding(.horizontal, VoceDesign.sm)
+        .padding(.horizontal, VoceDesign.md)
         .padding(.vertical, VoceDesign.sm)
         .background {
             RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
@@ -229,6 +218,7 @@ struct AISettingsSection: View {
                 )
         )
         .contentShape(Rectangle())
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in
             withAnimation(.easeInOut(duration: VoceDesign.animationFast)) {
                 hoveredWorkflowID = hovering ? workflow.id : nil
@@ -236,27 +226,200 @@ struct AISettingsSection: View {
         }
     }
 
-    // MARK: - Workflow Sheet (Add / Edit)
+    private func workflowSummary(for workflow: AIWorkflow) -> String {
+        switch workflow.kind {
+        case .ask:
+            return "Answer a question"
+        case .rewrite:
+            return "Rewrite text"
+        case .summarize:
+            return "Short summary"
+        case .customPrompt:
+            if workflow.id == AIWorkflow.aiPromptID {
+                return "Clean up a prompt"
+            }
+            return "Custom prompt"
+        }
+    }
+
+    private func workflowDisplayName(for workflow: AIWorkflow) -> String {
+        switch workflow.kind {
+        case .ask:
+            return "Ask"
+        case .rewrite:
+            return "Rewrite"
+        case .summarize:
+            return "Summarize"
+        case .customPrompt:
+            if workflow.id == AIWorkflow.aiPromptID {
+                return "Better prompt"
+            }
+            return workflow.name
+        }
+    }
+
+    private func workflowChip(_ title: String) -> some View {
+        Text(title)
+            .font(VoceDesign.label())
+            .foregroundStyle(VoceDesign.textSecondary)
+            .padding(.horizontal, VoceDesign.sm)
+            .padding(.vertical, VoceDesign.xxs)
+            .background(VoceDesign.surface)
+            .clipShape(Capsule())
+    }
+
+    private func workflowSpeechColumn(for workflow: AIWorkflow) -> some View {
+        Group {
+            if let phrase = workflow.leadingPhrases.first, !phrase.isEmpty {
+                workflowIconChip(systemImage: "waveform", title: phrase)
+            } else {
+                Color.clear
+                    .frame(height: 28)
+            }
+        }
+        .frame(width: 150, alignment: .leading)
+    }
+
+    private func workflowKeyColumn(for workflow: AIWorkflow) -> some View {
+        Group {
+            if let hotkey = workflow.handsFreeFinishHotkey {
+                workflowChip(hotkeyDisplayName(for: hotkey))
+            } else {
+                Color.clear
+                    .frame(height: 28)
+            }
+        }
+        .frame(width: 44, alignment: .leading)
+    }
+
+    private func workflowIconChip(systemImage: String, title: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+            Text(title)
+                .font(VoceDesign.label())
+                .lineLimit(1)
+        }
+        .foregroundStyle(VoceDesign.textSecondary)
+        .padding(.horizontal, VoceDesign.sm)
+        .padding(.vertical, VoceDesign.xxs)
+        .background(VoceDesign.surface)
+        .clipShape(Capsule())
+    }
+
+    private var aiHeader: some View {
+        HStack(spacing: VoceDesign.sm) {
+            Text("Apple Intelligence")
+                .font(VoceDesign.heading3())
+                .foregroundStyle(VoceDesign.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+
+            miniAIBadge
+
+            Text("Built in")
+                .font(VoceDesign.label())
+                .foregroundStyle(VoceDesign.warmAccentText)
+                .padding(.horizontal, VoceDesign.sm)
+                .padding(.vertical, VoceDesign.xxs)
+                .background(VoceDesign.warmAccentFill)
+                .clipShape(Capsule())
+
+            Text("On device")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var miniAIBadge: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(VoceDesign.warmAccentFill)
+
+            HStack(spacing: 3) {
+                Image(systemName: "apple.logo")
+                    .font(.system(size: 9, weight: .semibold))
+                Image(systemName: "sparkles")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(VoceDesign.warmAccentText)
+        }
+        .frame(width: 24, height: 24)
+    }
+
+    private var voiceTriggerRow: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            settingInlineLabel(
+                "Trigger mode",
+                help: "Use just the hotkey, or also say rewrite, summarize, or your custom phrase first."
+            )
+
+            HStack(spacing: VoceDesign.xs) {
+                ForEach(TriggerMode.allCases) { mode in
+                    triggerModeButton(mode)
+                }
+            }
+            .frame(maxWidth: 360)
+            .padding(VoceDesign.xxs)
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .fill(VoceDesign.surfaceSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(.regularMaterial.opacity(0.18))
+                    )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+            )
+            .opacity(preferences.ai.isEnabled ? 1 : 0.55)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var selectedTriggerMode: TriggerMode {
+        preferences.ai.leadingPhraseSelectionEnabled ? .hotkeyAndVoice : .hotkeyOnly
+    }
+
+    private func triggerModeButton(_ mode: TriggerMode) -> some View {
+        let isSelected = selectedTriggerMode == mode
+
+        return Button {
+            preferences.ai.leadingPhraseSelectionEnabled = mode == .hotkeyAndVoice
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: mode == .hotkeyOnly ? "keyboard" : "waveform")
+                    .font(.system(size: 11, weight: .semibold))
+
+                Text(mode.title)
+                    .font(VoceDesign.callout())
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.92)
+            }
+            .foregroundStyle(isSelected ? VoceDesign.warmAccentText : VoceDesign.textPrimary)
+            .padding(.horizontal, VoceDesign.md)
+            .padding(.vertical, VoceDesign.sm)
+            .frame(maxWidth: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall - 2, style: .continuous)
+                    .fill(isSelected ? AnyShapeStyle(VoceDesign.warmAccentFill) : AnyShapeStyle(Color.clear))
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!preferences.ai.isEnabled)
+    }
 
     private func workflowSheet(mode: SheetMode) -> some View {
-        let isEditing = mode.isEditing
-        let sheetTitle = isEditing ? "Edit Workflow" : "New Workflow"
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            HStack {
+                Text(mode.title)
+                    .font(VoceDesign.heading2())
+                    .foregroundStyle(VoceDesign.textPrimary)
 
-        return VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-                    Text(sheetTitle)
-                        .font(VoceDesign.heading2())
-                        .foregroundStyle(VoceDesign.textPrimary)
-
-                    Text(isEditing
-                         ? "Update your workflow settings."
-                         : "Create a workflow that processes dictation through a custom prompt.")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                }
                 Spacer()
+
                 Button {
                     sheetMode = nil
                 } label: {
@@ -265,79 +428,42 @@ struct AISettingsSection: View {
                         .foregroundStyle(VoceDesign.textSecondary.opacity(0.6))
                 }
                 .buttonStyle(.plain)
-                .help("Close")
             }
-            .padding(.horizontal, VoceDesign.xl)
-            .padding(.top, VoceDesign.lg)
-            .padding(.bottom, VoceDesign.md)
 
-            Divider()
-                .overlay(VoceDesign.border)
+            sheetField(label: "Name") {
+                styledTextField("Prompt name", text: $draft.title)
+            }
 
-            // Form fields — compact layout, no scroll needed
-            VStack(alignment: .leading, spacing: VoceDesign.md) {
-                // Title
-                sheetField(label: "Title") {
-                    styledTextField("e.g. Client-ready log", text: $draft.title)
-                }
+            sheetField(label: "Say") {
+                styledTextField("Voice phrase", text: $draft.triggerPhrase)
+            }
 
-                // Trigger phrase
-                sheetField(label: "Trigger Phrase") {
-                    styledTextField("e.g. billable log", text: $draft.triggerPhrase)
-                }
+            sheetField(label: "Key") {
+                HotkeyRecorderField(hotkey: $draft.endKey, allowModifierCapture: false)
+            }
 
-                // Prompt template
-                sheetField(label: "Prompt") {
-                    TextEditor(text: $draft.prompt)
-                        .font(VoceDesign.callout())
-                        .scrollContentBackground(.hidden)
-                        .padding(VoceDesign.sm)
-                        .frame(height: 80)
-                        .background {
-                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                .fill(VoceDesign.surfaceSecondary)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                        .fill(.regularMaterial.opacity(0.18))
-                                )
-                        }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
-                        )
-                }
-
-                Text("Use {{input}} where the dictated text should appear.")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-                    .padding(.top, -VoceDesign.sm)
-
-                // End key
-                sheetField(label: "Finish Key") {
-                    HotkeyRecorderField(
-                        hotkey: $draft.endKey,
-                        allowModifierCapture: false
+            sheetField(label: "Prompt") {
+                TextEditor(text: $draft.prompt)
+                    .font(VoceDesign.callout())
+                    .scrollContentBackground(.hidden)
+                    .padding(VoceDesign.sm)
+                    .frame(height: 96)
+                    .background {
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(VoceDesign.surfaceSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .fill(.regularMaterial.opacity(0.18))
+                            )
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
                     )
-                }
-
-                // Enabled toggle
-                HStack {
-                    Text("Enabled")
-                        .font(VoceDesign.callout())
-                        .foregroundStyle(VoceDesign.textPrimary)
-                    Spacer()
-                    Toggle("", isOn: $draft.isEnabled)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                }
             }
-            .padding(.horizontal, VoceDesign.xl)
-            .padding(.vertical, VoceDesign.lg)
 
-            Divider()
-                .overlay(VoceDesign.border)
+            Toggle("On", isOn: $draft.isEnabled)
 
-            // Footer
             HStack {
                 Spacer()
 
@@ -345,9 +471,7 @@ struct AISettingsSection: View {
                     sheetMode = nil
                 }
                 .buttonStyle(.plain)
-                .font(VoceDesign.callout())
                 .foregroundStyle(VoceDesign.textSecondary)
-                .padding(.horizontal, VoceDesign.md)
 
                 Button {
                     if case .edit(let index) = mode {
@@ -356,35 +480,31 @@ struct AISettingsSection: View {
                         addCustomWorkflow()
                     }
                 } label: {
-                    Text(isEditing ? "Save" : "Add Workflow")
+                    Text(primaryButtonTitle(for: mode))
                         .font(VoceDesign.bodyEmphasis())
                         .foregroundStyle(.white)
                         .padding(.horizontal, VoceDesign.xl)
                         .padding(.vertical, VoceDesign.sm)
-                        .background {
+                        .background(
                             Capsule()
                                 .fill(
                                     draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                         ? VoceDesign.accent.opacity(0.4)
                                         : VoceDesign.accent
                                 )
-                        }
+                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .padding(.horizontal, VoceDesign.xl)
-            .padding(.vertical, VoceDesign.md)
         }
-        .frame(width: 480)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(VoceDesign.xl)
+        .frame(width: 460)
         .background {
             VoceDesign.windowBackground
                 .ignoresSafeArea()
         }
     }
-
-    // MARK: - Sheet Helpers
 
     private func sheetField<Content: View>(
         label: String,
@@ -418,7 +538,22 @@ struct AISettingsSection: View {
             )
     }
 
-    // MARK: - Bindings
+    private func primaryButtonTitle(for mode: SheetMode) -> String {
+        switch mode {
+        case .add:
+            return "Add"
+        case .edit:
+            return "Save"
+        }
+    }
+
+    private var builtInWorkflowIndices: [Int] {
+        preferences.ai.workflows.indices.filter { preferences.ai.workflows[$0].isBuiltIn }
+    }
+
+    private var customWorkflowIndices: [Int] {
+        preferences.ai.workflows.indices.filter { !preferences.ai.workflows[$0].isBuiltIn }
+    }
 
     private func workflowEnabledBinding(at index: Int) -> Binding<Bool> {
         Binding(
@@ -426,8 +561,6 @@ struct AISettingsSection: View {
             set: { preferences.ai.workflows[index].isEnabled = $0 }
         )
     }
-
-    // MARK: - Actions
 
     private func addCustomWorkflow() {
         let trimmedTitle = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -5,10 +5,11 @@ struct InsertionSettingsSection: View {
     @Binding var preferences: AppPreferences
 
     var body: some View {
-        settingsCard("Text Output (Insertion)") {
-            Text("Choose how Voce inserts text. Drag to set priority. Backup paste via clipboard is always kept.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+        settingsCard("Text Output") {
+            settingInlineLabel(
+                "Priority",
+                help: "Choose how Voce inserts text. Drag to set priority. Backup paste via clipboard is always kept."
+            )
 
             List {
                 ForEach(preferences.insertion.orderedMethods, id: \.rawValue) { method in
@@ -24,30 +25,6 @@ struct InsertionSettingsSection: View {
             }
             .frame(height: VoceDesign.insertionListHeight)
             .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall))
-
-            HStack {
-                Toggle(
-                    "Type directly",
-                    isOn: Binding(
-                        get: { preferences.insertion.orderedMethods.contains(.direct) },
-                        set: { setInsertionMethod(.direct, enabled: $0) }
-                    )
-                )
-                Toggle(
-                    "Accessibility insert",
-                    isOn: Binding(
-                        get: { preferences.insertion.orderedMethods.contains(.accessibility) },
-                        set: { setInsertionMethod(.accessibility, enabled: $0) }
-                    )
-                )
-                Toggle(
-                    "Backup paste via clipboard",
-                    isOn: Binding(
-                        get: { preferences.insertion.orderedMethods.contains(.clipboardPaste) },
-                        set: { setInsertionMethod(.clipboardPaste, enabled: $0) }
-                    )
-                )
-            }
         }
     }
 
@@ -58,22 +35,11 @@ struct InsertionSettingsSection: View {
         }
     }
 
-    private func setInsertionMethod(_ method: InsertionMethod, enabled: Bool) {
-        if enabled {
-            if !preferences.insertion.orderedMethods.contains(method) {
-                preferences.insertion.orderedMethods.append(method)
-            }
-        } else {
-            if method == .clipboardPaste { return }
-            preferences.insertion.orderedMethods.removeAll { $0 == method }
-        }
-    }
-
     private func label(for method: InsertionMethod) -> String {
         switch method {
-        case .direct: return "Type directly"
-        case .accessibility: return "Accessibility insert"
-        case .clipboardPaste: return "Backup paste via clipboard"
+        case .direct: return "Direct typing"
+        case .accessibility: return "Accessibility typing"
+        case .clipboardPaste: return "Clipboard fallback"
         case .none: return "None"
         }
     }

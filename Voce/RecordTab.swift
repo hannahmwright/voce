@@ -226,11 +226,11 @@ struct RecordTab: View {
 
         switch kind {
         case .accessibility:
-            return "Voce needs Accessibility access to type into apps and support the global hotkey."
+            return "Voce needs Accessibility access to type into other apps."
         case .microphone:
             return "Voce needs microphone access before it can start live dictation."
         case .inputMonitoring:
-            return "Input Monitoring lets Voce hear your global hotkey while other apps are focused."
+            return "Input Monitoring lets Voce detect shortcuts while other apps are focused."
         }
     }
 
@@ -465,8 +465,8 @@ struct RecordTab: View {
 
     // MARK: - Helpers
 
-    private func keyLabel(for hotkey: HandsFreeHotkey) -> String {
-        hotkeyDisplayName(for: hotkey)
+    private func keyLabel(for hotkey: HandsFreeToggleHotkey) -> String {
+        handsFreeToggleDisplayName(for: hotkey)
     }
 
     private func formatElapsedTime(_ interval: TimeInterval) -> String {

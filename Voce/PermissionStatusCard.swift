@@ -1,11 +1,17 @@
 import SwiftUI
 
 struct PermissionStatusCard: View {
+    enum Appearance {
+        case standard
+        case onboarding
+    }
+
     let title: String
     let description: String
     let status: PermissionDiagnostics.AccessStatus
     let onRequest: () -> Void
     let onOpenSettings: () -> Void
+    var appearance: Appearance = .standard
 
     var body: some View {
         HStack(spacing: VoceDesign.md) {
@@ -13,37 +19,49 @@ struct PermissionStatusCard: View {
                 .font(.system(size: VoceDesign.iconLG))
                 .foregroundStyle(statusColor)
 
-            VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-                Text(title)
-                    .font(VoceDesign.bodyEmphasis())
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                Text(description)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-            }
+            settingInlineLabel(title, help: description)
 
             Spacer()
 
-            Text(status.rawValue)
-                .font(VoceDesign.label())
-                .foregroundStyle(statusColor)
-                .padding(.horizontal, VoceDesign.sm)
-                .padding(.vertical, VoceDesign.xxs)
-                .background(statusColor.opacity(VoceDesign.opacitySubtle))
-                .clipShape(Capsule())
-                .accessibilityLabel("Status: \(status.rawValue)")
+            if status != .denied {
+                Text(status.rawValue)
+                    .font(VoceDesign.label())
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, VoceDesign.sm)
+                    .padding(.vertical, VoceDesign.xxs)
+                    .background(statusColor.opacity(VoceDesign.opacitySubtle))
+                    .clipShape(Capsule())
+                    .accessibilityLabel("Status: \(status.rawValue)")
+            }
 
             actionButton
         }
         .padding(VoceDesign.md)
-        .glassBackground(cornerRadius: VoceDesign.radiusSmall)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(cardFill)
+                .overlay {
+                    if appearance == .standard {
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                            .fill(.regularMaterial.opacity(0.18))
+                    }
+                }
+        }
         .overlay(
-            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
                 .stroke(statusBorderColor, lineWidth: VoceDesign.borderThin)
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(status.rawValue). \(description)")
+    }
+
+    private var cardFill: Color {
+        switch appearance {
+        case .standard:
+            return VoceDesign.surfaceSecondary
+        case .onboarding:
+            return VoceDesign.surface.opacity(0.44)
+        }
     }
 
     private var statusIconName: String {

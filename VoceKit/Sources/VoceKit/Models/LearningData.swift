@@ -106,10 +106,12 @@ public struct StructureHints: Sendable, Codable, Equatable {
 public struct SnippetSuggestion: Sendable, Equatable, Identifiable {
     public var id: String { phrase }
     public var phrase: String
+    public var suggestedTrigger: String
     public var occurrences: Int
 
-    public init(phrase: String, occurrences: Int) {
+    public init(phrase: String, suggestedTrigger: String, occurrences: Int) {
         self.phrase = phrase
+        self.suggestedTrigger = suggestedTrigger
         self.occurrences = occurrences
     }
 }

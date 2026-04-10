@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.26] - 2026-04-10
+
+### Added
+- Added a guided onboarding practice step so new users can test the hotkeys they enabled before they start using Voce.
+- Added conservative automatic bullet and numbered-list formatting for explicit list dictation cues like `bullet list`, `numbered list`, and strong `first / second / third` sequences.
+
+### Changed
+- Rebuilt the main app shell, Home, Settings, onboarding, Dictionary, Snippets, and Style surfaces around a more consistent frosted-glass layout with clearer controls and tighter copy.
+- Moved custom spoken shortcuts and learned shortcut suggestions into Snippets, leaving Dictionary focused on corrections.
+- Simplified onboarding and settings to match the new Apple Speech-only flow, including cleaner permission guidance and clearer hotkey setup.
+- Removed live transcript preview from the overlay so the recording bubble stays visually stable during dictation.
+
+### Fixed
+- Fixed the processing bubble and related overlay transitions so they no longer jump between states at the start or end of dictation.
+- Fixed release-upgrade behavior so older installs preserve the historical hold-to-talk default when the preference key was previously absent.
+- Fixed Home permission alerts and statistics so missing permissions surface in the right rail and metrics no longer blank or inflate unexpectedly around the daily rollover.
+
 ## [0.4.24] - 2026-03-25
 
 ### Fixed

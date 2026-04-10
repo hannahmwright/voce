@@ -6,7 +6,7 @@ import AppKit
 /// but the class must be nonisolated because the C callback is nonisolated.
 private final class TapContext: @unchecked Sendable {
     weak var monitor: MacHotkeyMonitor?
-    var hotkey: HandsFreeHotkey?
+    var hotkey: HandsFreeToggleHotkey?
     var onToggle: (() -> Void)?
     var onSubmit: (() -> Void)?
     var aiFinishHotkey: HandsFreeHotkey?
@@ -40,13 +40,15 @@ public final class MacHotkeyMonitor: HotkeyService {
         didSet {
             isPressToTalkHeld = false
             toggleModifierGate.reset()
+            toggleDoubleTapGate.reset()
             isGlobalToggleModifierHeld = false
         }
     }
-    public var globalToggleHotkey: HandsFreeHotkey? = .keyCode(79) {
+    public var globalToggleHotkey: HandsFreeToggleHotkey? = .init(hotkey: .keyCode(79)) {
         didSet {
             tapContext.hotkey = globalToggleHotkey
             toggleModifierGate.reset()
+            toggleDoubleTapGate.reset()
             isGlobalToggleModifierHeld = false
             guard hasStarted else { return }
             updateHandsFreeStatus()
@@ -88,6 +90,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var isPressToTalkHeld = false
     private var isGlobalToggleModifierHeld = false
     private var toggleModifierGate = HotkeyToggleGate()
+    private var toggleDoubleTapGate = HotkeyDoubleTapGate()
     private var callbackGeneration: UInt64 = 0
     private var lastActiveRecordingKeyCode: UInt16?
     private var lastActiveRecordingKeyTime: CFAbsoluteTime = 0
@@ -124,6 +127,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         isPressToTalkHeld = false
         isGlobalToggleModifierHeld = false
         toggleModifierGate.reset()
+        toggleDoubleTapGate.reset()
     }
 
     // MARK: - Press-to-Talk Monitors
@@ -266,7 +270,8 @@ public final class MacHotkeyMonitor: HotkeyService {
     }
 
     private func handleModifierToggleFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
-        guard case .modifier(let modifier)? = globalToggleHotkey else { return }
+        guard let globalToggleHotkey else { return }
+        guard case .modifier(let modifier) = globalToggleHotkey.hotkey else { return }
 
         let modifierIsNowHeld = modifiers.contains(modifier.eventFlags)
         guard modifierIsNowHeld != isGlobalToggleModifierHeld else { return }
@@ -275,7 +280,15 @@ public final class MacHotkeyMonitor: HotkeyService {
         let generation = callbackGeneration
         let signal: HotkeySignal = modifierIsNowHeld ? .pressed : .released
 
-        guard toggleModifierGate.consume(signal) else { return }
+        let shouldToggle: Bool
+        switch globalToggleHotkey.triggerStyle {
+        case .singleTap:
+            shouldToggle = toggleModifierGate.consume(signal)
+        case .doubleTap:
+            shouldToggle = toggleDoubleTapGate.consume(signal)
+        }
+
+        guard shouldToggle else { return }
 
         Task { @MainActor [weak self] in
             guard let self,
@@ -285,6 +298,19 @@ public final class MacHotkeyMonitor: HotkeyService {
             }
             self.onToggleHandsFree?()
         }
+    }
+
+    private func handleKeyCodeToggleTap(triggerStyle: HandsFreeToggleHotkey.TriggerStyle) {
+        let shouldToggle: Bool
+        switch triggerStyle {
+        case .singleTap:
+            shouldToggle = true
+        case .doubleTap:
+            shouldToggle = toggleDoubleTapGate.registerTap()
+        }
+
+        guard shouldToggle else { return }
+        onToggleHandsFree?()
     }
 
     // MARK: - CGEventTap (Hands-Free Toggle)
@@ -304,7 +330,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             userInfo: refcon
         ) else {
             onRegistrationStatusChanged?(
-                .unavailable(reason: "Accessibility permission required for global hotkey.")
+                .unavailable(reason: "Input Monitoring permission required for shortcuts.")
             )
             return
         }
@@ -336,7 +362,8 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     private func updateHandsFreeStatus() {
         if isOptionPressToTalkEnabled,
-           case .modifier(let modifier)? = globalToggleHotkey,
+           let globalToggleHotkey,
+           case .modifier(let modifier) = globalToggleHotkey.hotkey,
            pressToTalkHotkey.contains(modifier.asPressToTalkModifier) {
             uninstallEventTap()
             onRegistrationStatusChanged?(
@@ -346,7 +373,8 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
 
         if isSubmitActiveRecordingEnabled,
-           case .keyCode(let keyCode)? = globalToggleHotkey,
+           let globalToggleHotkey,
+           case .keyCode(let keyCode) = globalToggleHotkey.hotkey,
            isReturnKeyCode(keyCode) {
             uninstallEventTap()
             onRegistrationStatusChanged?(
@@ -383,7 +411,9 @@ public final class MacHotkeyMonitor: HotkeyService {
                     return
                 }
 
-                if case .keyCode(let toggleKeyCode)? = globalToggleHotkey, toggleKeyCode == aiKeyCode {
+                if let globalToggleHotkey,
+                   case .keyCode(let toggleKeyCode) = globalToggleHotkey.hotkey,
+                   toggleKeyCode == aiKeyCode {
                     uninstallEventTap()
                     onRegistrationStatusChanged?(
                         .unavailable(reason: "AI finish keys can't match the hands-free key.")
@@ -401,7 +431,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             }
         }
 
-        switch globalToggleHotkey {
+        switch globalToggleHotkey?.hotkey {
         case .keyCode?:
             installEventTap()
         case .modifier?:
@@ -488,7 +518,8 @@ public final class MacHotkeyMonitor: HotkeyService {
             return nil
         }
 
-        guard case .keyCode(let targetKey)? = ctx.hotkey,
+        guard let configuredHotkey = ctx.hotkey,
+              case .keyCode(let targetKey) = configuredHotkey.hotkey,
               keyCode == targetKey,
               flags.intersection(userMods).isEmpty,
               event.getIntegerValueField(.keyboardEventAutorepeat) == 0
@@ -498,7 +529,12 @@ public final class MacHotkeyMonitor: HotkeyService {
 
         // Callback already runs on the main run loop; dispatch async to avoid
         // re-entrancy while the tap callback is still unwinding.
-        DispatchQueue.main.async { ctx.onToggle?() }
+        let triggerStyle = configuredHotkey.triggerStyle
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                ctx.monitor?.handleKeyCodeToggleTap(triggerStyle: triggerStyle)
+            }
+        }
         return nil // For .defaultTap, nil suppresses delivery to downstream apps.
     }
 

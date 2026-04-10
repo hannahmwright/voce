@@ -58,8 +58,9 @@ public struct LocalCleanupRanker: Sendable {
             profile: profile
         )
         let vocabBonus = vocabularyFamiliarityBonus(text: candidate.text)
+        let structureBonus = structureFormattingBonus(rawText: rawText, candidate: candidate)
 
-        let total = (semantic * 0.60) + (fluency * 0.20) + (vocabBonus * 0.10)
+        let total = (semantic * 0.60) + (fluency * 0.20) + (vocabBonus * 0.10) + (structureBonus * 0.20)
             - (editPenalty * 0.10) - (commandPenalty * 1.0)
 
         return CleanupRankingScore(
@@ -202,6 +203,36 @@ public struct LocalCleanupRanker: Sendable {
         // log1p(x) ensures: 0 freq → 0 bonus, 10 freq → 0.7, 100 freq → 0.87
         let bonus = min(log1p(avgFreq) / log1p(100.0), 1.0)
         return bonus
+    }
+
+    private func structureFormattingBonus(rawText: String, candidate: CleanupCandidate) -> Double {
+        guard let structureRewrite = candidate.appliedEdits.first(where: { $0.kind == .structureRewrite }) else {
+            return 0
+        }
+
+        let loweredRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        switch structureRewrite.to {
+        case "auto-bullets":
+            if loweredRaw.hasPrefix("bullet list ")
+                || loweredRaw.hasPrefix("bullet points ")
+                || loweredRaw.hasPrefix("bulleted list ")
+                || loweredRaw.hasPrefix("bullet point ") {
+                return 1
+            }
+        case "auto-numbered":
+            if loweredRaw.hasPrefix("numbered list ")
+                || loweredRaw.hasPrefix("number list ")
+                || loweredRaw.hasPrefix("numbered points ")
+                || loweredRaw.hasPrefix("numbered items ")
+                || loweredRaw.hasPrefix("first ") {
+                return 1
+            }
+        default:
+            break
+        }
+
+        return 0
     }
 
     private func normalize(_ text: String) -> String {

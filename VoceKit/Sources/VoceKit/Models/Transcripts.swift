@@ -87,6 +87,10 @@ public enum InsertionStatus: String, Sendable, Codable, Equatable {
     case failed
 }
 
+public enum InsertionRecoveryAction: String, Sendable, Codable, Equatable {
+    case refocusToPaste
+}
+
 public enum CleanupSource: String, Sendable, Codable, Equatable {
     case localOnly
     case localSuccess
@@ -112,19 +116,22 @@ public struct InsertResult: Sendable, Codable, Equatable {
     public var insertedText: String
     public var errorMessage: String?
     public var cleanupOutcome: CleanupOutcome?
+    public var recoveryAction: InsertionRecoveryAction?
 
     public init(
         status: InsertionStatus,
         method: InsertionMethod,
         insertedText: String,
         errorMessage: String? = nil,
-        cleanupOutcome: CleanupOutcome? = nil
+        cleanupOutcome: CleanupOutcome? = nil,
+        recoveryAction: InsertionRecoveryAction? = nil
     ) {
         self.status = status
         self.method = method
         self.insertedText = insertedText
         self.errorMessage = errorMessage
         self.cleanupOutcome = cleanupOutcome
+        self.recoveryAction = recoveryAction
     }
 }
 

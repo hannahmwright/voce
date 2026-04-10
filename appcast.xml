@@ -3,6 +3,29 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.26</title>
+      <sparkle:version>29</sparkle:version>
+      <sparkle:shortVersionString>0.4.26</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.26</h2>
+        <ul>
+          <li>Overhauls the main app, onboarding, and settings UI into a cleaner frosted-glass layout with simpler copy and clearer controls</li>
+          <li>Adds guided onboarding practice so new users can test the hotkeys they enabled before they start using Voce</li>
+          <li>Moves custom spoken shortcuts and suggestions into Snippets while keeping Dictionary focused on corrections</li>
+          <li>Adds conservative automatic bullet and numbered-list formatting for explicit list dictation cues</li>
+          <li>Fixes overlay motion, Home permission alerts, stats reporting, and upgrade behavior around hold-to-talk defaults</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 10 Apr 2026 06:10:15 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.26/Voce-0.4.26.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="Su7uR/Bn16pITy3ko1iq/U/CNC9afiY8kN6Kq9zQJ9Tksr5DpxHleEwEpkYOVsd0JLEFjdB0taMItGtDjTMjAQ=="
+        length="13229410"
+      />
+    </item>
+    <item>
       <title>Version 0.4.25</title>
       <sparkle:version>28</sparkle:version>
       <sparkle:shortVersionString>0.4.25</sparkle:shortVersionString>

@@ -102,6 +102,8 @@ func phraseFrequencyTracking() async {
     // Should suggest multi-word phrases that appeared >= threshold times
     let hasPatience = suggestions.contains { $0.phrase.contains("thanks") && $0.phrase.contains("patience") }
     #expect(hasPatience, "Should suggest frequently repeated phrases")
+    let match = suggestions.first { $0.phrase.contains("thanks") && $0.phrase.contains("patience") }
+    #expect(match?.suggestedTrigger.isEmpty == false)
 }
 
 @Test("Snippet suggestions exclude existing triggers")
@@ -120,6 +122,43 @@ func snippetSuggestionsExcludeExisting() async {
     let withExclusion = await engine.snippetSuggestions(excluding: ["on my way"])
     let hasOnMyWay = withExclusion.contains { $0.phrase == "on my way" }
     #expect(!hasOnMyWay, "Should not suggest already-existing snippet triggers")
+}
+
+@Test("Weak generic phrases are not suggested")
+func weakPhrasesAreFiltered() async {
+    let engine = LearningEngine(storageURL: tempURL())
+
+    for _ in 1...6 {
+        await engine.observeSession(
+            rawText: "to be able to move faster",
+            cleanText: "to be able to move faster",
+            removedFillers: [],
+            appBundleID: "com.test"
+        )
+    }
+
+    let suggestions = await engine.snippetSuggestions()
+    let hasWeakPhrase = suggestions.contains { $0.phrase == "to be able to" }
+    #expect(!hasWeakPhrase, "Should not suggest filler-heavy generic phrases")
+}
+
+@Test("Suggestions prefer a shorter generated trigger")
+func suggestionsGenerateShortTrigger() async {
+    let engine = LearningEngine(storageURL: tempURL())
+
+    for _ in 1...6 {
+        await engine.observeSession(
+            rawText: "let me know if you need anything",
+            cleanText: "let me know if you need anything",
+            removedFillers: [],
+            appBundleID: "com.test"
+        )
+    }
+
+    let suggestions = await engine.snippetSuggestions()
+    let suggestion = suggestions.first { $0.phrase == "let me know if you need anything" }
+    #expect(suggestion != nil)
+    #expect(suggestion?.suggestedTrigger.count ?? 0 < suggestion?.phrase.count ?? 0)
 }
 
 @Test("Dismissed snippet suggestions are removed")

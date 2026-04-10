@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		03986840139C4AA94F78ABB9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 50AD16F1028A28BE2DBDD187 /* Assets.xcassets */; };
+		043B7C996C8E078FF72C5435 /* StyleTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EA039E7BFEB0F1612ED079B /* StyleTab.swift */; };
 		04B1A91240C329A601315488 /* PermissionDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */; };
 		052A3669946558CC70909BF8 /* LexiconSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F778826155A1B6A51FAEB312 /* LexiconSettingsSection.swift */; };
 		1AEEA42B54F2CD3B925F30E6 /* RecordTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */; };
@@ -21,6 +22,7 @@
 		4EAA23EDB4F2808191DE1B16 /* EngineSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C2A713C2627E7814CCA4C0D /* EngineSettingsSection.swift */; };
 		50BCC87176F6578B8C0E4CFE /* CompletionExecutionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */; };
 		5BAA839E86E7873F77D7DD4E /* VoceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2BEFC4EBAAE42E87937FEF83 /* VoceKit */; };
+		642CF2D5C7B667DE66C672A7 /* HomeTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41A4AACACF799B8954E3C2A7 /* HomeTab.swift */; };
 		64771F7D834837E53B18AD89 /* SnippetsSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F8267E63FADBC256B9A7BA6 /* SnippetsSettingsSection.swift */; };
 		68E4DA75E33631C0BD2C328D /* GeneralSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D587D107389F4EA940AA188 /* GeneralSettingsSection.swift */; };
 		7260939FF8378D43937A25D9 /* AISettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC723BFEDDB1B17CE724F0A3 /* AISettingsSection.swift */; };
@@ -31,7 +33,11 @@
 		87C89EB461A131DE67FFB769 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07C77BF174F1612CF321FC97 /* DesignSystem.swift */; };
 		8E357A416B9199F3B46DE368 /* PermissionsSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */; };
 		8E98A45484BC62B8BFA108D5 /* HistoryTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA4D2A4EEE0417D51262F1A /* HistoryTab.swift */; };
+		91B1A2234F3D41C7A9E01234 /* Manrope-VariableFont_wght.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 91B1A2234F3D41C7A9E01235 /* Manrope-VariableFont_wght.ttf */; };
+		999D062FB090A37EC72AD453 /* SnippetsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */; };
+		A1EB2E4860AE3E0AAA47D7F1 /* DictionaryTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18C96AE96BC66A547EF4FDAC /* DictionaryTab.swift */; };
 		B09E52D335FEAE1F1AEE2A61 /* UpdaterController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ED8BF2AEF421B393FE88D15 /* UpdaterController.swift */; };
+		B17DE2A9105BEA4A31E93ABE /* ScratchPadTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA596049E5E1D02311496B9B /* ScratchPadTab.swift */; };
 		B73A8141220D26D0EF20D81F /* MediaSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */; };
 		B9F21902D9883B50A479D408 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19FBF88B728F286E86103A70 /* SettingsView.swift */; };
 		BA75EC077B926CC3724CC894 /* RecordingSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */; };
@@ -51,9 +57,11 @@
 /* Begin PBXFileReference section */
 		031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionExecutionService.swift; sourceTree = "<group>"; };
 		07C77BF174F1612CF321FC97 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
+		0EA039E7BFEB0F1612ED079B /* StyleTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyleTab.swift; sourceTree = "<group>"; };
 		0F8267E63FADBC256B9A7BA6 /* SnippetsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsSettingsSection.swift; sourceTree = "<group>"; };
 		128AD8910D9A8594E0D83AD8 /* VoceKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VoceKit; path = VoceKit; sourceTree = SOURCE_ROOT; };
 		132DA21638FE9F910C3B310F /* DictationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationController.swift; sourceTree = "<group>"; };
+		18C96AE96BC66A547EF4FDAC /* DictionaryTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictionaryTab.swift; sourceTree = "<group>"; };
 		19FBF88B728F286E86103A70 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		1ED8BF2AEF421B393FE88D15 /* UpdaterController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterController.swift; sourceTree = "<group>"; };
 		208224CFAB3C44136C4080B2 /* Voce.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Voce.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -62,6 +70,7 @@
 		32D6BB3AE4EEE92E50CFFE78 /* AppPreferencesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferencesStore.swift; sourceTree = "<group>"; };
 		340E874BDA6F985AB31A34BB /* MicButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicButton.swift; sourceTree = "<group>"; };
 		4110D21D399A9F170F3EA70E /* AnchorOverrideSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorOverrideSettingsSection.swift; sourceTree = "<group>"; };
+		41A4AACACF799B8954E3C2A7 /* HomeTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTab.swift; sourceTree = "<group>"; };
 		44244B9B130D6687C53C2ED2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingSettingsSection.swift; sourceTree = "<group>"; };
 		4A43BDB5365A4C04B39377D7 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
@@ -74,8 +83,10 @@
 		6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSettingsSection.swift; sourceTree = "<group>"; };
 		7B575DB65BF978A9BCA10827 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewHelpers.swift; sourceTree = "<group>"; };
+		91B1A2234F3D41C7A9E01235 /* Manrope-VariableFont_wght.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Resources/Fonts/Manrope-VariableFont_wght.ttf"; sourceTree = "<group>"; };
 		911C21B21664F69036B1443E /* processing-background.mp4 */ = {isa = PBXFileReference; path = "processing-background.mp4"; sourceTree = "<group>"; };
 		9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatusCard.swift; sourceTree = "<group>"; };
+		9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsTab.swift; sourceTree = "<group>"; };
 		9DA8DBB014F3CD82D09D9DA8 /* AppleFoundationModelsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleFoundationModelsService.swift; sourceTree = "<group>"; };
 		A3E2FC96193616902F7C0568 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		B24C5BB59D2CC36789921BB4 /* LearningSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LearningSettingsSection.swift; sourceTree = "<group>"; };
@@ -83,6 +94,7 @@
 		CC723BFEDDB1B17CE724F0A3 /* AISettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsSection.swift; sourceTree = "<group>"; };
 		DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionDiagnostics.swift; sourceTree = "<group>"; };
 		E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsSettingsSection.swift; sourceTree = "<group>"; };
+		EA596049E5E1D02311496B9B /* ScratchPadTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchPadTab.swift; sourceTree = "<group>"; };
 		EBE5EAD5ECFA2403433B65F5 /* LaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginService.swift; sourceTree = "<group>"; };
 		EC7D068135E11372BE4386D1 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
 		EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordTab.swift; sourceTree = "<group>"; };
@@ -129,10 +141,12 @@
 				7B575DB65BF978A9BCA10827 /* ContentView.swift */,
 				07C77BF174F1612CF321FC97 /* DesignSystem.swift */,
 				132DA21638FE9F910C3B310F /* DictationController.swift */,
+				18C96AE96BC66A547EF4FDAC /* DictionaryTab.swift */,
 				4C2A713C2627E7814CCA4C0D /* EngineSettingsSection.swift */,
 				5D587D107389F4EA940AA188 /* GeneralSettingsSection.swift */,
 				4FA4D2A4EEE0417D51262F1A /* HistoryTab.swift */,
 				627E6D8A9A0959D181744C14 /* HistoryView.swift */,
+				41A4AACACF799B8954E3C2A7 /* HomeTab.swift */,
 				44244B9B130D6687C53C2ED2 /* Info.plist */,
 				F2B4DE3A356EC84CCAD565C8 /* InsertionSettingsSection.swift */,
 				EBE5EAD5ECFA2403433B65F5 /* LaunchAtLoginService.swift */,
@@ -141,6 +155,7 @@
 				6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */,
 				EC7D068135E11372BE4386D1 /* MenuBarController.swift */,
 				340E874BDA6F985AB31A34BB /* MicButton.swift */,
+				91B1A2234F3D41C7A9E01235 /* Manrope-VariableFont_wght.ttf */,
 				A3E2FC96193616902F7C0568 /* OnboardingView.swift */,
 				DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */,
 				E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */,
@@ -148,9 +163,12 @@
 				911C21B21664F69036B1443E /* processing-background.mp4 */,
 				47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */,
 				EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */,
+				EA596049E5E1D02311496B9B /* ScratchPadTab.swift */,
 				19FBF88B728F286E86103A70 /* SettingsView.swift */,
 				8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */,
 				0F8267E63FADBC256B9A7BA6 /* SnippetsSettingsSection.swift */,
+				9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */,
+				0EA039E7BFEB0F1612ED079B /* StyleTab.swift */,
 				1ED8BF2AEF421B393FE88D15 /* UpdaterController.swift */,
 				5E408341ECED604CAD61B112 /* Voce.entitlements */,
 				F4341CE23927C00B47232FAD /* VoceApp.swift */,
@@ -243,6 +261,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				03986840139C4AA94F78ABB9 /* Assets.xcassets in Resources */,
+				91B1A2234F3D41C7A9E01234 /* Manrope-VariableFont_wght.ttf in Resources */,
 				F5A00A35B80276971C87786A /* processing-background.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -266,10 +285,12 @@
 				75D9F00341D3693EFF2F7517 /* ContentView.swift in Sources */,
 				87C89EB461A131DE67FFB769 /* DesignSystem.swift in Sources */,
 				7FDD306DDDC34622D1045135 /* DictationController.swift in Sources */,
+				A1EB2E4860AE3E0AAA47D7F1 /* DictionaryTab.swift in Sources */,
 				4EAA23EDB4F2808191DE1B16 /* EngineSettingsSection.swift in Sources */,
 				68E4DA75E33631C0BD2C328D /* GeneralSettingsSection.swift in Sources */,
 				8E98A45484BC62B8BFA108D5 /* HistoryTab.swift in Sources */,
 				EBB2C0E1F4F720EF5D2D7771 /* HistoryView.swift in Sources */,
+				642CF2D5C7B667DE66C672A7 /* HomeTab.swift in Sources */,
 				BE707EBE89B1B605687AB9E8 /* InsertionSettingsSection.swift in Sources */,
 				2CFD23B61DBA186E52AB2A9D /* LaunchAtLoginService.swift in Sources */,
 				D86D3EF24F090A43B0BD72A7 /* LearningSettingsSection.swift in Sources */,
@@ -283,9 +304,12 @@
 				8E357A416B9199F3B46DE368 /* PermissionsSettingsSection.swift in Sources */,
 				1AEEA42B54F2CD3B925F30E6 /* RecordTab.swift in Sources */,
 				BA75EC077B926CC3724CC894 /* RecordingSettingsSection.swift in Sources */,
+				B17DE2A9105BEA4A31E93ABE /* ScratchPadTab.swift in Sources */,
 				B9F21902D9883B50A479D408 /* SettingsView.swift in Sources */,
 				E9ECDA9E2393CAE5A12EADC3 /* SettingsViewHelpers.swift in Sources */,
 				64771F7D834837E53B18AD89 /* SnippetsSettingsSection.swift in Sources */,
+				999D062FB090A37EC72AD453 /* SnippetsTab.swift in Sources */,
+				043B7C996C8E078FF72C5435 /* StyleTab.swift in Sources */,
 				B09E52D335FEAE1F1AEE2A61 /* UpdaterController.swift in Sources */,
 				2E860B4B558041E90F57A497 /* VoceApp.swift in Sources */,
 				C288B74DADB852D353BC06DE /* VoiceCommandsSettingsSection.swift in Sources */,
@@ -303,7 +327,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
@@ -311,7 +335,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.25;
+				MARKETING_VERSION = 0.4.26;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
@@ -382,14 +406,14 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 28;
+				CURRENT_PROJECT_VERSION = 29;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.25;
+				MARKETING_VERSION = 0.4.26;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;

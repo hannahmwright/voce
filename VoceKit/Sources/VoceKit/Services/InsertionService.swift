@@ -20,12 +20,17 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
 
     private let transports: [any InsertionTransport]
 
+    private struct TransportFailure: Sendable {
+        let method: InsertionMethod
+        let message: String
+    }
+
     public init(transports: [any InsertionTransport]) {
         self.transports = transports
     }
 
     public func insert(text: String, target: AppContext) async -> InsertResult {
-        var failures: [String] = []
+        var failures: [TransportFailure] = []
 
         for transport in prioritizedTransports(for: target) {
             if let clipboardTransport = transport as? ClipboardInsertionTransport {
@@ -33,22 +38,34 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                     let outcome = try await clipboardTransport.insertAndReturnOutcome(text: text, target: target)
                     let status: InsertionStatus
                     let errorMessage: String?
+                    let recoveryAction: InsertionRecoveryAction?
                     switch outcome {
                     case .attempted:
                         status = .inserted
                         errorMessage = nil
+                        recoveryAction = nil
                     case .skipped(let reason):
                         status = .copiedOnly
                         errorMessage = reason
+                        recoveryAction = suggestedRecoveryAction(
+                            after: failures,
+                            clipboardSkipReason: reason
+                        )
                     }
                     return InsertResult(
                         status: status,
                         method: .clipboardPaste,
                         insertedText: text,
-                        errorMessage: errorMessage
+                        errorMessage: errorMessage,
+                        recoveryAction: recoveryAction
                     )
                 } catch {
-                    failures.append("\(transport.method.rawValue): \(error.localizedDescription)")
+                    failures.append(
+                        TransportFailure(
+                            method: transport.method,
+                            message: error.localizedDescription
+                        )
+                    )
                     continue
                 }
             }
@@ -59,7 +76,12 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                 let status: InsertionStatus = transport.method == .clipboardPaste ? .copiedOnly : .inserted
                 return InsertResult(status: status, method: transport.method, insertedText: text)
             } catch {
-                failures.append("\(transport.method.rawValue): \(error.localizedDescription)")
+                failures.append(
+                    TransportFailure(
+                        method: transport.method,
+                        message: error.localizedDescription
+                    )
+                )
             }
         }
 
@@ -67,8 +89,45 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             status: .failed,
             method: .none,
             insertedText: text,
-            errorMessage: failures.joined(separator: " | ")
+            errorMessage: failures
+                .map { "\($0.method.rawValue): \($0.message)" }
+                .joined(separator: " | ")
         )
+    }
+
+    private func suggestedRecoveryAction(
+        after failures: [TransportFailure],
+        clipboardSkipReason: String
+    ) -> InsertionRecoveryAction? {
+        guard isRefocusPasteCandidate(skipReason: clipboardSkipReason) else {
+            return nil
+        }
+
+        let failedMethods = Set(failures.map(\.method))
+        guard failedMethods.contains(.direct), failedMethods.contains(.accessibility) else {
+            return nil
+        }
+
+        let relevantFailures = failures.filter { $0.method == .direct || $0.method == .accessibility }
+        guard relevantFailures.contains(where: { isFocusLossCandidate(message: $0.message) }) else {
+            return nil
+        }
+
+        return .refocusToPaste
+    }
+
+    private func isRefocusPasteCandidate(skipReason: String) -> Bool {
+        let normalized = skipReason.lowercased()
+        return normalized.contains("could not focus target app")
+            || normalized.contains("unable to synthesize cmd+v")
+            || normalized.contains("target app was not found")
+    }
+
+    private func isFocusLossCandidate(message: String) -> Bool {
+        let normalized = message.lowercased()
+        return normalized.contains("no focused text element")
+            || normalized.contains("focused element does not support ax text insertion")
+            || normalized.contains("failed to update focused element text")
     }
 
     private func prioritizedTransports(for target: AppContext) -> [any InsertionTransport] {

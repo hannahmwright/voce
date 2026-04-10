@@ -14,7 +14,7 @@ struct PermissionsSettingsSection: View {
             )
 
             PermissionStatusCard(
-                title: "Speech Recognition",
+                title: "Speech",
                 description: "Used for Apple's live preview transcript while recording before the final local pass.",
                 status: controller.speechRecognitionPermissionStatus,
                 onRequest: { controller.requestSpeechRecognitionPermission() },
@@ -23,7 +23,7 @@ struct PermissionsSettingsSection: View {
 
             PermissionStatusCard(
                 title: "Accessibility",
-                description: "Lets Voce type or paste into the app you're using.",
+                description: "Lets Voce type into the app you're using.",
                 status: controller.accessibilityPermissionStatus,
                 onRequest: { controller.requestAccessibilityPermission() },
                 onOpenSettings: { controller.openAccessibilitySettings() }
@@ -31,7 +31,7 @@ struct PermissionsSettingsSection: View {
 
             PermissionStatusCard(
                 title: "Input Monitoring",
-                description: "Lets Voce detect global hotkeys while other apps are focused.",
+                description: "Lets Voce detect shortcuts while other apps are focused.",
                 status: controller.inputMonitoringPermissionStatus,
                 onRequest: { controller.requestInputMonitoringPermission() },
                 onOpenSettings: { controller.openInputMonitoringSettings() }

@@ -3,47 +3,96 @@ import VoceKit
 
 struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
+    @Environment(\.dismiss) private var dismiss
+    private let initialLaunchTarget: SettingsLaunchTarget?
+    private let onClose: (() -> Void)?
     @State private var preferencesDraft: AppPreferences = .default
     @State private var selectedGroup: SettingsGroup = .setup
 
+    init(initialLaunchTarget: SettingsLaunchTarget? = nil, onClose: (() -> Void)? = nil) {
+        self.initialLaunchTarget = initialLaunchTarget
+        self.onClose = onClose
+        _selectedGroup = State(initialValue: Self.group(for: initialLaunchTarget))
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: VoceDesign.lg) {
-            sidebar
-            contentPane
+        VStack(spacing: 0) {
+            // Title bar
+            HStack(alignment: .center) {
+                Text("Settings")
+                    .font(VoceDesign.font(size: 22, weight: .bold))
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Spacer()
+
+                Button {
+                    closeSettings()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close settings")
+            }
+            .padding(.horizontal, VoceDesign.xl)
+            .padding(.top, VoceDesign.lg)
+            .padding(.bottom, VoceDesign.md)
+
+            // Two-pane layout
+            HStack(alignment: .top, spacing: VoceDesign.lg) {
+                sidebar
+                contentPane
+            }
+            .padding(.horizontal, VoceDesign.lg)
+            .padding(.bottom, VoceDesign.lg)
         }
-        .padding(.vertical, VoceDesign.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(VoceDesign.windowBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(Color.white.opacity(0.28), lineWidth: VoceDesign.borderThin)
+        )
         .toggleStyle(.switch)
         .onAppear {
+            if !visibleGroups.contains(selectedGroup) {
+                selectedGroup = .setup
+            }
             preferencesDraft = controller.preferences
         }
-        .onChange(of: controller.preferences) { newValue in
+        .onChange(of: controller.preferences) { _, newValue in
             if newValue != preferencesDraft {
                 preferencesDraft = newValue
             }
         }
-        .onChange(of: preferencesDraft) { newValue in
-            if normalizedPreferences(newValue) != controller.preferences {
-                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
+        .onChange(of: controller.aiAvailabilityIsAvailable) { _, isAvailable in
+            if !isAvailable && selectedGroup == .ai {
+                selectedGroup = .setup
             }
         }
-        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: selectedGroup)
+        .onChange(of: preferencesDraft) { _, newValue in
+            let normalized = normalizedPreferences(newValue)
+            guard normalized != controller.preferences else { return }
+
+            if normalized.requiresRuntimeRebuild(comparedTo: controller.preferences) {
+                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
+            } else {
+                controller.savePreferencesQuietly(preferences: newValue)
+            }
+        }
     }
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            Text("Settings")
-                .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(VoceDesign.textPrimary)
-                .padding(.bottom, VoceDesign.xs)
-
-            ForEach(SettingsGroup.allCases, id: \.self) { group in
+            ForEach(visibleGroups, id: \.self) { group in
                 sidebarButton(for: group)
             }
 
             Spacer(minLength: 0)
         }
         .padding(VoceDesign.md)
-        .frame(width: 210, alignment: .topLeading)
+        .frame(width: 200, alignment: .topLeading)
         .background {
             RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
                 .fill(VoceDesign.surface.opacity(0.58))
@@ -104,31 +153,20 @@ struct SettingsView: View {
 
     private var contentHeader: some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
-            HStack(alignment: .center, spacing: VoceDesign.sm) {
-                Text(selectedGroup.title)
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                if let badge = selectedGroup.badge {
-                    Text(badge)
-                        .font(VoceDesign.label())
-                        .foregroundStyle(VoceDesign.accent)
-                        .padding(.horizontal, VoceDesign.sm)
-                        .padding(.vertical, VoceDesign.xxs)
-                        .background(VoceDesign.accent.opacity(VoceDesign.opacitySubtle))
-                        .clipShape(Capsule())
-                }
-            }
-
-            Text(selectedGroup.description)
-                .font(VoceDesign.subheadline())
-                .foregroundStyle(VoceDesign.textSecondary)
-
-            Text("Changes save automatically.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+            Text(selectedGroup.title)
+                .font(VoceDesign.font(size: 24, weight: .bold))
+                .foregroundStyle(VoceDesign.textPrimary)
         }
         .padding(.bottom, VoceDesign.xs)
+    }
+
+    private var visibleGroups: [SettingsGroup] {
+        SettingsGroup.allCases.filter { group in
+            if group == .ai {
+                return controller.aiAvailabilityIsAvailable
+            }
+            return true
+        }
     }
 
     @ViewBuilder
@@ -138,24 +176,18 @@ struct SettingsView: View {
             PermissionsSettingsSection()
             RecordingSettingsSection(
                 preferences: $preferencesDraft,
-                hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage
+                hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage,
+                autoStartHandsFreeCapture: initialLaunchTarget == .handsFreeGlobalHotkey
             )
             EngineSettingsSection(
                 preferences: $preferencesDraft,
                 controller: controller
             )
         case .behavior:
-            InsertionSettingsSection(preferences: $preferencesDraft)
             MediaSettingsSection(preferences: $preferencesDraft)
-            CleanupStyleSettingsSection(preferences: $preferencesDraft)
             AnchorOverrideSettingsSection(preferences: $preferencesDraft)
         case .ai:
             AISettingsSection(preferences: $preferencesDraft)
-        case .vocabulary:
-            LexiconSettingsSection(preferences: $preferencesDraft)
-            SnippetsSettingsSection(preferences: $preferencesDraft)
-            VoiceCommandsSettingsSection(preferences: $preferencesDraft)
-            LearningSettingsSection()
         case .general:
             GeneralSettingsSection(
                 preferences: $preferencesDraft,
@@ -169,13 +201,29 @@ struct SettingsView: View {
         snapshot.normalize()
         return snapshot
     }
+
+    private func closeSettings() {
+        if let onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
+    }
+
+    private static func group(for launchTarget: SettingsLaunchTarget?) -> SettingsGroup {
+        switch launchTarget {
+        case .handsFreeGlobalHotkey:
+            return .setup
+        case nil:
+            return .setup
+        }
+    }
 }
 
 private enum SettingsGroup: String, CaseIterable {
     case setup
     case behavior
     case ai
-    case vocabulary
     case general
 
     var title: String {
@@ -183,18 +231,16 @@ private enum SettingsGroup: String, CaseIterable {
         case .setup: return "Setup"
         case .behavior: return "Behavior"
         case .ai: return "AI"
-        case .vocabulary: return "Vocabulary"
         case .general: return "General"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .setup: return "Permissions, hotkeys, engine"
-        case .behavior: return "Insertion, media, cleanup, overlay"
-        case .ai: return "Workflows, phrases, Apple Intelligence"
-        case .vocabulary: return "Lexicon, snippets, voice"
-        case .general: return "Launch, visibility, onboarding"
+        case .setup: return "Access, keys, speech"
+        case .behavior: return "Text, media, overlay"
+        case .ai: return "Workflows, triggers"
+        case .general: return "Profile, launch, app"
         }
     }
 
@@ -203,13 +249,11 @@ private enum SettingsGroup: String, CaseIterable {
         case .setup:
             return "Get Voce ready to listen: system permissions, recording controls, and the live transcription model."
         case .behavior:
-            return "Shape how transcripts are inserted, how media behaves during dictation, and how cleanup is applied."
+            return "Shape how transcripts are inserted, how media behaves during dictation, and overlay positioning."
         case .ai:
             return "Configure Apple Intelligence workflows, spoken AI triggers, and hands-free AI finish behavior."
-        case .vocabulary:
-            return "Teach Voce your preferred words, saved snippets, voice commands, and learned corrections."
         case .general:
-            return "Manage app-level preferences like launch behavior, Dock visibility, and onboarding."
+            return "Manage app-level preferences like your display name, launch behavior, and Dock visibility."
         }
     }
 
@@ -218,7 +262,6 @@ private enum SettingsGroup: String, CaseIterable {
         case .setup: return "gearshape"
         case .behavior: return "slider.horizontal.3"
         case .ai: return "sparkles"
-        case .vocabulary: return "text.book.closed"
         case .general: return "wrench.and.screwdriver"
         }
     }
@@ -227,7 +270,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup:
             return "Start here"
-        case .behavior, .ai, .vocabulary, .general:
+        case .behavior, .ai, .general:
             return nil
         }
     }
@@ -246,7 +289,7 @@ private struct SettingsSidebarButtonLabel: View {
 
             VStack(alignment: .leading, spacing: VoceDesign.xxs) {
                 Text(group.title)
-                    .font(VoceDesign.bodyEmphasis())
+                    .font(VoceDesign.font(size: 14, weight: .semibold))
                     .foregroundStyle(VoceDesign.textPrimary)
 
                 Text(group.subtitle)

@@ -33,6 +33,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private let onPartialText: @Sendable (String) -> Void
     private let onTerminalError: @Sendable (Error) -> Void
     private let localeIdentifier: String
+    private let previewTranscriptionEnabled: Bool
     private let stateLock = NSLock()
 
     private var audioEngine: AVAudioEngine?
@@ -46,10 +47,12 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
 
     init(
         localeIdentifier: String = "en-US",
+        previewTranscriptionEnabled: Bool = false,
         onPartialText: @escaping @Sendable (String) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void = { _ in }
     ) {
         self.localeIdentifier = localeIdentifier
+        self.previewTranscriptionEnabled = previewTranscriptionEnabled
         self.onPartialText = onPartialText
         self.onTerminalError = onTerminalError
     }
@@ -75,8 +78,13 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         self.outputURL = outputURL
         self.audioFile = audioFile
 
-        let authorizationStatus = await Self.requestSpeechAuthorizationIfNeeded()
-        let speechRecognitionAvailable = authorizationStatus == .authorized
+        let speechRecognitionAvailable: Bool
+        if previewTranscriptionEnabled {
+            let authorizationStatus = await Self.requestSpeechAuthorizationIfNeeded()
+            speechRecognitionAvailable = authorizationStatus == .authorized
+        } else {
+            speechRecognitionAvailable = false
+        }
 
         if speechRecognitionAvailable {
             let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))

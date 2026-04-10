@@ -1,7 +1,10 @@
 import AppKit
+import CoreText
 import SwiftUI
 
 enum VoceDesign {
+    static let appFontName = "Manrope"
+
     // MARK: - Colors
 
     private static func adaptive(light: Color, dark: Color) -> Color {
@@ -17,6 +20,9 @@ enum VoceDesign {
     static let skyBlue = Color(red: 0.62, green: 0.78, blue: 0.90)      // light impressionist sky
     static let lavender = Color(red: 0.72, green: 0.70, blue: 0.84)     // soft purple haze
     static let roseLight = Color(red: 0.86, green: 0.74, blue: 0.72)    // soft pinkish warmth
+    static let photoAccent = Color(red: 0.70, green: 0.54, blue: 0.36)  // warm bronze from hero imagery
+    static let warmAccentFill = Color(red: 0.84, green: 0.89, blue: 0.76)   // light olive green
+    static let warmAccentText = Color(red: 0.27, green: 0.34, blue: 0.19)   // deep grassy olive
 
     // Primary accent: bright sky cerulean (Monet's Water Lilies sky)
     static let accent = Color(red: 0.32, green: 0.60, blue: 0.82)       // #5299D1
@@ -39,6 +45,11 @@ enum VoceDesign {
         light: Color(red: 0.972, green: 0.976, blue: 0.985),
         dark: Color(red: 0.16, green: 0.17, blue: 0.19)
     )
+    /// Opaque content area background — warm off-white (light) / near-black (dark)
+    static let contentBackground = adaptive(
+        light: Color(red: 0.98, green: 0.975, blue: 0.965),             // warm cream white
+        dark: Color(red: 0.11, green: 0.11, blue: 0.12)                 // deep neutral
+    )
     static let windowBackground = adaptive(
         light: Color(red: 0.952, green: 0.960, blue: 0.972),
         dark: Color(red: 0.115, green: 0.12, blue: 0.135)
@@ -48,7 +59,7 @@ enum VoceDesign {
         dark: Color(red: 0.93, green: 0.94, blue: 0.95)                 // cool off-white
     )
     static let textSecondary = adaptive(
-        light: Color(red: 0.44, green: 0.46, blue: 0.50),               // cool mid-grey
+        light: Color(red: 0.34, green: 0.37, blue: 0.41),               // darker cool grey for glass readability
         dark: Color(red: 0.58, green: 0.60, blue: 0.64)                 // cool light-grey
     )
     static let border = adaptive(
@@ -57,13 +68,13 @@ enum VoceDesign {
     )
 
     // Semantic colors (clean and modern, lightly tinted)
-    static let success = Color(red: 0.30, green: 0.70, blue: 0.46)      // #4DB375  fresh green
+    static let success = Color(red: 0.49, green: 0.61, blue: 0.35)      // muted olive green
     static let successBackground = success.opacity(0.10)
     static let successBorder = success.opacity(0.20)
     static let warning = Color(red: 0.90, green: 0.68, blue: 0.25)      // #E6AD40  warm gold
     static let warningBackground = warning.opacity(0.10)
     static let warningBorder = warning.opacity(0.20)
-    static let error = Color(red: 0.88, green: 0.35, blue: 0.32)        // #E05952  soft red
+    static let error = Color(red: 0.75, green: 0.42, blue: 0.36)        // muted terracotta red
     static let errorBackground = error.opacity(0.08)
     static let errorBorder = error.opacity(0.18)
 
@@ -85,17 +96,33 @@ enum VoceDesign {
 
     // MARK: - Typography
 
-    static func heading1() -> Font { .title3.weight(.bold) }
-    static func heading2() -> Font { .title3.weight(.semibold) }
-    static func heading3() -> Font { .headline }
-    static func body() -> Font { .body }
-    static func bodyEmphasis() -> Font { .subheadline.weight(.semibold) }
-    static func callout() -> Font { .callout }
-    static func subheadline() -> Font { .subheadline }
-    static func caption() -> Font { .caption }
-    static func captionEmphasis() -> Font { .caption.weight(.medium) }
-    static func label() -> Font { .caption2.weight(.medium) }
-    static func labelEmphasis() -> Font { .caption2.weight(.semibold) }
+    static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        if NSFont(name: appFontName, size: size) != nil {
+            return .custom(appFontName, size: size).weight(weight)
+        }
+        return .system(size: size, weight: weight)
+    }
+
+    static func heading1() -> Font { font(size: 24, weight: .bold) }
+    static func heading2() -> Font { font(size: 20, weight: .semibold) }
+    static func heading3() -> Font { font(size: 17, weight: .semibold) }
+    static func body() -> Font { font(size: 14) }
+    static func bodyEmphasis() -> Font { font(size: 14, weight: .semibold) }
+    static func callout() -> Font { font(size: 13, weight: .medium) }
+    static func subheadline() -> Font { font(size: 14, weight: .medium) }
+    static func caption() -> Font { font(size: 12, weight: .medium) }
+    static func captionEmphasis() -> Font { font(size: 12, weight: .medium) }
+    static func label() -> Font { font(size: 11, weight: .medium) }
+    static func labelEmphasis() -> Font { font(size: 11, weight: .semibold) }
+
+    static func registerBundledFonts() {
+        for url in Bundle.main.urls(forResourcesWithExtension: "ttf", subdirectory: nil) ?? [] {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+        for url in Bundle.main.urls(forResourcesWithExtension: "otf", subdirectory: nil) ?? [] {
+            CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+        }
+    }
 
     // MARK: - Opacity
 
@@ -199,10 +226,11 @@ enum VoceDesign {
     static let micButtonSize: CGFloat = 104
     static let micButtonGlowScale: CGFloat = 1.2
     static let dividerHeight: CGFloat = 1
-    static let windowMinWidth: CGFloat = 600
-    static let windowIdealWidth: CGFloat = 620
-    static let windowMinHeight: CGFloat = 640
-    static let windowIdealHeight: CGFloat = 680
+    static let sidebarWidth: CGFloat = 180
+    static let windowMinWidth: CGFloat = 780
+    static let windowIdealWidth: CGFloat = 900
+    static let windowMinHeight: CGFloat = 600
+    static let windowIdealHeight: CGFloat = 700
     static let searchBarMaxWidth: CGFloat = 220
     static let insertionListHeight: CGFloat = 120
 }
