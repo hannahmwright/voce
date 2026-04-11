@@ -226,6 +226,7 @@ final class DictationController: ObservableObject {
     private var overlayDismissTask: Task<Void, Never>?
     private var terminationObserver: Any?
     private var overlayPersistenceBundleIdentifier: String?
+    private var suppressNextPressToTalkStop = false
 
     init(
         hotkey: MacHotkeyMonitor = MacHotkeyMonitor(),
@@ -477,16 +478,26 @@ final class DictationController: ObservableObject {
 
     func pressToTalkStart() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        suppressNextPressToTalkStop = false
         apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
     }
 
     func pressToTalkStop() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        if suppressNextPressToTalkStop {
+            suppressNextPressToTalkStop = false
+            return
+        }
         apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
     }
 
     func toggleHandsFree() {
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
+    }
+
+    func toggleMenuBarTranscription() {
+        pendingCompletionActionOverride = .copyToClipboard
+        toggleHandsFree()
     }
 
     func stopActiveRecording() {
@@ -508,7 +519,7 @@ final class DictationController: ObservableObject {
     }
 
     func finishActiveRecordingWithAI(triggeredBy hotkey: HandsFreeHotkey? = nil) {
-        guard activeRecordingMode == .handsFree, isRecording else { return }
+        guard let activeRecordingMode, isRecording else { return }
         guard aiRuntimeEnabled else { return }
         let workflowID: UUID?
         if let hotkey {
@@ -523,7 +534,13 @@ final class DictationController: ObservableObject {
             status = "Finishing with AI…"
         }
         pendingCompletionActionOverride = .aiWorkflow(id: workflowID)
-        toggleHandsFree()
+        switch activeRecordingMode {
+        case .handsFree:
+            toggleHandsFree()
+        case .pressToTalk:
+            suppressNextPressToTalkStop = true
+            apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
+        }
     }
 
     func pasteLastTranscript() {
@@ -967,6 +984,7 @@ final class DictationController: ObservableObject {
                     let executionBeganAt = clock.now
                     let executor = CompletionExecutionService(
                         insertionService: insertionService,
+                        clipboardService: clipboardService,
                         aiGenerationService: aiGenerationService
                     )
                     let execution = try await executor.execute(
@@ -1013,6 +1031,14 @@ final class DictationController: ObservableObject {
                     }
                     scheduleLearningUpdate(for: finalizedTranscript)
                     dismissOverlaySoon()
+                } catch let routingError as CompletionRoutingError {
+                    lastTranscript = finalizedTranscript.cleanText
+                    status = routingErrorStatusMessage(for: routingError)
+                    lastError = ""
+                    overlay.hide()
+                    clipboardRecoveryPrompt.hide()
+                    scheduleLearningUpdate(for: finalizedTranscript)
+                    dismissOverlaySoon()
                 }
                 await refreshHistory()
                 recordingStateMachine.markTranscriptionCompleted()
@@ -1045,6 +1071,15 @@ final class DictationController: ObservableObject {
             }
             overlayPersistenceBundleIdentifier = nil
             overlayDismissTask = nil
+        }
+    }
+
+    private func routingErrorStatusMessage(for error: CompletionRoutingError) -> String {
+        switch error {
+        case .workflowNotFound:
+            return error.errorDescription ?? "Selected AI workflow was not found."
+        case .noContentAfterTrigger(let phrase):
+            return "Say something after \"\(phrase)\"."
         }
     }
 
@@ -1294,6 +1329,19 @@ final class DictationController: ObservableObject {
                 baseStatus = "Transcript ready but insertion failed."
                 lastError = reason
             }
+        case .copyToClipboard:
+            switch result.status {
+            case .inserted:
+                baseStatus = "Transcript inserted."
+                lastError = ""
+            case .copiedOnly:
+                baseStatus = "Transcript copied to clipboard."
+                lastError = ""
+            case .failed:
+                let reason = result.errorMessage ?? "Clipboard copy failed."
+                baseStatus = "Transcript ready but copy failed."
+                lastError = reason
+            }
         case .aiWorkflow:
             switch result.status {
             case .inserted:
@@ -1418,6 +1466,8 @@ final class DictationController: ObservableObject {
         switch action {
         case .insert:
             return "insert"
+        case .copyToClipboard:
+            return "copyToClipboard"
         case .insertAndSubmit:
             return "insertAndSubmit"
         case .aiWorkflow:
@@ -1434,7 +1484,7 @@ final class DictationController: ObservableObject {
         hotkey.aiWorkflowFinishHotkeys = preferences.ai.workflows.compactMap(\.handsFreeFinishHotkey)
         hotkey.isAIFinishEnabled =
             aiRuntimeEnabled
-            && activeRecordingMode == .handsFree
+            && activeRecordingMode != nil
             && isRecording
             && (
                 preferences.ai.handsFreeFinishHotkey != nil
@@ -1460,6 +1510,16 @@ final class DictationController: ObservableObject {
 
     var totalWordsDictated: Int {
         metricEntries
+            .reduce(0) { total, entry in
+                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+                return total + text.split(whereSeparator: \.isWhitespace).count
+            }
+    }
+
+    var wordsDictatedToday: Int {
+        let calendar = Calendar.current
+        return metricEntries
+            .filter { calendar.isDateInToday($0.createdAt) }
             .reduce(0) { total, entry in
                 let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
                 return total + text.split(whereSeparator: \.isWhitespace).count
@@ -1495,6 +1555,33 @@ final class DictationController: ObservableObject {
         let calendar = Calendar.current
         let uniqueDays = Set(metricEntries.map { calendar.startOfDay(for: $0.createdAt) })
         return uniqueDays.count
+    }
+
+    var currentUsageStreak: Int {
+        let calendar = Calendar.current
+        let uniqueDays = Array(Set(metricEntries.map { calendar.startOfDay(for: $0.createdAt) }))
+            .sorted(by: >)
+
+        guard let firstDay = uniqueDays.first else {
+            return 0
+        }
+
+        var streak = 1
+        var previousDay = firstDay
+
+        for day in uniqueDays.dropFirst() {
+            guard
+                let expectedPrevious = calendar.date(byAdding: .day, value: -1, to: previousDay),
+                calendar.isDate(day, inSameDayAs: expectedPrevious)
+            else {
+                break
+            }
+
+            streak += 1
+            previousDay = day
+        }
+
+        return streak
     }
 
     var primaryHotkeyLabel: String {

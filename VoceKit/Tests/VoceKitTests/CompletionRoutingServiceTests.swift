@@ -66,3 +66,64 @@ func completionRoutingFailsOnEmptyInput() throws {
     }
 }
 
+@Test("CompletionRoutingService accepts punctuation after an AI trigger phrase")
+func completionRoutingAcceptsPunctuationAfterTrigger() throws {
+    let service = CompletionRoutingService()
+    let transcript = FinalizedTranscript(
+        rawText: "rewrite this, make this tighter",
+        cleanText: "rewrite this, make this tighter",
+        appContext: .unknown,
+        sourceSessionID: UUID()
+    )
+
+    let routed = try service.route(
+        finalizedTranscript: transcript,
+        preferredAction: nil,
+        leadingPhraseSelectionEnabled: true,
+        workflows: AIWorkflow.builtIns
+    )
+
+    #expect(routed.action == .aiWorkflow(id: AIWorkflow.rewriteID))
+    #expect(routed.inputText == "make this tighter")
+}
+
+@Test("CompletionRoutingService accepts newlines after an AI trigger phrase")
+func completionRoutingAcceptsNewlineAfterTrigger() throws {
+    let service = CompletionRoutingService()
+    let transcript = FinalizedTranscript(
+        rawText: "summarize this\nquarterly update",
+        cleanText: "summarize this\nquarterly update",
+        appContext: .unknown,
+        sourceSessionID: UUID()
+    )
+
+    let routed = try service.route(
+        finalizedTranscript: transcript,
+        preferredAction: nil,
+        leadingPhraseSelectionEnabled: true,
+        workflows: AIWorkflow.builtIns
+    )
+
+    #expect(routed.action == .aiWorkflow(id: AIWorkflow.summarizeID))
+    #expect(routed.inputText == "quarterly update")
+}
+
+@Test("CompletionRoutingService still throws when trigger is followed only by punctuation")
+func completionRoutingFailsWhenOnlyPunctuationFollowsTrigger() throws {
+    let service = CompletionRoutingService()
+    let transcript = FinalizedTranscript(
+        rawText: "summarize this:",
+        cleanText: "summarize this:",
+        appContext: .unknown,
+        sourceSessionID: UUID()
+    )
+
+    #expect(throws: CompletionRoutingError.noContentAfterTrigger("summarize this")) {
+        try service.route(
+            finalizedTranscript: transcript,
+            preferredAction: nil,
+            leadingPhraseSelectionEnabled: true,
+            workflows: AIWorkflow.builtIns
+        )
+    }
+}

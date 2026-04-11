@@ -17,25 +17,26 @@ struct GeneralSettingsSection: View {
 
                     TextField("Your name", text: displayNameBinding)
                         .textFieldStyle(.plain)
-                        .font(VoceDesign.callout())
-                        .padding(.horizontal, VoceDesign.md)
-                        .padding(.vertical, VoceDesign.sm)
-                        .background {
-                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                .fill(VoceDesign.surfaceSecondary)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                        .fill(.regularMaterial.opacity(0.18))
-                                )
-                        }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
-                        )
+                        .settingsInputChrome()
                 }
             }
 
             settingsCard("App") {
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    settingInlineLabel(
+                        "Appearance",
+                        help: "Choose whether Voce follows macOS or stays in a fixed light or dark appearance."
+                    )
+
+                    Picker("Appearance", selection: $preferences.general.appearancePreference) {
+                        ForEach(AppAppearancePreference.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
                 Toggle(isOn: $preferences.general.launchAtLoginEnabled) {
                     settingInlineLabel(
                         "Launch on login",

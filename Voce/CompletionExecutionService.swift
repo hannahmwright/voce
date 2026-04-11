@@ -14,6 +14,7 @@ struct CompletionExecutionOutcome {
 @MainActor
 struct CompletionExecutionService {
     let insertionService: any InsertionServiceProtocol
+    let clipboardService: any ClipboardService
     let aiGenerationService: AppleFoundationModelsService
 
     func execute(
@@ -37,6 +38,43 @@ struct CompletionExecutionService {
                 aiProvider: nil,
                 submitWarning: nil
             )
+
+        case .copyToClipboard:
+            do {
+                try await clipboardService.setString(finalizedTranscript.cleanText)
+                var result = InsertResult(
+                    status: .copiedOnly,
+                    method: .clipboardPaste,
+                    insertedText: finalizedTranscript.cleanText
+                )
+                result.cleanupOutcome = finalizedTranscript.cleanupOutcome
+                return CompletionExecutionOutcome(
+                    insertResult: result,
+                    finalText: finalizedTranscript.cleanText,
+                    sourceText: nil,
+                    action: .copyToClipboard,
+                    aiWorkflowName: nil,
+                    aiProvider: nil,
+                    submitWarning: nil
+                )
+            } catch {
+                var result = InsertResult(
+                    status: .failed,
+                    method: .none,
+                    insertedText: finalizedTranscript.cleanText,
+                    errorMessage: error.localizedDescription
+                )
+                result.cleanupOutcome = finalizedTranscript.cleanupOutcome
+                return CompletionExecutionOutcome(
+                    insertResult: result,
+                    finalText: finalizedTranscript.cleanText,
+                    sourceText: nil,
+                    action: .copyToClipboard,
+                    aiWorkflowName: nil,
+                    aiProvider: nil,
+                    submitWarning: nil
+                )
+            }
 
         case .insertAndSubmit:
             var result = await insertionService.insert(

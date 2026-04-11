@@ -171,10 +171,12 @@ struct LexiconSettingsSection: View {
 
                 VStack(spacing: VoceDesign.sm) {
                     TextField("Misheard", text: $newTerm)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
 
                     TextField("Should be", text: $newPreferred)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
                 }
             }
 
@@ -197,7 +199,8 @@ struct LexiconSettingsSection: View {
                     selectedAppsRow
 
                     TextField("Search apps", text: $appSearchText)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
 
                     appSelectionList
 

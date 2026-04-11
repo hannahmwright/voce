@@ -3,6 +3,29 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.27</title>
+      <sparkle:version>30</sparkle:version>
+      <sparkle:shortVersionString>0.4.27</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.27</h2>
+        <ul>
+          <li>Adds consistent System, Light Mode, and Dark Mode handling across the main window, onboarding, the menu bar popover, and the processing bubble</li>
+          <li>Refines the Home view with a scenic banner, updated stats, and better light and dark background composition</li>
+          <li>Moves Settings into the main window with top tabs and more stable small-window behavior</li>
+          <li>Makes keyboard AI finish actions work reliably in hold-to-talk as well as tap-to-talk</li>
+          <li>Tightens rewrite and summarize workflows so local AI output is more likely to return just the transformed text</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sat, 11 Apr 2026 23:26:18 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.27/Voce-0.4.27.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="PLPRT4EJYaUoQ5DvCmNUmPS22Byf91cWf3cjQJjP1XuVGvrNcL1pNMkVglkmfPM3vI2GBxFp/sFXEpB6fbhYCg=="
+        length="16350033"
+      />
+    </item>
+    <item>
       <title>Version 0.4.26</title>
       <sparkle:version>29</sparkle:version>
       <sparkle:shortVersionString>0.4.26</sparkle:shortVersionString>

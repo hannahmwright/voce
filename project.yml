@@ -23,8 +23,8 @@ targets:
         CODE_SIGN_IDENTITY: Apple Development
         CODE_SIGN_ENTITLEMENTS: Voce/Voce.entitlements
         SWIFT_VERSION: 6.0
-        MARKETING_VERSION: 0.4.26
-        CURRENT_PROJECT_VERSION: 29
+        MARKETING_VERSION: 0.4.27
+        CURRENT_PROJECT_VERSION: 30
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Voce/Info.plist
       configs:

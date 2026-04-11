@@ -20,7 +20,7 @@ public struct CompletionRoutingService: Sendable {
                     inputText: finalizedTranscript.cleanText,
                     selectedBy: .alternateFinishKey(workflowID: workflowID)
                 )
-            case .insert, .insertAndSubmit:
+            case .insert, .copyToClipboard, .insertAndSubmit:
                 return RoutedCompletion(
                     action: preferredAction,
                     inputText: finalizedTranscript.cleanText,
@@ -52,12 +52,16 @@ public struct CompletionRoutingService: Sendable {
 
         for (workflow, phrase) in enabledWorkflows {
             let loweredPhrase = phrase.lowercased()
-            guard lowercasedText == loweredPhrase || lowercasedText.hasPrefix("\(loweredPhrase) ") else {
+            guard
+                lowercasedText == loweredPhrase
+                    || lowercasedText.hasPrefix(loweredPhrase),
+                let remainderStart = remainderStartIndex(in: trimmedText, matching: phrase)
+            else {
                 continue
             }
 
-            let startIndex = trimmedText.index(trimmedText.startIndex, offsetBy: phrase.count)
-            let remaining = trimmedText[startIndex...].trimmingCharacters(in: .whitespacesAndNewlines)
+            let remaining = trimmedText[remainderStart...]
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
             guard !remaining.isEmpty else {
                 throw CompletionRoutingError.noContentAfterTrigger(phrase)
             }
@@ -74,5 +78,27 @@ public struct CompletionRoutingService: Sendable {
             inputText: finalizedTranscript.cleanText,
             selectedBy: .defaultBehavior
         )
+    }
+
+    private func remainderStartIndex(in text: String, matching phrase: String) -> String.Index? {
+        guard text.count >= phrase.count else { return nil }
+
+        let phraseEnd = text.index(text.startIndex, offsetBy: phrase.count)
+        let matchedPrefix = text[..<phraseEnd]
+
+        guard matchedPrefix.caseInsensitiveCompare(phrase) == .orderedSame else {
+            return nil
+        }
+
+        guard phraseEnd < text.endIndex else {
+            return phraseEnd
+        }
+
+        let nextCharacter = text[phraseEnd]
+        guard nextCharacter.isWhitespace || nextCharacter.isNewline || nextCharacter.isPunctuation else {
+            return nil
+        }
+
+        return phraseEnd
     }
 }

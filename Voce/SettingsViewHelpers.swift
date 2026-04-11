@@ -300,7 +300,8 @@ struct ScopePickerRow: View {
                 .fixedSize()
             if !isGlobal {
                 TextField("Bundle ID", text: $bundleID)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .settingsInputChrome()
             }
         }
     }

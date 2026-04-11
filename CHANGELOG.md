@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.27] - 2026-04-11
+
+### Changed
+- The app now respects `System`, `Light Mode`, and `Dark Mode` consistently across the main window, onboarding, the menu bar popover, and the processing bubble so the visual theme stays in sync everywhere.
+- The Home view now uses a scrollable scenic banner, refined right-rail metrics, and updated light/dark background crops that better show the sky and foreground scene.
+- Settings now live in the main window with top tabs and more stable small-window behavior, which keeps the interface usable without clipping important controls.
+
+### Fixed
+- Hold-to-talk can now trigger AI finish actions from the keyboard the same way tap-to-talk can, so rewrite and related workflows work reliably in both recording modes.
+- AI rewrite and summarize workflows now better enforce output-only responses by tightening the built-in prompts and stripping common assistant preambles from local-model output.
+- Spoken AI trigger routing is more forgiving about punctuation and line breaks after phrases like `rewrite this`, and now gives a clearer error when the trigger phrase has no content after it.
+
 ## [0.4.26] - 2026-04-10
 
 ### Added

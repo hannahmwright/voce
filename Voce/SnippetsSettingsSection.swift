@@ -61,9 +61,11 @@ struct SnippetsSettingsSection: View {
 
                 HStack(spacing: VoceDesign.sm) {
                     TextField("Say", text: $newTrigger)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
                     TextField("Insert", text: $newExpansion)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
                 }
 
                 HStack {

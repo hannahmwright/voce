@@ -87,14 +87,26 @@ extension AIWorkflow {
             """
         case .rewrite:
             return """
-            Rewrite the following text for clarity and flow while preserving its meaning and tone. Return only the rewritten text.
+            You are rewriting text, not answering a user.
+            Rewrite the following text for clarity and flow while preserving its meaning and tone.
+
+            Output rules:
+            - Return only the rewritten text
+            - Do not add introductions, explanations, labels, quotation marks, or code fences
+            - Do not say things like "Sure", "Here is the rewritten text", or "Rewritten text:"
 
             Text:
             {{input}}
             """
         case .summarize:
             return """
-            Summarize the following text concisely. Return only the summary.
+            You are summarizing text, not answering a user.
+            Summarize the following text concisely.
+
+            Output rules:
+            - Return only the summary
+            - Do not add introductions, explanations, labels, quotation marks, or code fences
+            - Do not say things like "Sure", "Here is the summary", or "Summary:"
 
             Text:
             {{input}}
@@ -182,6 +194,7 @@ extension AIWorkflow {
 
 public enum CompletionAction: Sendable, Codable, Equatable {
     case insert
+    case copyToClipboard
     case insertAndSubmit
     case aiWorkflow(id: UUID)
 }

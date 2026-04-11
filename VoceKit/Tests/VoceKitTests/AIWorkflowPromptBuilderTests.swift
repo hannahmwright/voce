@@ -19,6 +19,15 @@ func aiWorkflowBuiltInsIncludeAIPrompt() {
     #expect(workflow?.promptTemplate?.contains("Convert the following transcription into a clear and effective prompt") == true)
 }
 
+@Test("Rewrite built-in prompt is explicit about output-only behavior")
+func rewritePromptTemplateIsStrict() {
+    let workflow = AIWorkflow.builtIns.first { $0.id == AIWorkflow.rewriteID }!
+    let prompt = AIWorkflowPromptBuilder.makePrompt(for: workflow, input: "Make this tighter")
+
+    #expect(prompt.contains("Return only the rewritten text"))
+    #expect(prompt.contains("Do not say things like"))
+}
+
 @Test("AIWorkflowPromptBuilder uses explicit prompt template overrides for built-in workflows")
 func promptBuilderUsesBuiltInPromptOverride() {
     let workflow = AIWorkflow(

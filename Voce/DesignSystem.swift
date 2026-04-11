@@ -227,6 +227,13 @@ enum VoceDesign {
     static let micButtonGlowScale: CGFloat = 1.2
     static let dividerHeight: CGFloat = 1
     static let sidebarWidth: CGFloat = 180
+    static let settingsSidebarMinWidth: CGFloat = 160
+    static let settingsSidebarIdealWidth: CGFloat = 200
+    static let settingsDialogIdealWidth: CGFloat = 820
+    static let settingsDialogIdealHeight: CGFloat = 620
+    static let settingsDialogWindowInset: CGFloat = 24
+    static let settingsWindowMinContentWidth: CGFloat = settingsDialogIdealWidth + (settingsDialogWindowInset * 2)
+    static let settingsWindowMinContentHeight: CGFloat = settingsDialogIdealHeight + (settingsDialogWindowInset * 2)
     static let windowMinWidth: CGFloat = 780
     static let windowIdealWidth: CGFloat = 900
     static let windowMinHeight: CGFloat = 600
@@ -349,6 +356,39 @@ struct PressableButtonStyle: ButtonStyle {
     }
 }
 
+struct SettingsInputChromeModifier: ViewModifier {
+    let cornerRadius: CGFloat
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .font(VoceDesign.callout())
+            .foregroundStyle(VoceDesign.textPrimary)
+            .padding(.horizontal, VoceDesign.md)
+            .padding(.vertical, VoceDesign.sm)
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(colorScheme == .dark ? VoceDesign.surfaceSolid : VoceDesign.surfaceSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .fill(
+                                colorScheme == .dark
+                                    ? AnyShapeStyle(Color.white.opacity(0.03))
+                                    : AnyShapeStyle(.regularMaterial.opacity(0.18))
+                            )
+                    )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(
+                        colorScheme == .dark ? Color.white.opacity(0.12) : VoceDesign.border,
+                        lineWidth: VoceDesign.borderThin
+                    )
+            )
+    }
+}
+
 // MARK: - Copy Button View
 
 struct CopyButtonView: View {
@@ -392,23 +432,23 @@ struct VoceWindowBackdrop: View {
                 .resizable()
                 .aspectRatio(contentMode: .fill)
                 .scaleEffect(colorScheme == .dark ? 1.10 : 1.05)
-                .saturation(colorScheme == .dark ? 0.80 : 0.92)
+                .saturation(colorScheme == .dark ? 0.86 : 0.96)
                 .overlay {
                     Rectangle()
                         .fill(backdropTint)
                 }
-                .blur(radius: colorScheme == .dark ? 12 : 7)
+                .blur(radius: colorScheme == .dark ? 1.8 : 0.6)
 
             Rectangle()
-                .fill(.ultraThinMaterial.opacity(colorScheme == .dark ? 0.14 : 0.10))
+                .fill(.ultraThinMaterial.opacity(colorScheme == .dark ? 0.08 : 0.05))
 
             Rectangle()
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(colorScheme == .dark ? 0.06 : 0.20),
+                            Color.white.opacity(colorScheme == .dark ? 0.04 : 0.12),
                             Color.clear,
-                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.12 : 0.18)
+                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.08 : 0.12)
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -419,7 +459,7 @@ struct VoceWindowBackdrop: View {
                 .fill(
                     RadialGradient(
                         colors: [
-                            Color.white.opacity(colorScheme == .dark ? 0.10 : 0.18),
+                            Color.white.opacity(colorScheme == .dark ? 0.06 : 0.10),
                             Color.clear
                         ],
                         center: .top,
@@ -435,14 +475,14 @@ struct VoceWindowBackdrop: View {
         LinearGradient(
             colors: colorScheme == .dark
                 ? [
-                    VoceDesign.windowBackground.opacity(0.44),
-                    VoceDesign.background.opacity(0.58),
-                    Color.black.opacity(0.22)
+                    VoceDesign.windowBackground.opacity(0.28),
+                    VoceDesign.background.opacity(0.42),
+                    Color.black.opacity(0.14)
                 ]
                 : [
-                    Color.white.opacity(0.08),
-                    VoceDesign.windowBackground.opacity(0.38),
-                    VoceDesign.sage.opacity(0.14)
+                    Color.white.opacity(0.03),
+                    VoceDesign.windowBackground.opacity(0.22),
+                    VoceDesign.sage.opacity(0.08)
                 ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -496,5 +536,9 @@ extension View {
                     )
                     .shadowStyle(.xl)
             }
+    }
+
+    func settingsInputChrome(cornerRadius: CGFloat = VoceDesign.radiusSmall) -> some View {
+        modifier(SettingsInputChromeModifier(cornerRadius: cornerRadius))
     }
 }

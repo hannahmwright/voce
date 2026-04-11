@@ -86,6 +86,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var repositionModeEnabled = false
     private var repositionModeTask: Task<Void, Never>?
     private var processingPlayer: AVPlayer?
+    private var processingPlayerURL: URL?
     private var processingBoundaryObserver: Any?
     private var processingTimeObserver: Any?
 
@@ -826,14 +827,21 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func playProcessingVideoIfNeeded() {
         guard let videoLayer = processingVideoLayer else { return }
-        if processingPlayer == nil,
-           let url = Self.loadProcessingVideoURL() {
+        guard let url = Self.loadProcessingVideoURL(isDark: prefersDarkProcessingVideo) else {
+            return
+        }
+
+        if processingPlayer == nil || processingPlayerURL != url {
+            removeProcessingObservers()
+            processingPlayer?.pause()
+
             let asset = AVAsset(url: url)
             let item = AVPlayerItem(asset: asset)
             let player = AVPlayer(playerItem: item)
             player.isMuted = true
             player.actionAtItemEnd = .pause
             processingPlayer = player
+            processingPlayerURL = url
             videoLayer.player = player
             installProcessingBoundaryObserver()
         }
@@ -845,6 +853,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func stopProcessingVideo() {
         processingPlayer?.pause()
+    }
+
+    private var prefersDarkProcessingVideo: Bool {
+        let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+        return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 
     /// Observe both ends of the video so we can ping-pong playback
@@ -1387,13 +1400,27 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 
-    private static func loadProcessingVideoURL() -> URL? {
+    private static func loadProcessingVideoURL(isDark: Bool) -> URL? {
+        if isDark,
+           let darkURL = Bundle.main.url(forResource: "processing-background-dark", withExtension: "mp4") {
+            return darkURL
+        }
         if let url = Bundle.main.url(forResource: "processing-background", withExtension: "mp4") {
             return url
         }
         #if DEBUG
-        let devPath = "/tmp/processing-background.mp4"
-        if FileManager.default.fileExists(atPath: devPath) {
+        let debugCandidates = isDark
+            ? [
+                "/tmp/processing-background-dark.mp4",
+                "/Users/hannahwright/Documents/Code/Voce/Voce/processing-background-dark.mp4",
+                "/Users/hannahwright/Code/Voce/Voce/processing-background-dark.mp4",
+              ]
+            : [
+                "/tmp/processing-background.mp4",
+                "/Users/hannahwright/Documents/Code/Voce/Voce/processing-background.mp4",
+                "/Users/hannahwright/Code/Voce/Voce/processing-background.mp4",
+              ]
+        for devPath in debugCandidates where FileManager.default.fileExists(atPath: devPath) {
             return URL(fileURLWithPath: devPath)
         }
         #endif

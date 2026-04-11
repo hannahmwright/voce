@@ -27,6 +27,7 @@ struct VoceApp: App {
                 }
             }
             .font(VoceDesign.body())
+            .preferredColorScheme(controller.preferences.general.appearancePreference.preferredColorScheme)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: VoceDesign.windowIdealWidth, height: VoceDesign.windowIdealHeight)
@@ -38,6 +39,19 @@ struct VoceApp: App {
                 }
                 .disabled(!updaterController.canCheckForUpdates)
             }
+        }
+    }
+}
+
+private extension AppAppearancePreference {
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
         }
     }
 }
@@ -54,7 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Delay slightly so the window is fully created before configuring transparency
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.configureTransparentWindows()
+#if DEBUG
+            self.showPrimaryWindowIfNeeded()
+#else
             self.suppressInitialWindowIfNeeded()
+#endif
         }
     }
 
@@ -75,10 +93,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
+    func showPrimaryWindow() {
+        showPrimaryWindowIfNeeded()
+        suppressedInitialWindowForBackgroundLaunch = false
+    }
+
+    @MainActor
     private func configureTransparentWindows() {
         for window in NSApp.windows where isPrimaryVoceWindow(window) {
             window.isOpaque = false
             window.backgroundColor = .clear
+            window.contentMinSize = NSSize(
+                width: VoceDesign.windowMinWidth,
+                height: VoceDesign.windowMinHeight
+            )
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.titlebarSeparatorStyle = .none

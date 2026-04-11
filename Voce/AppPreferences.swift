@@ -32,6 +32,27 @@ struct AppAnchorOverride: Codable, Sendable, Equatable {
     }
 }
 
+enum AppAppearancePreference: String, Codable, Sendable, Equatable, CaseIterable {
+    case system
+    case light
+    case dark
+
+    static var currentSystemDefault: AppAppearancePreference {
+        .system
+    }
+
+    var title: String {
+        switch self {
+        case .system:
+            return "System"
+        case .light:
+            return "Light Mode"
+        case .dark:
+            return "Dark Mode"
+        }
+    }
+}
+
 struct AppPreferences: Codable, Sendable, Equatable {
     static let seededHiddenLexiconEntries: [LexiconEntry] = [
         LexiconEntry(term: "voceh", preferred: "Voce", scope: .global),
@@ -43,12 +64,20 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var showDockIcon: Bool
         var showOnboarding: Bool
         var userName: String
+        var appearancePreference: AppAppearancePreference
 
-        init(launchAtLoginEnabled: Bool, showDockIcon: Bool, showOnboarding: Bool, userName: String = "") {
+        init(
+            launchAtLoginEnabled: Bool,
+            showDockIcon: Bool,
+            showOnboarding: Bool,
+            userName: String = "",
+            appearancePreference: AppAppearancePreference = .currentSystemDefault
+        ) {
             self.launchAtLoginEnabled = launchAtLoginEnabled
             self.showDockIcon = showDockIcon
             self.showOnboarding = showOnboarding
             self.userName = userName
+            self.appearancePreference = appearancePreference
         }
 
         init(from decoder: Decoder) throws {
@@ -57,6 +86,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             showDockIcon = try container.decodeIfPresent(Bool.self, forKey: .showDockIcon) ?? true
             showOnboarding = try container.decodeIfPresent(Bool.self, forKey: .showOnboarding) ?? false
             userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? ""
+            appearancePreference = try container.decodeIfPresent(AppAppearancePreference.self, forKey: .appearancePreference)
+                ?? .currentSystemDefault
         }
     }
 
@@ -292,7 +323,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             general: .init(
                 launchAtLoginEnabled: false,
                 showDockIcon: true,
-                showOnboarding: true
+                showOnboarding: true,
+                appearancePreference: .currentSystemDefault
             ),
             hotkeys: .init(
                 optionPressToTalkEnabled: false,
@@ -402,6 +434,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         snapshot.metricsLifetimeTrackingStartedAt = nil
         snapshot.metricsLastRecordingDate = ""
         snapshot.general.userName = ""
+        snapshot.general.appearancePreference = .currentSystemDefault
         return snapshot
     }
 

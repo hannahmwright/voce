@@ -16,6 +16,8 @@
 		25BC9E70F82B39619CA4E9B7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E7E2EA723CE9133F7D1291F7 /* Sparkle */; };
 		2CFD23B61DBA186E52AB2A9D /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE5EAD5ECFA2403433B65F5 /* LaunchAtLoginService.swift */; };
 		2E860B4B558041E90F57A497 /* VoceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4341CE23927C00B47232FAD /* VoceApp.swift */; };
+		334C29A2B3A157E231B70579 /* Manrope-VariableFont_wght.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0F5F3D0928FA10AFA1045DD5 /* Manrope-VariableFont_wght.ttf */; };
+		356BDE8A1D6E4D8E9A1C2F30 /* processing-background-dark.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 356BDE8A1D6E4D8E9A1C2F31 /* processing-background-dark.mp4 */; };
 		394B2B8101003787AD8B8607 /* CleanupStyleSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FC345D5219417D3A6101AD /* CleanupStyleSettingsSection.swift */; };
 		3CDA27B2807FEF02B07AAF3C /* AnchorOverrideSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4110D21D399A9F170F3EA70E /* AnchorOverrideSettingsSection.swift */; };
 		411A42D08C3CBEB12F8DB3E3 /* MicButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 340E874BDA6F985AB31A34BB /* MicButton.swift */; };
@@ -33,7 +35,6 @@
 		87C89EB461A131DE67FFB769 /* DesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07C77BF174F1612CF321FC97 /* DesignSystem.swift */; };
 		8E357A416B9199F3B46DE368 /* PermissionsSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */; };
 		8E98A45484BC62B8BFA108D5 /* HistoryTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA4D2A4EEE0417D51262F1A /* HistoryTab.swift */; };
-		91B1A2234F3D41C7A9E01234 /* Manrope-VariableFont_wght.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 91B1A2234F3D41C7A9E01235 /* Manrope-VariableFont_wght.ttf */; };
 		999D062FB090A37EC72AD453 /* SnippetsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */; };
 		A1EB2E4860AE3E0AAA47D7F1 /* DictionaryTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18C96AE96BC66A547EF4FDAC /* DictionaryTab.swift */; };
 		B09E52D335FEAE1F1AEE2A61 /* UpdaterController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ED8BF2AEF421B393FE88D15 /* UpdaterController.swift */; };
@@ -58,6 +59,7 @@
 		031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionExecutionService.swift; sourceTree = "<group>"; };
 		07C77BF174F1612CF321FC97 /* DesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSystem.swift; sourceTree = "<group>"; };
 		0EA039E7BFEB0F1612ED079B /* StyleTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyleTab.swift; sourceTree = "<group>"; };
+		0F5F3D0928FA10AFA1045DD5 /* Manrope-VariableFont_wght.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Manrope-VariableFont_wght.ttf"; sourceTree = "<group>"; };
 		0F8267E63FADBC256B9A7BA6 /* SnippetsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsSettingsSection.swift; sourceTree = "<group>"; };
 		128AD8910D9A8594E0D83AD8 /* VoceKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = VoceKit; path = VoceKit; sourceTree = SOURCE_ROOT; };
 		132DA21638FE9F910C3B310F /* DictationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationController.swift; sourceTree = "<group>"; };
@@ -83,8 +85,8 @@
 		6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSettingsSection.swift; sourceTree = "<group>"; };
 		7B575DB65BF978A9BCA10827 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewHelpers.swift; sourceTree = "<group>"; };
-		91B1A2234F3D41C7A9E01235 /* Manrope-VariableFont_wght.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "Resources/Fonts/Manrope-VariableFont_wght.ttf"; sourceTree = "<group>"; };
 		911C21B21664F69036B1443E /* processing-background.mp4 */ = {isa = PBXFileReference; path = "processing-background.mp4"; sourceTree = "<group>"; };
+		356BDE8A1D6E4D8E9A1C2F31 /* processing-background-dark.mp4 */ = {isa = PBXFileReference; path = "processing-background-dark.mp4"; sourceTree = "<group>"; };
 		9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatusCard.swift; sourceTree = "<group>"; };
 		9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsTab.swift; sourceTree = "<group>"; };
 		9DA8DBB014F3CD82D09D9DA8 /* AppleFoundationModelsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleFoundationModelsService.swift; sourceTree = "<group>"; };
@@ -155,12 +157,12 @@
 				6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */,
 				EC7D068135E11372BE4386D1 /* MenuBarController.swift */,
 				340E874BDA6F985AB31A34BB /* MicButton.swift */,
-				91B1A2234F3D41C7A9E01235 /* Manrope-VariableFont_wght.ttf */,
 				A3E2FC96193616902F7C0568 /* OnboardingView.swift */,
 				DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */,
 				E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */,
 				9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */,
 				911C21B21664F69036B1443E /* processing-background.mp4 */,
+				356BDE8A1D6E4D8E9A1C2F31 /* processing-background-dark.mp4 */,
 				47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */,
 				EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */,
 				EA596049E5E1D02311496B9B /* ScratchPadTab.swift */,
@@ -173,8 +175,25 @@
 				5E408341ECED604CAD61B112 /* Voce.entitlements */,
 				F4341CE23927C00B47232FAD /* VoceApp.swift */,
 				C1D6F6F334166FF103AACA28 /* VoiceCommandsSettingsSection.swift */,
+				47D0F46C83C24CD745A51FC2 /* Resources */,
 			);
 			path = Voce;
+			sourceTree = "<group>";
+		};
+		3632924FC8F5AAF2DF15C079 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				0F5F3D0928FA10AFA1045DD5 /* Manrope-VariableFont_wght.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
+		47D0F46C83C24CD745A51FC2 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				3632924FC8F5AAF2DF15C079 /* Fonts */,
+			);
+			path = Resources;
 			sourceTree = "<group>";
 		};
 		49DB8AFFFD061D3998E27AED = {
@@ -261,8 +280,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				03986840139C4AA94F78ABB9 /* Assets.xcassets in Resources */,
-				91B1A2234F3D41C7A9E01234 /* Manrope-VariableFont_wght.ttf in Resources */,
+				334C29A2B3A157E231B70579 /* Manrope-VariableFont_wght.ttf in Resources */,
 				F5A00A35B80276971C87786A /* processing-background.mp4 in Resources */,
+				356BDE8A1D6E4D8E9A1C2F30 /* processing-background-dark.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -327,7 +347,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 30;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
@@ -335,7 +355,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.26;
+				MARKETING_VERSION = 0.4.27;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
@@ -406,14 +426,14 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 29;
+				CURRENT_PROJECT_VERSION = 30;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.26;
+				MARKETING_VERSION = 0.4.27;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;

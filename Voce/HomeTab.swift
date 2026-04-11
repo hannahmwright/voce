@@ -5,6 +5,7 @@ import VoceKit
 struct HomeTab: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     let onOpenTapToTalkSettings: () -> Void
     @State private var expandedIDs: Set<UUID> = []
     @State private var hoveredID: UUID?
@@ -13,27 +14,31 @@ struct HomeTab: View {
     @State private var dismissedPermissionCallouts: Set<PermissionCalloutKind> = []
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Main column
-            VStack(alignment: .leading, spacing: 0) {
-                // Greeting + recording controls
-                VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                    greetingSection
-                    recordingControlsSection
+        GeometryReader { proxy in
+            let layout = HomeLayout.make(for: proxy.size.width)
+
+            HStack(alignment: .top, spacing: 0) {
+                // Main column
+                VStack(alignment: .leading, spacing: 0) {
+                    // Greeting + recording controls
+                    VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                        greetingSection(layout: layout)
+                        recordingControlsSection
+                    }
+                    .padding(.horizontal, layout.mainHorizontalPadding)
+                    .padding(.top, VoceDesign.xl)
+                    .padding(.bottom, VoceDesign.lg)
+
+                    // History
+                    historySection(layout: layout)
                 }
-                .padding(.horizontal, VoceDesign.xl)
-                .padding(.top, VoceDesign.xl)
-                .padding(.bottom, VoceDesign.lg)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                // History
-                historySection
+                // Metrics column (right rail)
+                metricsColumn(layout: layout)
             }
-            .frame(maxWidth: .infinity)
-
-            // Metrics column (right rail)
-            metricsColumn
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             controller.refreshPermissionStatuses()
             dismissedPermissionCallouts = dismissedPermissionCallouts.intersection(Set(missingPermissionCallouts))
@@ -52,23 +57,79 @@ struct HomeTab: View {
 
     // MARK: - Greeting
 
-    private var greetingSection: some View {
-        HStack(spacing: VoceDesign.sm) {
-            Text("Hey \(controller.displayName), tap")
-                .font(VoceDesign.font(size: 22, weight: .semibold))
-                .foregroundStyle(VoceDesign.textPrimary)
+    private func greetingSection(layout: HomeLayout) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: VoceDesign.sm) {
+                greetingLeadingText(fontSize: layout.greetingFontSize)
 
-            Button(action: onOpenTapToTalkSettings) {
-                hotkeyBadge(controller.tapToTalkHotkeyLabel)
+                hotkeyButton
+
+                greetingTrailingText(fontSize: layout.greetingFontSize)
+
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Edit tap to talk shortcut")
-            .accessibilityHint("Opens recording settings for the tap to talk shortcut")
 
-            Text("to talk")
-                .font(VoceDesign.font(size: 22, weight: .semibold))
-                .foregroundStyle(VoceDesign.textPrimary)
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                greetingLeadingText(fontSize: layout.greetingFontSize)
+
+                HStack(spacing: VoceDesign.sm) {
+                    hotkeyButton
+                    greetingTrailingText(fontSize: layout.greetingFontSize)
+                }
+            }
         }
+    }
+
+    private func backdropBanner(height: CGFloat) -> some View {
+        GeometryReader { proxy in
+            Image("RecordBackground")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(
+                    width: proxy.size.width,
+                    height: proxy.size.height + bannerVerticalOverflow
+                )
+                .offset(y: bannerVerticalOffset)
+        }
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .overlay {
+                LinearGradient(
+                    colors: colorScheme == .dark
+                        ? [
+                            Color.black.opacity(0.18),
+                            Color.clear,
+                            VoceDesign.windowBackground.opacity(0.12)
+                        ]
+                        : [
+                            Color.white.opacity(0.04),
+                            Color.clear,
+                            VoceDesign.sage.opacity(0.10)
+                        ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .stroke(
+                        colorScheme == .dark
+                            ? Color.white.opacity(0.10)
+                            : Color.black.opacity(0.06),
+                        lineWidth: VoceDesign.borderThin
+                    )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
+            .shadowStyle(.sm)
+            .accessibilityHidden(true)
+    }
+
+    private var bannerVerticalOffset: CGFloat {
+        colorScheme == .light ? 56 : 0
+    }
+
+    private var bannerVerticalOverflow: CGFloat {
+        abs(bannerVerticalOffset) * 2
     }
 
     // MARK: - Recording Controls
@@ -140,83 +201,135 @@ struct HomeTab: View {
 
     // MARK: - Metrics Column (right rail)
 
-    private var metricsColumn: some View {
+    private func metricsColumn(layout: HomeLayout) -> some View {
         VStack(spacing: 0) {
-            // Detached metrics card
-            VStack(alignment: .leading, spacing: VoceDesign.lg) {
-                metricRow(
-                    value: "\(controller.totalWordsDictated)",
-                    label: "total words"
-                )
-                metricRow(
-                    value: controller.wordsPerMinute > 0 ? "\(controller.wordsPerMinute)" : "--",
-                    label: "wpm"
-                )
-                metricRow(
-                    value: "\(controller.daysUsed)",
-                    label: controller.daysUsed == 1 ? "day" : "days"
-                )
-            }
-            .padding(VoceDesign.lg)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                    .fill(VoceDesign.contentBackground)
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
-            )
-            .shadowStyle(.sm)
-            .padding(VoceDesign.md)
-            .padding(.top, VoceDesign.lg)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 0) {
+                    // Metrics card
+                    VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                        metricRow(
+                            value: formattedMetricValue(controller.wordsDictatedToday),
+                            title: "Today",
+                            unit: controller.wordsDictatedToday == 1 ? "word" : "words"
+                        )
+                        metricRow(
+                            value: formattedMetricValue(controller.currentUsageStreak),
+                            title: "Streak",
+                            unit: controller.currentUsageStreak == 1 ? "day" : "days"
+                        )
+                        metricRow(
+                            value: formattedMetricValue(controller.totalWordsDictated),
+                            title: "Lifetime",
+                            unit: "words"
+                        )
+                    }
+                    .padding(VoceDesign.md)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                            .fill(VoceDesign.contentBackground)
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                            .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                    )
+                    .shadowStyle(.sm)
+                    .padding(VoceDesign.md)
+                    .padding(.top, VoceDesign.lg)
 
-            if !visiblePermissionCallouts.isEmpty {
-                VStack(spacing: VoceDesign.sm) {
-                    ForEach(visiblePermissionCallouts, id: \.self) { kind in
-                        permissionBannerView(kind)
+                    if !visiblePermissionCallouts.isEmpty {
+                        VStack(spacing: VoceDesign.sm) {
+                            ForEach(visiblePermissionCallouts, id: \.self) { kind in
+                                permissionBannerView(kind)
+                            }
+                        }
+                        .padding(.horizontal, VoceDesign.md)
+                        .padding(.bottom, VoceDesign.md)
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .move(edge: .top).combined(with: .opacity)
+                        )
+                    }
+
+                    if showErrorBanner {
+                        genericErrorBannerView
+                            .padding(.horizontal, VoceDesign.md)
+                            .padding(.bottom, VoceDesign.md)
+                            .transition(
+                                reduceMotion
+                                    ? .opacity
+                                    : .move(edge: .top).combined(with: .opacity)
+                            )
                     }
                 }
-                .padding(.horizontal, VoceDesign.md)
-                .padding(.bottom, VoceDesign.md)
-                .transition(
-                    reduceMotion
-                        ? .opacity
-                        : .move(edge: .top).combined(with: .opacity)
-                )
+                .frame(maxWidth: .infinity, alignment: .top)
             }
-
-            if showErrorBanner {
-                genericErrorBannerView
-                    .padding(.horizontal, VoceDesign.md)
-                    .padding(.bottom, VoceDesign.md)
-                    .transition(
-                        reduceMotion
-                            ? .opacity
-                            : .move(edge: .top).combined(with: .opacity)
-                    )
-            }
-
-            Spacer()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 200)
+        .frame(width: layout.metricsColumnWidth)
+        .frame(maxHeight: .infinity, alignment: .top)
         .background {
             Rectangle()
                 .fill(.ultraThinMaterial)
         }
     }
 
-    private func metricRow(value: String, label: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: VoceDesign.sm) {
-            Text(value)
-                .font(VoceDesign.font(size: 26, weight: .bold))
-                .foregroundStyle(VoceDesign.textPrimary)
+    private var hotkeyButton: some View {
+        Button(action: onOpenTapToTalkSettings) {
+            hotkeyBadge(controller.tapToTalkHotkeyLabel)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Edit tap to talk shortcut")
+        .accessibilityHint("Opens recording settings for the tap to talk shortcut")
+    }
 
-            Text(label)
-                .font(VoceDesign.font(size: 13))
+    private func greetingLeadingText(fontSize: CGFloat) -> some View {
+        Text("Hey \(controller.displayName), tap")
+            .font(VoceDesign.font(size: fontSize, weight: .semibold))
+            .foregroundStyle(VoceDesign.textPrimary)
+            .minimumScaleFactor(0.9)
+            .lineLimit(1)
+    }
+
+    private func greetingTrailingText(fontSize: CGFloat) -> some View {
+        Text("to talk")
+            .font(VoceDesign.font(size: fontSize, weight: .semibold))
+            .foregroundStyle(VoceDesign.textPrimary)
+            .minimumScaleFactor(0.9)
+            .lineLimit(1)
+    }
+
+    private func metricRow(value: String, title: String, unit: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Text(title)
+                .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
+                .frame(width: 52, alignment: .leading)
+
+            Text(value)
+                .font(VoceDesign.font(size: 20, weight: .bold))
+                .foregroundStyle(VoceDesign.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Text(" \(unit)")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, VoceDesign.sm)
+        .padding(.vertical, VoceDesign.xs + 1)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.4))
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private func formattedMetricValue(_ value: Int) -> String {
+        value.formatted(.number.grouping(.automatic))
     }
 
     // MARK: - Hotkey Badge (warm color from backdrop palette)
@@ -278,7 +391,7 @@ struct HomeTab: View {
 
     // MARK: - History
 
-    private var historySection: some View {
+    private func historySection(layout: HomeLayout) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             if controller.recentEntries.isEmpty {
                 Spacer()
@@ -295,8 +408,12 @@ struct HomeTab: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
+                        backdropBanner(height: layout.bannerHeight)
+                            .padding(.horizontal, layout.mainHorizontalPadding)
+                            .padding(.bottom, VoceDesign.lg)
+
                         ForEach(groupedEntries, id: \.label) { group in
-                            dayTable(group)
+                            dayTable(group, layout: layout)
                         }
                     }
                     .padding(.bottom, VoceDesign.xl)
@@ -307,7 +424,7 @@ struct HomeTab: View {
     }
 
     /// Each day rendered as its own "table" — header + divider-separated rows
-    private func dayTable(_ group: HomeDayGroup) -> some View {
+    private func dayTable(_ group: HomeDayGroup, layout: HomeLayout) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Day header
             Text(group.label.uppercased())
@@ -323,17 +440,17 @@ struct HomeTab: View {
             ForEach(Array(group.entries.enumerated()), id: \.element.id) { index, entry in
                 if index > 0 {
                     Divider()
-                        .padding(.leading, 90 + VoceDesign.xl)
+                        .padding(.leading, layout.timestampColumnWidth + VoceDesign.lg + VoceDesign.xl)
                         .padding(.trailing, VoceDesign.xl)
                 }
-                entryRow(entry)
+                entryRow(entry, layout: layout)
             }
         }
     }
 
     // MARK: - Entry Row
 
-    private func entryRow(_ entry: TranscriptEntry) -> some View {
+    private func entryRow(_ entry: TranscriptEntry, layout: HomeLayout) -> some View {
         let isExpanded = expandedIDs.contains(entry.id)
         let showsAISections = (entry.sourceText?.isEmpty == false) && entry.aiWorkflowName != nil
 
@@ -362,7 +479,7 @@ struct HomeTab: View {
                     .transition(AnyTransition.opacity)
                 }
             }
-            .frame(width: 70, alignment: .leading)
+            .frame(width: layout.timestampColumnWidth, alignment: .leading)
             .animation(.easeInOut(duration: VoceDesign.animationFast), value: hoveredID == entry.id)
 
             // Transcript text
@@ -758,4 +875,23 @@ struct HomeTab: View {
 private struct HomeDayGroup {
     let label: String
     let entries: [TranscriptEntry]
+}
+
+private struct HomeLayout {
+    let mainHorizontalPadding: CGFloat
+    let metricsColumnWidth: CGFloat
+    let timestampColumnWidth: CGFloat
+    let greetingFontSize: CGFloat
+    let bannerHeight: CGFloat
+
+    static func make(for totalWidth: CGFloat) -> HomeLayout {
+        let compact = totalWidth < 980
+        return HomeLayout(
+            mainHorizontalPadding: compact ? VoceDesign.lg : VoceDesign.xl,
+            metricsColumnWidth: 200,
+            timestampColumnWidth: compact ? 60 : 70,
+            greetingFontSize: compact ? 20 : 22,
+            bannerHeight: compact ? 220 : 300
+        )
+    }
 }

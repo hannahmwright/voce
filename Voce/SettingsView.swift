@@ -16,38 +16,55 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Title bar
-            HStack(alignment: .center) {
-                Text("Settings")
-                    .font(VoceDesign.font(size: 22, weight: .bold))
-                    .foregroundStyle(VoceDesign.textPrimary)
+        GeometryReader { geometry in
+            let isCompactHeight = geometry.size.height < 520
+            let isCompactWidth = geometry.size.width < 640
+            let chromePadding = isCompactHeight ? VoceDesign.md : VoceDesign.lg
+            let shellPadding = isCompactWidth ? VoceDesign.md : VoceDesign.lg
 
-                Spacer()
+            VStack(spacing: 0) {
+                HStack(alignment: .center) {
+                    Button {
+                        closeSettings()
+                    } label: {
+                        Label("Back", systemImage: "chevron.left")
+                            .font(VoceDesign.font(size: 13, weight: .semibold))
+                            .foregroundStyle(VoceDesign.textPrimary)
+                            .padding(.horizontal, VoceDesign.md)
+                            .padding(.vertical, VoceDesign.sm)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(VoceDesign.surface.opacity(0.58))
+                                    .overlay(
+                                        Capsule(style: .continuous)
+                                            .stroke(Color.white.opacity(0.22), lineWidth: VoceDesign.borderThin)
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.escape, modifiers: [])
+                    .accessibilityLabel("Back")
 
-                Button {
-                    closeSettings()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(VoceDesign.textSecondary)
+                    Text("Settings")
+                        .font(VoceDesign.font(size: isCompactHeight ? 20 : 22, weight: .bold))
+                        .foregroundStyle(VoceDesign.textPrimary)
+
+                    Spacer()
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close settings")
-            }
-            .padding(.horizontal, VoceDesign.xl)
-            .padding(.top, VoceDesign.lg)
-            .padding(.bottom, VoceDesign.md)
+                .padding(.horizontal, isCompactWidth ? chromePadding : VoceDesign.xl)
+                .padding(.top, chromePadding)
+                .padding(.bottom, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
 
-            // Two-pane layout
-            HStack(alignment: .top, spacing: VoceDesign.lg) {
-                sidebar
-                contentPane
+                topTabBar(isCompactHeight: isCompactHeight)
+                .padding(.horizontal, shellPadding)
+                .padding(.bottom, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
+
+                contentPane(isCompactHeight: isCompactHeight)
+                    .padding(.horizontal, shellPadding)
+                    .padding(.bottom, chromePadding)
             }
-            .padding(.horizontal, VoceDesign.lg)
-            .padding(.bottom, VoceDesign.lg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(VoceDesign.windowBackground)
         .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .overlay(
@@ -83,38 +100,40 @@ struct SettingsView: View {
         }
     }
 
-    private var sidebar: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            ForEach(visibleGroups, id: \.self) { group in
-                sidebarButton(for: group)
+    private func topTabBar(isCompactHeight: Bool) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: VoceDesign.sm) {
+                ForEach(visibleGroups, id: \.self) { group in
+                    topTabButton(for: group, isCompactHeight: isCompactHeight)
+                }
             }
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(VoceDesign.md)
-        .frame(width: 200, alignment: .topLeading)
+        .padding(.horizontal, isCompactHeight ? VoceDesign.xs : VoceDesign.sm)
+        .padding(.vertical, isCompactHeight ? VoceDesign.xs : VoceDesign.sm)
         .background {
-            RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
-                .fill(VoceDesign.surface.opacity(0.58))
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.52))
                 .overlay(
-                    RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
-                        .fill(.ultraThinMaterial.opacity(0.28))
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(0.26))
                 )
         }
         .overlay(
-            RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
-                .stroke(Color.white.opacity(0.32), lineWidth: VoceDesign.borderThin)
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(Color.white.opacity(0.28), lineWidth: VoceDesign.borderThin)
         )
-        .shadowStyle(.md)
     }
 
-    private func sidebarButton(for group: SettingsGroup) -> some View {
+    private func topTabButton(for group: SettingsGroup, isCompactHeight: Bool) -> some View {
         Button {
+            guard selectedGroup != group else { return }
             selectedGroup = group
         } label: {
-            SettingsSidebarButtonLabel(
+            SettingsTopTabButtonLabel(
                 group: group,
-                isSelected: selectedGroup == group
+                isSelected: selectedGroup == group,
+                isCompactHeight: isCompactHeight
             )
         }
         .buttonStyle(.plain)
@@ -122,19 +141,25 @@ struct SettingsView: View {
         .accessibilityValue(selectedGroup == group ? "Selected" : "")
     }
 
-    private var contentPane: some View {
+    private func contentPane(isCompactHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
-            contentHeader
+            contentHeader(isCompactHeight: isCompactHeight)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                    groupContent(selectedGroup)
+            ZStack(alignment: .topLeading) {
+                ForEach(visibleGroups, id: \.self) { group in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: VoceDesign.sm) {
+                            groupContent(group)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, VoceDesign.xs)
+                    }
+                    .scrollIndicators(.visible)
+                    .settingsGroupVisibility(selectedGroup == group)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, VoceDesign.xs)
             }
         }
-        .padding(VoceDesign.lg)
+        .padding(isCompactHeight ? VoceDesign.md : VoceDesign.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -151,13 +176,17 @@ struct SettingsView: View {
         .shadowStyle(.md)
     }
 
-    private var contentHeader: some View {
+    private func contentHeader(isCompactHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
             Text(selectedGroup.title)
-                .font(VoceDesign.font(size: 24, weight: .bold))
+                .font(VoceDesign.font(size: isCompactHeight ? 22 : 24, weight: .bold))
                 .foregroundStyle(VoceDesign.textPrimary)
+
+            Text(selectedGroup.subtitle)
+                .font(VoceDesign.body())
+                .foregroundStyle(VoceDesign.textSecondary)
         }
-        .padding(.bottom, VoceDesign.xs)
+        .padding(.bottom, isCompactHeight ? 0 : VoceDesign.xs)
     }
 
     private var visibleGroups: [SettingsGroup] {
@@ -276,48 +305,60 @@ private enum SettingsGroup: String, CaseIterable {
     }
 }
 
-private struct SettingsSidebarButtonLabel: View {
+private struct SettingsTopTabButtonLabel: View {
     let group: SettingsGroup
     let isSelected: Bool
+    let isCompactHeight: Bool
 
     var body: some View {
-        HStack(spacing: VoceDesign.md) {
+        HStack(spacing: VoceDesign.sm) {
             Image(systemName: group.icon)
                 .font(.system(size: VoceDesign.iconMD, weight: .semibold))
                 .foregroundStyle(isSelected ? VoceDesign.accent : VoceDesign.textSecondary)
-                .frame(width: 18)
+                .frame(width: 16)
 
-            VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-                Text(group.title)
-                    .font(VoceDesign.font(size: 14, weight: .semibold))
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                Text(group.subtitle)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-                    .lineLimit(2)
-            }
-
-            Spacer(minLength: 0)
+            Text(group.title)
+                .font(VoceDesign.font(size: 13, weight: .semibold))
+                .foregroundStyle(VoceDesign.textPrimary)
+                .lineLimit(1)
         }
-        .padding(.horizontal, VoceDesign.md)
-        .padding(.vertical, VoceDesign.md)
+        .padding(.horizontal, isCompactHeight ? VoceDesign.md : VoceDesign.lg)
+        .padding(.vertical, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
         .background {
-            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+            Capsule(style: .continuous)
                 .fill(isSelected ? VoceDesign.accent.opacity(0.10) : Color.clear)
                 .overlay {
                     if isSelected {
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        Capsule(style: .continuous)
                             .fill(.regularMaterial.opacity(0.30))
                     }
                 }
         }
         .overlay(
-            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+            Capsule(style: .continuous)
                 .stroke(
                     isSelected ? VoceDesign.accent.opacity(0.25) : Color.clear,
                     lineWidth: VoceDesign.borderThin
                 )
         )
+    }
+}
+
+private struct SettingsGroupVisibilityModifier: ViewModifier {
+    let isVisible: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
+            .zIndex(isVisible ? 1 : 0)
+    }
+}
+
+private extension View {
+    func settingsGroupVisibility(_ isVisible: Bool) -> some View {
+        modifier(SettingsGroupVisibilityModifier(isVisible: isVisible))
     }
 }
