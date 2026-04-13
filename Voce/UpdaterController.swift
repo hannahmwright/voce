@@ -28,6 +28,16 @@ final class UpdaterController: NSObject, ObservableObject {
             guard let self else { return }
             self.updaterController.startUpdater()
             self.refreshUpdaterState()
+
+            // Force a launch-time check for users who just installed an update,
+            // since Sparkle's persisted last-check timestamp can otherwise defer
+            // discovering the next available version until the scheduled interval.
+            // Sparkle recommends doing this immediately after starting the updater
+            // and only when automatic update checks are enabled.
+            let updater = self.updaterController.updater
+            if updater.automaticallyChecksForUpdates && !updater.sessionInProgress {
+                updater.checkForUpdatesInBackground()
+            }
         }
     }
 

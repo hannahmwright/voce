@@ -488,6 +488,9 @@ final class DictationController: ObservableObject {
             suppressNextPressToTalkStop = false
             return
         }
+        if preferences.hotkeys.enterFinishesHandsFreeAndSubmits {
+            pendingCompletionActionOverride = .insertAndSubmit
+        }
         apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
     }
 
@@ -1119,6 +1122,15 @@ final class DictationController: ObservableObject {
         hotkey.aiWorkflowFinishHotkeys = newValue.ai.workflows.compactMap(\.handsFreeFinishHotkey)
         updateActiveRecordingHotkeys()
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
+
+        switch newValue.general.appearancePreference {
+        case .dark:
+            overlay.prefersDarkAppearance = true
+        case .light:
+            overlay.prefersDarkAppearance = false
+        case .system:
+            overlay.prefersDarkAppearance = nil
+        }
     }
 
     private func rebuildRuntimeOrDefer(announceImmediateSave: Bool) async {

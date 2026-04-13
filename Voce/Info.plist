@@ -32,6 +32,8 @@
 	<true/>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>14400</integer>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/hannahmwright/voce/main/appcast.xml</string>
 	<key>SUPublicEDKey</key>

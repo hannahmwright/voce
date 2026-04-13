@@ -90,6 +90,12 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var processingBoundaryObserver: Any?
     private var processingTimeObserver: Any?
 
+    /// When non-nil, overrides the overlay window's own effective appearance
+    /// for choosing the processing video (light vs dark).  Set this to the
+    /// app-level dark-mode preference so the overlay stays in sync even though
+    /// it lives in a standalone NSPanel outside the SwiftUI view hierarchy.
+    public var prefersDarkAppearance: Bool?
+
     /// Called when the user finishes dragging the overlay to a new position.
     /// Provides the window origin so the caller can persist it per-app.
     public var onUserDraggedToPosition: ((NSPoint) -> Void)?
@@ -856,6 +862,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private var prefersDarkProcessingVideo: Bool {
+        if let override = prefersDarkAppearance {
+            return override
+        }
         let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
         return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
