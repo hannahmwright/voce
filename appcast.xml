@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.28</title>
+      <sparkle:version>31</sparkle:version>
+      <sparkle:shortVersionString>0.4.28</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.28</h2>
+        <ul>
+          <li>Adds a shorter scheduled Sparkle update interval and an automatic launch-time update check after the updater starts</li>
+          <li>Keeps hold-to-talk completion aligned with the setting that inserts and submits finished dictation</li>
+          <li>Keeps the processing overlay's light and dark animation in sync with the app appearance preference</li>
+        </ul>
+      ]]></description>
+      <pubDate>Mon, 13 Apr 2026 02:46:44 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.28/Voce-0.4.28.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="+ly80zJ9X+SSaHU541IKNJ5tUnQocphetmB5eEhZ8KmRsQLuZMY5pT2N+9fT9S8XC9n3AF4qFhR/1I6/+i1BDw=="
+        length="16876754"
+      />
+    </item>
+    <item>
       <title>Version 0.4.27</title>
       <sparkle:version>30</sparkle:version>
       <sparkle:shortVersionString>0.4.27</sparkle:shortVersionString>
