@@ -27,6 +27,176 @@ private extension NSBezierPath {
     }
 }
 
+private final class OverlayPassThroughView: NSView {
+    weak var interactiveView: NSView?
+    var acceptsBubbleInteraction = false
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard acceptsBubbleInteraction,
+              let interactiveView else {
+            return nil
+        }
+
+        let convertedPoint = interactiveView.convert(point, from: self)
+        guard interactiveView.bounds.contains(convertedPoint) else {
+            return nil
+        }
+
+        return super.hitTest(point)
+    }
+}
+
+@MainActor
+private final class BubbleControlMenuButton: NSButton {
+    private let normalBackgroundColor: NSColor
+    private let hoverBackgroundColor: NSColor
+    private let pressedBackgroundColor: NSColor
+    private let borderColor: NSColor
+    private let titleColor: NSColor
+    private let iconColor: NSColor
+    private let buttonFont: NSFont
+    private let buttonTitle: String
+    private let onClick: @MainActor () -> Void
+    private let iconView = NSImageView()
+    private let titleField = NSTextField(labelWithString: "")
+    private let contentStack = NSStackView()
+
+    private var trackingArea: NSTrackingArea?
+    private var isHovering = false
+
+    init(
+        title: String,
+        symbolName: String,
+        font: NSFont,
+        titleColor: NSColor,
+        iconColor: NSColor,
+        backgroundColor: NSColor,
+        hoverBackgroundColor: NSColor,
+        pressedBackgroundColor: NSColor,
+        borderColor: NSColor,
+        onClick: @escaping @MainActor () -> Void
+    ) {
+        self.normalBackgroundColor = backgroundColor
+        self.hoverBackgroundColor = hoverBackgroundColor
+        self.pressedBackgroundColor = pressedBackgroundColor
+        self.borderColor = borderColor
+        self.titleColor = titleColor
+        self.iconColor = iconColor
+        self.buttonFont = font
+        self.buttonTitle = title
+        self.onClick = onClick
+        super.init(frame: .zero)
+
+        setButtonType(.momentaryChange)
+        isBordered = false
+        focusRingType = .none
+        bezelStyle = .regularSquare
+        self.title = ""
+        self.image = nil
+        target = self
+        action = #selector(handleClick)
+        sendAction(on: [.leftMouseDown])
+
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.borderWidth = 0.5
+
+        translatesAutoresizingMaskIntoConstraints = false
+
+        iconView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        titleField.lineBreakMode = .byTruncatingTail
+        titleField.maximumNumberOfLines = 1
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .centerY
+        contentStack.distribution = .fill
+        contentStack.spacing = 10
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.addArrangedSubview(iconView)
+        contentStack.addArrangedSubview(titleField)
+        addSubview(contentStack)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 38),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
+            contentStack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            contentStack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            contentStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        updateTitle()
+        updateAppearance()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        trackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovering = true
+        updateAppearance()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovering = false
+        updateAppearance()
+    }
+
+    override var isHighlighted: Bool {
+        didSet {
+            updateAppearance()
+        }
+    }
+
+    @objc
+    private func handleClick() {
+        onClick()
+    }
+
+    private func updateTitle() {
+        titleField.stringValue = buttonTitle
+        titleField.font = buttonFont
+        titleField.textColor = titleColor
+    }
+
+    private func updateAppearance() {
+        let background = isHighlighted
+            ? pressedBackgroundColor
+            : (isHovering ? hoverBackgroundColor : normalBackgroundColor)
+        layer?.backgroundColor = background.cgColor
+        layer?.borderColor = borderColor.cgColor
+        iconView.contentTintColor = iconColor
+        updateTitle()
+    }
+}
+
 @MainActor
 public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private enum LayoutMode {
@@ -55,6 +225,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private var window: NSWindow?
+    private var hitTestCanvasView: OverlayPassThroughView?
     private var containerView: NSView?
     private var glassHostView: NSView?
     private var backgroundImageLayer: CALayer?
@@ -89,12 +260,19 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var processingPlayerURL: URL?
     private var processingBoundaryObserver: Any?
     private var processingTimeObserver: Any?
+    private var bubbleControlsEnabled = false
+    private var controlMenuWindow: NSPanel?
+    private var controlMenuLocalEventMonitor: Any?
+    private var controlMenuGlobalEventMonitor: Any?
 
     /// When non-nil, overrides the overlay window's own effective appearance
     /// for choosing the processing video (light vs dark).  Set this to the
     /// app-level dark-mode preference so the overlay stays in sync even though
     /// it lives in a standalone NSPanel outside the SwiftUI view hierarchy.
     public var prefersDarkAppearance: Bool?
+    public var controlWorkflows: [AIWorkflow] = []
+    public var onStopRequested: (() -> Void)?
+    public var onAIWorkflowRequested: ((UUID) -> Void)?
 
     /// Called when the user finishes dragging the overlay to a new position.
     /// Provides the window origin so the caller can persist it per-app.
@@ -105,9 +283,35 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private static let accentCyan = NSColor(red: 0.62, green: 0.78, blue: 0.90, alpha: 1.0)    // sky blue
     private static let accentLavender = NSColor(red: 0.72, green: 0.70, blue: 0.84, alpha: 1.0) // lavender haze
     private static let accentWheat = NSColor(red: 0.82, green: 0.74, blue: 0.52, alpha: 1.0)   // golden wheat
+    private static let warmAccentFill = NSColor(red: 0.84, green: 0.89, blue: 0.76, alpha: 1.0)
+    private static let warmAccentText = NSColor(red: 0.27, green: 0.34, blue: 0.19, alpha: 1.0)
     private static let compactCornerRadius: CGFloat = 26
     private static let transcriptCornerRadius: CGFloat = 30
     private static let initialTranscriptShellHeight: CGFloat = 78
+
+    private static func menuTextPrimaryColor(dark: Bool) -> NSColor {
+        dark
+            ? NSColor(red: 0.93, green: 0.94, blue: 0.95, alpha: 1.0)
+            : NSColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1.0)
+    }
+
+    private static func menuSurfaceColor(dark: Bool) -> NSColor {
+        dark
+            ? NSColor(red: 0.18, green: 0.19, blue: 0.21, alpha: 0.90)
+            : NSColor.white.withAlphaComponent(0.84)
+    }
+
+    private static func menuSurfaceSecondaryColor(dark: Bool) -> NSColor {
+        dark
+            ? NSColor(red: 0.21, green: 0.22, blue: 0.24, alpha: 0.88)
+            : NSColor.white.withAlphaComponent(0.80)
+    }
+
+    private static func menuBorderColor(dark: Bool) -> NSColor {
+        dark
+            ? NSColor.white.withAlphaComponent(0.10)
+            : NSColor.black.withAlphaComponent(0.06)
+    }
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -167,7 +371,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         repositionModeTask?.cancel()
         repositionModeEnabled = true
         sessionPinnedOrigin = window.frame.origin
-        window.ignoresMouseEvents = false
+        hitTestCanvasView?.acceptsBubbleInteraction = true
         window.isMovableByWindowBackground = true
 
         repositionModeTask = Task { @MainActor [weak self] in
@@ -185,6 +389,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         switch state {
         case .listening(let handsFree, _):
+            setBubbleControlsEnabled(true)
             listeningHandsFree = handsFree
             listeningStartDate = Date()
             lastLiveTranscriptText = ""
@@ -194,16 +399,19 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             showCompactVideoBadge()
 
         case .liveTranscript(let text, _):
+            setBubbleControlsEnabled(true)
             stopTimer()
             lastLiveTranscriptText = text
             hasShownLiveTranscriptInSession = true
             showCompactVideoBadge()
 
         case .transcribing:
+            setBubbleControlsEnabled(false)
             stopTimer()
             showCompactVideoBadge()
 
         case .inserted:
+            setBubbleControlsEnabled(false)
             applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
@@ -213,6 +421,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             playSuccessBounce()
 
         case .copiedOnly:
+            setBubbleControlsEnabled(false)
             applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
@@ -221,6 +430,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             resetBorderToAccent()
 
         case .failure:
+            setBubbleControlsEnabled(false)
             applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
@@ -272,6 +482,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         endInteractiveRepositionMode(notify: false)
         notifyDragIfNeeded()
         userDraggedPosition = nil
+        setBubbleControlsEnabled(false)
 
         guard !reduceMotion else {
             window?.orderOut(nil)
@@ -311,6 +522,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         endInteractiveRepositionMode(notify: false)
         notifyDragIfNeeded()
         userDraggedPosition = nil
+        setBubbleControlsEnabled(false)
 
         if !reduceMotion {
             // Exit: fade out + subtle scale down without shifting position.
@@ -354,13 +566,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         panel.backgroundColor = .clear
         panel.level = .statusBar
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true
+        panel.ignoresMouseEvents = false
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        let canvas = NSView(frame: contentRect)
+        let canvas = OverlayPassThroughView(frame: contentRect)
         canvas.wantsLayer = true
         canvas.layer?.backgroundColor = NSColor.clear.cgColor
+        self.hitTestCanvasView = canvas
 
         let bubbleRect = CGRect(
             x: Self.windowPadding,
@@ -374,6 +587,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         container.layer?.cornerRadius = Self.compactCornerRadius
         container.layer?.masksToBounds = false
         self.containerView = container
+        canvas.interactiveView = container
 
         // Soft atmospheric glow behind the pill.
         let auraPrimary = CAGradientLayer()
@@ -413,10 +627,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassHost.layer?.masksToBounds = true
         glassHost.layer?.borderWidth = 0.5
         glassHost.layer?.borderColor = NSColor.white.withAlphaComponent(0.50).cgColor
+        let clickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(handleBubbleControlClick(_:)))
+        clickRecognizer.buttonMask = 0x1
+        glassHost.addGestureRecognizer(clickRecognizer)
 
         // Background painting — blurred, bright, airy like the app window.
         let imageLayer = CALayer()
-        if let cgImage = Self.loadBlurredBackgroundImage() {
+        if let cgImage = Self.loadBlurredBackgroundImage(isDark: prefersDarkProcessingVideo) {
             imageLayer.contents = cgImage
             imageLayer.contentsGravity = .resizeAspectFill
             imageLayer.minificationFilter = .trilinear
@@ -429,7 +646,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         self.backgroundImageLayer = imageLayer
 
         let revealedImageLayer = CALayer()
-        if let cgImage = Self.loadBackgroundCGImage() {
+        if let cgImage = Self.loadBackgroundCGImage(isDark: prefersDarkProcessingVideo) {
             revealedImageLayer.contents = cgImage
             revealedImageLayer.contentsGravity = .resizeAspectFill
             revealedImageLayer.minificationFilter = .trilinear
@@ -757,6 +974,430 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         resetBorderToAccent()
         applyTranscribingSurfaceAppearance()
         startTranscribingPulse()
+    }
+
+    private func setBubbleControlsEnabled(_ enabled: Bool) {
+        bubbleControlsEnabled = enabled
+        hitTestCanvasView?.acceptsBubbleInteraction = enabled || repositionModeEnabled
+        if !enabled {
+            hideBubbleControlMenu(animated: false)
+        }
+    }
+
+    @objc
+    private func handleBubbleControlClick(_ recognizer: NSClickGestureRecognizer) {
+        guard recognizer.state == .ended,
+              bubbleControlsEnabled,
+              !repositionModeEnabled else {
+            return
+        }
+
+        if controlMenuWindow?.isVisible == true {
+            hideBubbleControlMenu(animated: true)
+        } else {
+            showBubbleControlMenu()
+        }
+    }
+
+    private func showBubbleControlMenu() {
+        guard let window,
+              let glassHostView else { return }
+
+        hideBubbleControlMenu(animated: false)
+
+        let enabledWorkflows = controlWorkflows.filter(\.isEnabled)
+        let panelWidth: CGFloat = min(max(currentBubbleSize.width, 268), 324)
+        let contentView = makeBubbleControlMenuView(width: panelWidth, workflows: enabledWorkflows)
+        contentView.layoutSubtreeIfNeeded()
+        let panelSize = NSSize(width: panelWidth, height: max(contentView.fittingSize.height, 104))
+
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: panelSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isFloatingPanel = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        panel.contentView = contentView
+
+        let bubbleInWindow = glassHostView.convert(glassHostView.bounds, to: nil)
+        let bubbleScreenRect = window.convertToScreen(bubbleInWindow)
+        let finalFrame = controlMenuFrame(
+            size: panelSize,
+            bubbleScreenRect: bubbleScreenRect,
+            screen: window.screen
+        )
+        let startFrame = finalFrame.offsetBy(dx: 0, dy: -10)
+
+        controlMenuWindow = panel
+        installBubbleControlMenuEventMonitors()
+        window.addChildWindow(panel, ordered: .above)
+
+        panel.alphaValue = 0
+        panel.setFrame(startFrame, display: false)
+        panel.orderFront(nil)
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.01 : 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+            panel.animator().setFrame(finalFrame, display: true)
+        }
+    }
+
+    private func handleStopDictationButton() {
+        hideBubbleControlMenu(animated: true)
+        onStopRequested?()
+    }
+
+    private func handleAIWorkflowButton(workflowID: UUID) {
+        hideBubbleControlMenu(animated: true)
+        onAIWorkflowRequested?(workflowID)
+    }
+
+    private var isDarkAppearance: Bool {
+        if let override = prefersDarkAppearance {
+            return override
+        }
+
+        let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+        return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    private func makeBubbleControlMenuView(width: CGFloat, workflows: [AIWorkflow]) -> NSView {
+        let dark = isDarkAppearance
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 1))
+        root.translatesAutoresizingMaskIntoConstraints = false
+        root.wantsLayer = true
+        root.layer?.cornerRadius = 18
+        root.layer?.masksToBounds = true
+        root.widthAnchor.constraint(equalToConstant: width).isActive = true
+
+        let menuSize = NSSize(width: width, height: 220)
+        let imageLayer = CALayer()
+        if let cgImage = Self.loadBackgroundCGImage(isDark: dark) {
+            imageLayer.contents = cgImage
+            imageLayer.contentsGravity = .resizeAspectFill
+            imageLayer.minificationFilter = .trilinear
+            imageLayer.magnificationFilter = .trilinear
+            imageLayer.opacity = dark ? 0.50 : 0.72
+        }
+        imageLayer.frame = CGRect(origin: .zero, size: menuSize)
+        imageLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        root.layer?.addSublayer(imageLayer)
+
+        let backdropWash = CAGradientLayer()
+        backdropWash.colors = dark
+            ? [
+                NSColor(calibratedWhite: 0.10, alpha: 0.36).cgColor,
+                NSColor(calibratedWhite: 0.06, alpha: 0.18).cgColor,
+                Self.accentWheat.withAlphaComponent(0.10).cgColor,
+            ]
+            : [
+                NSColor.white.withAlphaComponent(0.12).cgColor,
+                NSColor.white.withAlphaComponent(0.03).cgColor,
+                Self.accentWheat.withAlphaComponent(0.10).cgColor,
+            ]
+        backdropWash.startPoint = CGPoint(x: 0, y: 1)
+        backdropWash.endPoint = CGPoint(x: 1, y: 0)
+        backdropWash.frame = CGRect(origin: .zero, size: menuSize)
+        backdropWash.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        root.layer?.addSublayer(backdropWash)
+
+        let chrome = NSView()
+        chrome.translatesAutoresizingMaskIntoConstraints = false
+        chrome.wantsLayer = true
+        chrome.layer?.cornerRadius = 16
+        chrome.layer?.masksToBounds = true
+        chrome.layer?.borderWidth = 0
+        chrome.layer?.borderColor = NSColor.clear.cgColor
+        chrome.layer?.backgroundColor = Self.menuSurfaceColor(dark: dark).cgColor
+        root.addSubview(chrome)
+
+        NSLayoutConstraint.activate([
+            chrome.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            chrome.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            chrome.topAnchor.constraint(equalTo: root.topAnchor, constant: 10),
+            chrome.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -10),
+        ])
+
+        let chromeTint = CAGradientLayer()
+        chromeTint.colors = dark
+            ? [
+                Self.accentCyan.withAlphaComponent(0.08).cgColor,
+                NSColor.white.withAlphaComponent(0.02).cgColor,
+                Self.accentWheat.withAlphaComponent(0.08).cgColor,
+            ]
+            : [
+                Self.accentCyan.withAlphaComponent(0.12).cgColor,
+                NSColor.white.withAlphaComponent(0.10).cgColor,
+                Self.accentWheat.withAlphaComponent(0.12).cgColor,
+            ]
+        chromeTint.startPoint = CGPoint(x: 0, y: 1)
+        chromeTint.endPoint = CGPoint(x: 1, y: 0)
+        chromeTint.frame = CGRect(origin: .zero, size: menuSize)
+        chromeTint.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        chrome.layer?.addSublayer(chromeTint)
+
+        let chromeSheen = CAGradientLayer()
+        chromeSheen.colors = [
+            NSColor.white.withAlphaComponent(dark ? 0.16 : 0.42).cgColor,
+            NSColor.white.withAlphaComponent(dark ? 0.05 : 0.10).cgColor,
+            NSColor.clear.cgColor,
+        ]
+        chromeSheen.locations = [0, 0.22, 1]
+        chromeSheen.startPoint = CGPoint(x: 0.15, y: 1.0)
+        chromeSheen.endPoint = CGPoint(x: 0.85, y: 0.0)
+        chromeSheen.frame = CGRect(origin: .zero, size: menuSize)
+        chromeSheen.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        chrome.layer?.addSublayer(chromeSheen)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.distribution = .fill
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        chrome.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: chrome.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: chrome.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: chrome.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: chrome.bottomAnchor, constant: -16),
+        ])
+
+        if !workflows.isEmpty {
+            let workflowStack = NSStackView()
+            workflowStack.orientation = .vertical
+            workflowStack.alignment = .leading
+            workflowStack.distribution = .fill
+            workflowStack.spacing = 6
+            workflowStack.translatesAutoresizingMaskIntoConstraints = false
+
+            for (index, workflow) in workflows.enumerated() {
+                let button = makeBubbleControlButton(
+                    title: workflow.name,
+                    symbolName: "sparkles",
+                    emphasized: false,
+                    dark: dark
+                ) { [weak self] in
+                    self?.handleAIWorkflowButton(workflowID: workflow.id)
+                }
+                workflowStack.addArrangedSubview(button)
+                NSLayoutConstraint.activate([
+                    button.leadingAnchor.constraint(equalTo: workflowStack.leadingAnchor),
+                    button.trailingAnchor.constraint(equalTo: workflowStack.trailingAnchor),
+                ])
+
+                if index < workflows.count - 1 {
+                    let divider = makeBubbleControlDivider(dark: dark)
+                    workflowStack.addArrangedSubview(divider)
+                    NSLayoutConstraint.activate([
+                        divider.heightAnchor.constraint(equalToConstant: 1),
+                        divider.leadingAnchor.constraint(equalTo: workflowStack.leadingAnchor, constant: 14),
+                        divider.trailingAnchor.constraint(equalTo: workflowStack.trailingAnchor, constant: -14),
+                    ])
+                }
+            }
+
+            stack.addArrangedSubview(workflowStack)
+            NSLayoutConstraint.activate([
+                workflowStack.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+                workflowStack.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+            ])
+        }
+
+        let stopButton = makeBubbleControlButton(
+            title: "Stop dictation",
+            symbolName: "stop.circle.fill",
+            emphasized: true,
+            dark: dark
+        ) { [weak self] in
+            self?.handleStopDictationButton()
+        }
+        stack.addArrangedSubview(stopButton)
+        NSLayoutConstraint.activate([
+            stopButton.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+            stopButton.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+        ])
+
+        return root
+    }
+
+    private func makeBubbleControlButton(
+        title: String,
+        symbolName: String,
+        emphasized: Bool,
+        dark: Bool,
+        onClick: @escaping @MainActor () -> Void
+    ) -> BubbleControlMenuButton {
+        let textColor: NSColor = emphasized
+            ? Self.warmAccentText
+            : Self.menuTextPrimaryColor(dark: dark)
+        let iconColor: NSColor = emphasized
+            ? Self.warmAccentText
+            : (dark ? Self.accentCyan : Self.accentBlue)
+        let backgroundColor: NSColor = emphasized
+            ? Self.warmAccentFill.withAlphaComponent(dark ? 0.88 : 1.0)
+            : .clear
+        let borderColor: NSColor = emphasized
+            ? Self.warmAccentText.withAlphaComponent(0.14)
+            : .clear
+        let hoverBackgroundColor = emphasized
+            ? Self.warmAccentFill.withAlphaComponent(dark ? 0.80 : 0.90)
+            : (dark ? NSColor.white.withAlphaComponent(0.08) : NSColor.black.withAlphaComponent(0.05))
+        let pressedBackgroundColor = emphasized
+            ? Self.warmAccentFill.withAlphaComponent(dark ? 0.72 : 0.82)
+            : (dark ? NSColor.white.withAlphaComponent(0.12) : NSColor.black.withAlphaComponent(0.08))
+
+        return BubbleControlMenuButton(
+            title: title,
+            symbolName: symbolName,
+            font: Self.controlMenuFont(size: 13, weight: emphasized ? .semibold : .medium),
+            titleColor: textColor,
+            iconColor: iconColor,
+            backgroundColor: backgroundColor,
+            hoverBackgroundColor: hoverBackgroundColor,
+            pressedBackgroundColor: pressedBackgroundColor,
+            borderColor: borderColor,
+            onClick: onClick
+        )
+    }
+
+    private func makeBubbleControlDivider(dark: Bool) -> NSView {
+        let divider = NSView()
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.wantsLayer = true
+        divider.layer?.cornerRadius = 0.5
+        divider.layer?.backgroundColor = Self.menuBorderColor(dark: dark)
+            .withAlphaComponent(dark ? 0.34 : 0.12)
+            .cgColor
+        return divider
+    }
+
+    private func makeBubbleControlSectionCard(content: NSStackView, dark: Bool) -> NSView {
+        let card = NSView()
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 12
+        card.layer?.masksToBounds = true
+        card.layer?.borderWidth = 0
+        card.layer?.borderColor = NSColor.clear.cgColor
+        card.layer?.backgroundColor = Self.menuSurfaceSecondaryColor(dark: dark).withAlphaComponent(dark ? 0.72 : 0.78).cgColor
+
+        card.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 4),
+            content.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -4),
+            content.topAnchor.constraint(equalTo: card.topAnchor, constant: 4),
+            content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -4),
+        ])
+
+        return card
+    }
+
+    private static func controlMenuFont(size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        NSFont(name: "Manrope", size: size) ?? .systemFont(ofSize: size, weight: weight)
+    }
+
+    private func controlMenuFrame(
+        size: NSSize,
+        bubbleScreenRect: NSRect,
+        screen: NSScreen?
+    ) -> NSRect {
+        let visibleFrame = screen?.visibleFrame ?? bubbleScreenRect
+        let gap: CGFloat = 12
+        let minX = visibleFrame.minX + 8
+        let maxX = visibleFrame.maxX - size.width - 8
+        let x = min(max(bubbleScreenRect.midX - (size.width / 2), minX), maxX)
+        var y = bubbleScreenRect.maxY + gap
+        if y + size.height > visibleFrame.maxY - 8 {
+            y = bubbleScreenRect.minY - size.height - gap
+        }
+        y = min(max(y, visibleFrame.minY + 8), visibleFrame.maxY - size.height - 8)
+        return NSRect(origin: NSPoint(x: x, y: y), size: size)
+    }
+
+    private func installBubbleControlMenuEventMonitors() {
+        removeBubbleControlMenuEventMonitors()
+
+        controlMenuLocalEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .keyDown]
+        ) { [weak self] event in
+            guard let self else { return event }
+
+            if event.type == .keyDown, event.keyCode == 53 {
+                Task { @MainActor in
+                    self.hideBubbleControlMenu(animated: true)
+                }
+                return nil
+            }
+
+            if event.window !== self.controlMenuWindow,
+               event.window !== self.window {
+                Task { @MainActor in
+                    self.hideBubbleControlMenu(animated: true)
+                }
+            }
+
+            return event
+        }
+
+        controlMenuGlobalEventMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                let mouseLocation = NSEvent.mouseLocation
+                if self?.controlMenuWindow?.frame.contains(mouseLocation) == true ||
+                    self?.window?.frame.contains(mouseLocation) == true {
+                    return
+                }
+                self?.hideBubbleControlMenu(animated: true)
+            }
+        }
+    }
+
+    private func removeBubbleControlMenuEventMonitors() {
+        if let controlMenuLocalEventMonitor {
+            NSEvent.removeMonitor(controlMenuLocalEventMonitor)
+            self.controlMenuLocalEventMonitor = nil
+        }
+        if let controlMenuGlobalEventMonitor {
+            NSEvent.removeMonitor(controlMenuGlobalEventMonitor)
+            self.controlMenuGlobalEventMonitor = nil
+        }
+    }
+
+    private func hideBubbleControlMenu(animated: Bool) {
+        removeBubbleControlMenuEventMonitors()
+        guard let controlMenuWindow else { return }
+        self.controlMenuWindow = nil
+        let parentWindow = controlMenuWindow.parent
+
+        guard animated, !reduceMotion else {
+            parentWindow?.removeChildWindow(controlMenuWindow)
+            controlMenuWindow.orderOut(nil)
+            return
+        }
+
+        let finalFrame = controlMenuWindow.frame.offsetBy(dx: 0, dy: -8)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            controlMenuWindow.animator().alphaValue = 0
+            controlMenuWindow.animator().setFrame(finalFrame, display: true)
+        } completionHandler: {
+            Task { @MainActor in
+                parentWindow?.removeChildWindow(controlMenuWindow)
+                controlMenuWindow.orderOut(nil)
+            }
+        }
     }
 
     private func applyContinuousBubbleLayout() {
@@ -1385,28 +2026,40 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
-    private static func loadBackgroundImage() -> NSImage? {
-        // Try the app's asset catalog first.
-        if let img = NSImage(named: "RecordBackground") {
-            return img
+    private static func loadBackgroundImage(isDark: Bool) -> NSImage? {
+        if let image = resolvedBackgroundAssetImage(isDark: isDark) {
+            return image
         }
-        // Fallback: search the main bundle for the loose file.
-        if let url = Bundle.main.url(forResource: "record-background", withExtension: "png") {
+
+        let resourceName = isDark ? "record-background-dark" : "record-background"
+        if let url = Bundle.main.url(forResource: resourceName, withExtension: "png") {
             return NSImage(contentsOf: url)
         }
+
+        if !isDark,
+           let url = Bundle.main.url(forResource: "record-background", withExtension: "png") {
+            return NSImage(contentsOf: url)
+        }
+
         #if DEBUG
-        // Debug fallback for standalone preview harness.
-        let devPath = "/tmp/record-background.png"
-        if FileManager.default.fileExists(atPath: devPath) {
-            return NSImage(contentsOfFile: devPath)
+        let debugCandidates = isDark
+            ? ["/tmp/record-background-dark.png", "/tmp/record-background.png"]
+            : ["/tmp/record-background.png"]
+        for path in debugCandidates where FileManager.default.fileExists(atPath: path) {
+            return NSImage(contentsOfFile: path)
         }
         #endif
+
         return nil
     }
 
-    private static func loadBackgroundCGImage() -> CGImage? {
-        guard let image = loadBackgroundImage() else { return nil }
-        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    private static func loadBackgroundCGImage(isDark: Bool) -> CGImage? {
+        guard let image = loadBackgroundImage(isDark: isDark) else { return nil }
+        var cgImage: CGImage?
+        withBackgroundDrawingAppearance(isDark: isDark) {
+            cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        }
+        return cgImage
     }
 
     private static func loadProcessingVideoURL(isDark: Bool) -> URL? {
@@ -1436,8 +2089,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         return nil
     }
 
-    private static func loadBlurredBackgroundImage() -> CGImage? {
-        guard let cgImage = loadBackgroundCGImage() else { return nil }
+    private static func loadBlurredBackgroundImage(isDark: Bool) -> CGImage? {
+        guard let cgImage = loadBackgroundCGImage(isDark: isDark) else { return nil }
 
         let sourceImage = CIImage(cgImage: cgImage)
         let blurredImage = sourceImage
@@ -1452,11 +2105,36 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         return context.createCGImage(blurredImage, from: sourceImage.extent) ?? cgImage
     }
 
+    private static func resolvedBackgroundAssetImage(isDark: Bool) -> NSImage? {
+        var image: NSImage?
+        withBackgroundDrawingAppearance(isDark: isDark) {
+            image = NSImage(named: "RecordBackground")
+        }
+        return image
+    }
+
+    private static func withBackgroundDrawingAppearance(isDark: Bool, body: () -> Void) {
+        guard let appearance = NSAppearance(named: isDark ? .darkAqua : .aqua) else {
+            body()
+            return
+        }
+
+        if #available(macOS 11.0, *) {
+            appearance.performAsCurrentDrawingAppearance(body)
+            return
+        }
+
+        let previousAppearance = NSAppearance.current
+        NSAppearance.current = appearance
+        defer { NSAppearance.current = previousAppearance }
+        body()
+    }
+
     private func endInteractiveRepositionMode(notify: Bool = true) {
         repositionModeTask?.cancel()
         repositionModeTask = nil
         repositionModeEnabled = false
-        window?.ignoresMouseEvents = true
+        hitTestCanvasView?.acceptsBubbleInteraction = bubbleControlsEnabled
         window?.isMovableByWindowBackground = false
         if notify {
             notifyDragIfNeeded()

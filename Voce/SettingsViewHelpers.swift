@@ -54,6 +54,80 @@ func settingsSubcard<Content: View>(
     .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusMedium))
 }
 
+extension View {
+    func settingsModalPanel() -> some View {
+        self
+            .background(VoceDesign.windowBackground)
+            .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusLarge, style: .continuous)
+                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 12)
+    }
+
+    func dismissOnOutsideClick(_ onDismiss: @escaping () -> Void) -> some View {
+        background(OutsideClickDismissMonitor(onDismiss: onDismiss))
+    }
+}
+
+private struct OutsideClickDismissMonitor: NSViewRepresentable {
+    let onDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onDismiss = onDismiss
+        context.coordinator.attach(to: nsView)
+    }
+
+    final class Coordinator {
+        var onDismiss: () -> Void
+        private weak var view: NSView?
+        private var monitor: Any?
+
+        init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        deinit {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+        }
+
+        func attach(to view: NSView) {
+            self.view = view
+            guard monitor == nil else { return }
+
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self,
+                      let view = self.view,
+                      let window = view.window,
+                      event.window === window else {
+                    return event
+                }
+
+                let point = view.convert(event.locationInWindow, from: nil)
+                guard !view.bounds.contains(point) else {
+                    return event
+                }
+
+                self.onDismiss()
+                return nil
+            }
+        }
+    }
+}
+
 @MainActor
 func settingTitleRow(_ title: String, help: String? = nil) -> some View {
     HStack(spacing: VoceDesign.xs) {
@@ -436,6 +510,11 @@ func hotkeyDisplayName(for hotkey: PressToTalkHotkey) -> String {
     hotkey.displayName
 }
 
+func keyboardShortcutDisplayName(for shortcut: VoceKeyboardShortcut) -> String {
+    let modifierNames = shortcut.modifiers.map(\.displayName)
+    return (modifierNames + [hotkeyDisplayName(for: shortcut.keyCode)]).joined(separator: " + ")
+}
+
 @MainActor
 final class HotkeyCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
@@ -553,6 +632,74 @@ final class HotkeyCaptureCoordinator: ObservableObject {
         }
 
         onCapture(.modifier(supportedModifiers[0]))
+        helperText = nil
+        stopCapture(clearHelperText: false)
+        return nil
+    }
+}
+
+@MainActor
+final class KeyboardShortcutCaptureCoordinator: ObservableObject {
+    @Published var isCapturing = false
+    @Published var helperText: String?
+
+    private var keyMonitor: Any?
+    private var resignObserver: NSObjectProtocol?
+
+    func startCapture(onCapture: @escaping (VoceKeyboardShortcut) -> Void) {
+        stopCapture(clearHelperText: false)
+        isCapturing = true
+        helperText = "Press a key combination. Esc cancels."
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleKeyDown(event, onCapture: onCapture)
+        }
+
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.stopCapture()
+            }
+        }
+    }
+
+    func stopCapture(clearHelperText: Bool = true) {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+            self.resignObserver = nil
+        }
+
+        isCapturing = false
+        if clearHelperText {
+            helperText = nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent, onCapture: @escaping (VoceKeyboardShortcut) -> Void) -> NSEvent? {
+        guard isCapturing else { return event }
+
+        if event.keyCode == 53 {
+            stopCapture()
+            return nil
+        }
+
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let supportedModifiers = VoceKeyboardShortcut.Modifier.allCases.filter { modifiers.contains($0.eventFlags) }
+        guard !supportedModifiers.isEmpty else {
+            helperText = "Hold at least one modifier with the key."
+            return nil
+        }
+
+        onCapture(VoceKeyboardShortcut(keyCode: UInt16(event.keyCode), modifiers: supportedModifiers))
         helperText = nil
         stopCapture(clearHelperText: false)
         return nil
@@ -1007,6 +1154,97 @@ struct HotkeyRecorderField: View {
     }
 }
 
+struct KeyboardShortcutRecorderField: View {
+    @Binding var shortcut: VoceKeyboardShortcut
+    let defaultShortcut: VoceKeyboardShortcut
+    let accessibilityLabel: String
+    @StateObject private var coordinator = KeyboardShortcutCaptureCoordinator()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            HStack(spacing: VoceDesign.sm) {
+                Button {
+                    if coordinator.isCapturing {
+                        coordinator.stopCapture()
+                    } else {
+                        coordinator.startCapture { capturedShortcut in
+                            shortcut = capturedShortcut
+                        }
+                    }
+                } label: {
+                    HStack(spacing: VoceDesign.sm) {
+                        Image(systemName: coordinator.isCapturing ? "keyboard.badge.ellipsis" : "keyboard")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
+
+                        Rectangle()
+                            .fill(VoceDesign.border.opacity(0.95))
+                            .frame(width: 1, height: 18)
+
+                        Text(fieldTitle)
+                            .font(VoceDesign.callout())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, VoceDesign.md)
+                    .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background {
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(Color.white.opacity(0.82))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .fill(.thinMaterial.opacity(0.06))
+                            )
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .stroke(
+                                coordinator.isCapturing ? VoceDesign.accent.opacity(0.6) : VoceDesign.border.opacity(0.95),
+                                lineWidth: coordinator.isCapturing ? VoceDesign.borderNormal : VoceDesign.borderThin
+                            )
+                    )
+                    .shadow(color: .black.opacity(0.025), radius: 2, x: 0, y: 1)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityValue(fieldTitle)
+
+                Button("Reset") {
+                    shortcut = defaultShortcut
+                    coordinator.stopCapture()
+                }
+                .buttonStyle(.plain)
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(
+                    shortcut == defaultShortcut
+                    ? VoceDesign.textSecondary.opacity(0.5)
+                    : VoceDesign.textSecondary
+                )
+                .disabled(shortcut == defaultShortcut)
+            }
+
+            if let helperText = coordinator.helperText {
+                Text(helperText)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+        }
+        .onDisappear {
+            coordinator.stopCapture()
+        }
+    }
+
+    private var fieldTitle: String {
+        if coordinator.isCapturing {
+            return "Press a key combination..."
+        }
+
+        return keyboardShortcutDisplayName(for: shortcut)
+    }
+}
+
 struct HandsFreeToggleHotkeyRecorderField: View {
     @Binding var hotkey: HandsFreeToggleHotkey?
     var allowModifierCapture: Bool = true
@@ -1121,6 +1359,17 @@ private extension HandsFreeHotkey.Modifier {
         case .command: return .command
         case .shift: return .shift
         case .function: return .function
+        }
+    }
+}
+
+private extension VoceKeyboardShortcut.Modifier {
+    var eventFlags: NSEvent.ModifierFlags {
+        switch self {
+        case .control: return .control
+        case .option: return .option
+        case .command: return .command
+        case .shift: return .shift
         }
     }
 }

@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.32] - 2026-04-14
+
+### Added
+- Added direct dictionary and snippet capture shortcuts from selected text, including configurable shortcut mappings in Settings.
+- Added a six-week activity calendar to Home so recent usage is easier to scan at a glance.
+
+### Changed
+- Reworked Dictionary and Snippets into editable table views with modal create and edit flows, inline grouping support, and cleaner delete affordances.
+- Refined the in-flight dictation bubble menu so stop and AI finish actions are available directly from the overlay and better match the rest of the app.
+- Updated AI re-run behavior so refreshing an AI workflow updates the existing history item instead of creating a duplicate entry.
+
+### Fixed
+- Fixed overlay dismissal timing so the dictation bubble drops away as soon as insertion finishes instead of lingering after paste.
+- Fixed the home metrics rail by removing the stale latest-transcript panel and keeping activity counts stable when AI output is refreshed.
+
 ## [0.4.27] - 2026-04-11
 
 ### Changed

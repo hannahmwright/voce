@@ -159,6 +159,13 @@ private final class ClipboardRecoveryPromptPresenter: NSObject {
 }
 
 @MainActor
+struct DailyUsageActivityDay: Equatable {
+    let day: Date
+    let wordCount: Int
+    let sessionCount: Int
+}
+
+@MainActor
 final class DictationController: ObservableObject {
     private static let minimumVisibleEmptyTranscriptDurationMS = 3_000
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "DictationController")
@@ -180,6 +187,7 @@ final class DictationController: ObservableObject {
     @Published var isRecording: Bool = false
     @Published var handsFreeOn: Bool = false
     @Published var recentEntries: [TranscriptEntry] = []
+    @Published var historyAIProcessingEntryID: UUID?
     @Published var hotkeyRegistrationMessage: String = ""
     @Published var launchAtLoginWarning: String = ""
     @Published var preferences: AppPreferences = .default
@@ -272,6 +280,12 @@ final class DictationController: ObservableObject {
         }
         overlay.onUserDraggedToPosition = { [weak self] position in
             self?.saveOverlayDragPosition(position)
+        }
+        overlay.onStopRequested = { [weak self] in
+            self?.stopActiveRecording()
+        }
+        overlay.onAIWorkflowRequested = { [weak self] workflowID in
+            self?.finishActiveRecordingWithAI(workflowID: workflowID)
         }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
             switch status {
@@ -613,8 +627,6 @@ final class DictationController: ObservableObject {
     }
 
     func finishActiveRecordingWithAI(triggeredBy hotkey: HandsFreeHotkey? = nil) {
-        guard let activeRecordingMode, isRecording else { return }
-        guard aiRuntimeEnabled else { return }
         let workflowID: UUID?
         if let hotkey {
             workflowID = preferences.ai.workflows.first(where: { $0.handsFreeFinishHotkey == hotkey })?.id
@@ -622,11 +634,17 @@ final class DictationController: ObservableObject {
             workflowID = preferences.ai.defaultHandsFreeWorkflowID
         }
         guard let workflowID else { return }
-        if let workflowName = preferences.ai.workflows.first(where: { $0.id == workflowID })?.name {
-            status = "Finishing with \(workflowName.lowercased())…"
-        } else {
-            status = "Finishing with AI…"
+        finishActiveRecordingWithAI(workflowID: workflowID)
+    }
+
+    func finishActiveRecordingWithAI(workflowID: UUID) {
+        guard let activeRecordingMode, isRecording else { return }
+        guard aiRuntimeEnabled else { return }
+        guard let workflow = preferences.ai.workflows.first(where: { $0.id == workflowID && $0.isEnabled }) else {
+            status = "That AI workflow is not available."
+            return
         }
+        status = "Finishing with \(workflow.name.lowercased())…"
         pendingCompletionActionOverride = .aiWorkflow(id: workflowID)
         switch activeRecordingMode {
         case .handsFree:
@@ -815,6 +833,60 @@ final class DictationController: ObservableObject {
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
     }
 
+    var enabledAIWorkflows: [AIWorkflow] {
+        preferences.ai.workflows.filter(\.isEnabled)
+    }
+
+    func runAIWorkflow(_ workflow: AIWorkflow, on entry: TranscriptEntry) {
+        guard !isRecording else {
+            status = "Finish recording before running AI on history."
+            return
+        }
+        guard aiRuntimeEnabled else {
+            status = "AI is not available right now."
+            lastError = appleIntelligenceAvailabilityText
+            return
+        }
+
+        let inputText = historyAIInput(for: entry)
+        guard !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            status = "No transcript text to send to AI."
+            return
+        }
+
+        historyAIProcessingEntryID = entry.id
+        status = aiGenerationStatusMessage(for: workflow.name)
+        lastError = ""
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            do {
+                let result = try await self.aiGenerationService.generate(workflow: workflow, input: inputText)
+                try await self.clipboardService.setString(result.outputText)
+                try await self.updateHistoryEntryWithAIResult(
+                    sourceEntry: entry,
+                    inputText: inputText,
+                    result: result,
+                    workflow: workflow
+                )
+                await self.refreshHistory()
+                self.lastTranscript = result.outputText
+                self.status = "\(workflow.name) copied and updated."
+            } catch let error as AIWorkflowError {
+                self.status = error.errorDescription ?? "AI request failed."
+                self.lastError = self.status
+            } catch {
+                self.status = "AI request failed."
+                self.lastError = error.localizedDescription
+            }
+
+            if self.historyAIProcessingEntryID == entry.id {
+                self.historyAIProcessingEntryID = nil
+            }
+        }
+    }
+
     private var currentTranscriptText: String {
         if !lastTranscript.isEmpty {
             return lastTranscript
@@ -906,6 +978,7 @@ final class DictationController: ObservableObject {
                     }
                 }
                 overlay.setAnchorSnapshot(overlayAnchorSnapshot)
+                overlay.controlWorkflows = enabledAIWorkflows
                 overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
 
                 if shouldPauseMedia {
@@ -1117,7 +1190,11 @@ final class DictationController: ObservableObject {
                         lastError = error.localizedDescription
                     }
                     scheduleLearningUpdate(for: finalizedTranscript)
-                    dismissOverlaySoon(pop: execution.insertResult.status == .inserted)
+                    let insertedSuccessfully = execution.insertResult.status == .inserted
+                    dismissOverlaySoon(
+                        pop: insertedSuccessfully,
+                        delayNanoseconds: insertedSuccessfully ? 0 : 1_500_000_000
+                    )
                 } catch let aiError as AIWorkflowError {
                     lastTranscript = finalizedTranscript.cleanText
                     status = aiError.errorDescription ?? "AI request failed."
@@ -1163,10 +1240,22 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func dismissOverlaySoon(pop: Bool = false) {
+    private func dismissOverlaySoon(pop: Bool = false, delayNanoseconds: UInt64 = 1_500_000_000) {
         overlayDismissTask?.cancel()
+
+        guard delayNanoseconds > 0 else {
+            if pop {
+                overlay.popAndHide()
+            } else {
+                overlay.hide()
+            }
+            overlayPersistenceBundleIdentifier = nil
+            overlayDismissTask = nil
+            return
+        }
+
         overlayDismissTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled else { return }
             if pop {
                 overlay.popAndHide()
@@ -1221,6 +1310,7 @@ final class DictationController: ObservableObject {
         hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
         hotkey.aiFinishHotkey = newValue.ai.handsFreeFinishHotkey
         hotkey.aiWorkflowFinishHotkeys = newValue.ai.workflows.compactMap(\.handsFreeFinishHotkey)
+        overlay.controlWorkflows = enabledAIWorkflows
         updateActiveRecordingHotkeys()
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
 
@@ -1721,6 +1811,37 @@ final class DictationController: ObservableObject {
         try await historyStore.append(entry: entry)
     }
 
+    private func updateHistoryEntryWithAIResult(
+        sourceEntry: TranscriptEntry,
+        inputText: String,
+        result: AIWorkflowResult,
+        workflow: AIWorkflow
+    ) async throws {
+        var updatedEntry = sourceEntry
+        updatedEntry.sourceText = inputText
+        updatedEntry.cleanText = result.outputText
+        updatedEntry.insertionStatus = .copiedOnly
+        updatedEntry.processingNote = nil
+        updatedEntry.completionAction = completionActionDescription(.aiWorkflow(id: workflow.id))
+        updatedEntry.aiWorkflowName = workflow.name
+        updatedEntry.aiProvider = result.provider
+        try await historyStore.update(entry: updatedEntry)
+    }
+
+    private func historyAIInput(for entry: TranscriptEntry) -> String {
+        if let sourceText = entry.sourceText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !sourceText.isEmpty {
+            return sourceText
+        }
+
+        let cleanText = entry.cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanText.isEmpty {
+            return cleanText
+        }
+
+        return entry.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func completionActionDescription(_ action: CompletionAction) -> String {
         switch action {
         case .insert:
@@ -1810,6 +1931,23 @@ final class DictationController: ObservableObject {
         return Int(Double(timedWords) / minutes)
     }
 
+    var dailyUsageActivity: [DailyUsageActivityDay] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: metricEntries) { entry in
+            calendar.startOfDay(for: entry.createdAt)
+        }
+
+        return grouped
+            .map { day, entries in
+                DailyUsageActivityDay(
+                    day: day,
+                    wordCount: entries.reduce(0) { $0 + wordCount(for: $1) },
+                    sessionCount: entries.count
+                )
+            }
+            .sorted { $0.day < $1.day }
+    }
+
     var daysUsed: Int {
         let calendar = Calendar.current
         let uniqueDays = Set(metricEntries.map { calendar.startOfDay(for: $0.createdAt) })
@@ -1841,6 +1979,18 @@ final class DictationController: ObservableObject {
         }
 
         return streak
+    }
+
+    private func wordCount(for entry: TranscriptEntry) -> Int {
+        let text: String
+        if entry.aiWorkflowName != nil,
+           let sourceText = entry.sourceText,
+           !sourceText.isEmpty {
+            text = sourceText
+        } else {
+            text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+        }
+        return text.split(whereSeparator: \.isWhitespace).count
     }
 
     var primaryHotkeyLabel: String {

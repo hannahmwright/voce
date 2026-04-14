@@ -51,6 +51,15 @@ public actor HistoryStore: HistoryStoreProtocol {
         try persist()
     }
 
+    public func update(entry: TranscriptEntry) async throws {
+        ensureLoaded()
+        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else {
+            throw HistoryStoreError.missingEntry
+        }
+        entries[index] = entry
+        try persist()
+    }
+
     public func delete(entryID: UUID) async throws {
         ensureLoaded()
         entries.removeAll { $0.id == entryID }

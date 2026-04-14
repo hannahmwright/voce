@@ -370,6 +370,18 @@ public enum MacPasteHelper {
         return true
     }
 
+    public static func simulateCommandC() -> Bool {
+        guard let source = CGEventSource(stateID: .privateState),
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: false)
+        else { return false }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: voceSyntheticEventTapLocation)
+        keyUp.post(tap: voceSyntheticEventTapLocation)
+        return true
+    }
+
     public static func simulateReturn() -> Bool {
         guard let source = CGEventSource(stateID: .privateState),
               let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: true),

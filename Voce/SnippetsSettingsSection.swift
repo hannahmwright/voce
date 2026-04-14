@@ -6,14 +6,31 @@ struct SnippetsSettingsSection: View {
     @Binding var preferences: AppPreferences
     let selectedSection: SnippetSection
 
-    @State private var newTrigger: String = ""
-    @State private var newExpansion: String = ""
-    @State private var newBundleID: String = ""
-    @State private var newGlobal = true
     @State private var snippetSuggestions: [SnippetSuggestion] = []
+    @State private var editingSnippet: SnippetEditDraft?
 
     private var builtInCommands: [VoiceCommand] {
         preferences.voiceCommands.filter(\.isBuiltIn)
+    }
+
+    private var groupedSnippets: [SnippetGroup] {
+        let groups = Dictionary(grouping: preferences.snippets) { snippet in
+            normalizedGroupName(snippet.groupName)
+        }
+
+        return groups
+            .map { name, snippets in
+                SnippetGroup(
+                    name: name,
+                    snippets: snippets.sorted {
+                        if $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedSame {
+                            return $0.trigger.localizedCaseInsensitiveCompare($1.trigger) == .orderedAscending
+                        }
+                        return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     var body: some View {
@@ -28,6 +45,27 @@ struct SnippetsSettingsSection: View {
             }
         }
         .task { await refreshSnippetSuggestions() }
+        .overlay {
+            if let draft = editingSnippet {
+                SnippetEditSheet(
+                    draft: draft,
+                    onCancel: {
+                        editingSnippet = nil
+                    },
+                    onSave: { updatedDraft in
+                        saveSnippet(updatedDraft)
+                    },
+                    onDelete: { id in
+                        preferences.snippets.removeAll { $0.id == id }
+                        editingSnippet = nil
+                    }
+                )
+                .settingsModalPanel()
+                .dismissOnOutsideClick {
+                    editingSnippet = nil
+                }
+            }
+        }
     }
 
     private var customSection: some View {
@@ -36,62 +74,132 @@ struct SnippetsSettingsSection: View {
             subtitle: "Your own spoken phrases."
         ) {
             settingsSubcard {
-                subsectionLabel("Saved")
+                HStack(spacing: VoceDesign.sm) {
+                    Spacer(minLength: 0)
+
+                    Button {
+                        editingSnippet = SnippetEditDraft()
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 30, height: 30)
+                            .background(VoceDesign.warmAccentFill)
+                            .foregroundStyle(VoceDesign.warmAccentText)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add shortcut")
+                }
 
                 if preferences.snippets.isEmpty {
                     Text("Nothing here yet. Try “on my way” to “On my way!”.")
                         .font(VoceDesign.callout())
                         .foregroundStyle(VoceDesign.textSecondary)
                 } else {
-                    VStack(spacing: VoceDesign.sm) {
-                        ForEach(preferences.snippets) { snippet in
-                            entryRow(
-                                leading: "“\(snippet.trigger)” → \(snippet.expansion)",
-                                scope: snippet.scope
-                            ) {
-                                preferences.snippets.removeAll { $0.id == snippet.id }
-                            }
-                        }
-                    }
-                }
-            }
-
-            settingsSubcard {
-                subsectionLabel("Add shortcut")
-
-                HStack(spacing: VoceDesign.sm) {
-                    TextField("Say", text: $newTrigger)
-                        .textFieldStyle(.plain)
-                        .settingsInputChrome()
-                    TextField("Insert", text: $newExpansion)
-                        .textFieldStyle(.plain)
-                        .settingsInputChrome()
-                }
-
-                HStack {
-                    ScopePickerRow(isGlobal: $newGlobal, bundleID: $newBundleID)
-                    Spacer()
-                    Button {
-                        guard !newTrigger.isEmpty, !newExpansion.isEmpty else { return }
-                        let scope: Scope = newGlobal ? .global : .app(bundleID: newBundleID)
-                        let newSnippet = Snippet(trigger: newTrigger, expansion: newExpansion, scope: scope)
-                        if let existingIndex = preferences.snippets.firstIndex(where: { $0.trigger == newSnippet.trigger && $0.scope == newSnippet.scope }) {
-                            preferences.snippets[existingIndex] = newSnippet
-                        } else {
-                            preferences.snippets.append(newSnippet)
-                        }
-                        newTrigger = ""
-                        newExpansion = ""
-                        newBundleID = ""
-                        newGlobal = true
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(newTrigger.isEmpty || newExpansion.isEmpty || (!newGlobal && newBundleID.isEmpty))
+                    snippetTable
                 }
             }
         }
+    }
+
+    private var snippetTable: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            ForEach(groupedSnippets) { group in
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text(group.name)
+                        .font(VoceDesign.labelEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    VStack(spacing: 0) {
+                        snippetTableHeader
+
+                        ForEach(group.snippets) { snippet in
+                            snippetTableRow(snippet)
+
+                            if snippet.id != group.snippets.last?.id {
+                                Divider()
+                                    .padding(.leading, VoceDesign.sm)
+                            }
+                        }
+                    }
+                    .background(VoceDesign.surfaceSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
+                            .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                    )
+                }
+            }
+        }
+    }
+
+    private var snippetTableHeader: some View {
+        HStack(spacing: VoceDesign.md) {
+            Text("Name")
+                .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
+            Text("Thing you say")
+                .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
+            Text("Text inserted")
+                .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
+            Text("")
+                .frame(width: 32)
+        }
+        .font(VoceDesign.labelEmphasis())
+        .textCase(.uppercase)
+        .foregroundStyle(VoceDesign.textPrimary)
+        .padding(.horizontal, VoceDesign.sm)
+        .padding(.vertical, VoceDesign.sm)
+        .background(VoceDesign.surface)
+    }
+
+    private func snippetTableRow(_ snippet: Snippet) -> some View {
+        HStack(spacing: VoceDesign.md) {
+            Button {
+                editingSnippet = SnippetEditDraft(snippet: snippet)
+            } label: {
+                HStack(spacing: VoceDesign.md) {
+                    Text(snippet.name)
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
+
+                    Text(snippet.trigger)
+                        .font(VoceDesign.callout())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
+
+                    Text(snippet.expansion)
+                        .font(VoceDesign.callout())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                preferences.snippets.removeAll { $0.id == snippet.id }
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(VoceDesign.textSecondary)
+            .frame(width: 32)
+            .help("Delete shortcut")
+        }
+        .padding(.horizontal, VoceDesign.sm)
+        .padding(.vertical, VoceDesign.sm)
     }
 
     private var suggestionsSection: some View {
@@ -245,8 +353,191 @@ struct SnippetsSettingsSection: View {
         }
     }
 
+    private func saveSnippet(_ draft: SnippetEditDraft) {
+        let trigger = draft.trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expansion = draft.expansion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trigger.isEmpty, !expansion.isEmpty else { return }
+
+        let updatedSnippet = Snippet(
+            id: draft.id,
+            name: draft.name,
+            trigger: trigger,
+            expansion: expansion,
+            scope: draft.scope,
+            groupName: draft.groupName
+        )
+
+        if let index = preferences.snippets.firstIndex(where: { $0.id == draft.id }) {
+            preferences.snippets[index] = updatedSnippet
+        } else if let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(updatedSnippet.trigger) == .orderedSame && $0.scope == updatedSnippet.scope
+        }) {
+            var replacement = updatedSnippet
+            replacement.id = preferences.snippets[existingIndex].id
+            preferences.snippets[existingIndex] = replacement
+        } else {
+            preferences.snippets.append(updatedSnippet)
+        }
+        editingSnippet = nil
+    }
+
     private func refreshSnippetSuggestions() async {
         let existingTriggers = Set(controller.preferences.snippets.map(\.trigger))
         snippetSuggestions = await controller.fetchSnippetSuggestions(excluding: existingTriggers)
     }
+}
+
+private struct SnippetGroup: Identifiable {
+    var id: String { name }
+    let name: String
+    let snippets: [Snippet]
+}
+
+private struct SnippetEditDraft: Identifiable {
+    let id: UUID
+    let isNew: Bool
+    var name: String
+    var groupName: String
+    var trigger: String
+    var expansion: String
+    var isGlobal: Bool
+    var bundleID: String
+
+    init() {
+        id = UUID()
+        isNew = true
+        name = ""
+        groupName = Snippet.defaultGroupName
+        trigger = ""
+        expansion = ""
+        isGlobal = true
+        bundleID = ""
+    }
+
+    init(snippet: Snippet) {
+        id = snippet.id
+        isNew = false
+        name = snippet.name
+        groupName = snippet.groupName
+        trigger = snippet.trigger
+        expansion = snippet.expansion
+
+        switch snippet.scope {
+        case .global:
+            isGlobal = true
+            bundleID = ""
+        case .app(let bundleID):
+            isGlobal = false
+            self.bundleID = bundleID
+        }
+    }
+
+    var scope: Scope {
+        isGlobal ? .global : .app(bundleID: bundleID)
+    }
+}
+
+private struct SnippetEditSheet: View {
+    @State private var draft: SnippetEditDraft
+    let onCancel: () -> Void
+    let onSave: (SnippetEditDraft) -> Void
+    let onDelete: (UUID) -> Void
+
+    init(
+        draft: SnippetEditDraft,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (SnippetEditDraft) -> Void,
+        onDelete: @escaping (UUID) -> Void
+    ) {
+        _draft = State(initialValue: draft)
+        self.onCancel = onCancel
+        self.onSave = onSave
+        self.onDelete = onDelete
+    }
+
+    private var canSave: Bool {
+        !draft.trigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !draft.expansion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        (draft.isGlobal || !draft.bundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            Text(draft.isNew ? "Add shortcut" : "Edit shortcut")
+                .font(VoceDesign.heading3())
+                .foregroundStyle(VoceDesign.textPrimary)
+
+            HStack(spacing: VoceDesign.sm) {
+                sheetField("Name", text: $draft.name)
+                sheetField("Group", text: $draft.groupName)
+            }
+
+            HStack(spacing: VoceDesign.sm) {
+                sheetField("Thing you say", text: $draft.trigger)
+            }
+
+            expansionField()
+
+            ScopePickerRow(isGlobal: $draft.isGlobal, bundleID: $draft.bundleID)
+
+            HStack {
+                if !draft.isNew {
+                    Button {
+                        onDelete(draft.id)
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(VoceDesign.error)
+                    .help("Delete shortcut")
+                }
+
+                Spacer()
+
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(VoceDesign.textSecondary)
+
+                Button(draft.isNew ? "Add" : "Save") {
+                    onSave(draft)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canSave)
+            }
+        }
+        .padding(VoceDesign.xl)
+        .frame(width: 560)
+    }
+
+    private func sheetField(_ title: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            Text(title)
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(VoceDesign.textSecondary)
+            TextField(title, text: text)
+                .textFieldStyle(.plain)
+                .settingsInputChrome()
+        }
+    }
+
+    private func expansionField() -> some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            Text("Text inserted")
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            TextEditor(text: $draft.expansion)
+                .font(VoceDesign.callout())
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 110, idealHeight: 150, maxHeight: 260)
+                .settingsInputChrome()
+        }
+    }
+}
+
+private func normalizedGroupName(_ groupName: String) -> String {
+    let trimmed = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? Snippet.defaultGroupName : trimmed
 }

@@ -99,6 +99,36 @@ struct RecordingSettingsSection: View {
                 Spacer(minLength: 0)
             }
 
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                settingInlineLabel(
+                    "Dictionary quick fix",
+                    systemImage: "text.badge.checkmark",
+                    help: "Highlight text in any app, press this shortcut, then add a dictionary correction from the menu bar."
+                )
+                .frame(width: modeColumnWidth, alignment: .leading)
+
+                KeyboardShortcutRecorderField(
+                    shortcut: $preferences.hotkeys.dictionaryCorrectionHotkey,
+                    defaultShortcut: .dictionaryCorrectionDefault,
+                    accessibilityLabel: "Dictionary quick fix hotkey"
+                )
+            }
+
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                settingInlineLabel(
+                    "Create shortcut",
+                    systemImage: "text.quote",
+                    help: "Highlight text in any app, press this shortcut, then save it as a spoken shortcut from the menu bar."
+                )
+                .frame(width: modeColumnWidth, alignment: .leading)
+
+                KeyboardShortcutRecorderField(
+                    shortcut: $preferences.hotkeys.snippetCreationHotkey,
+                    defaultShortcut: .snippetCreationDefault,
+                    accessibilityLabel: "Create shortcut hotkey"
+                )
+            }
+
             if shouldShowHotkeyRegistrationMessage {
                 Text(hotkeyRegistrationMessage)
                     .font(VoceDesign.caption())

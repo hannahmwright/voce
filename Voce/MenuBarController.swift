@@ -12,7 +12,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     func setup(controller: DictationController) {
         self.controller = controller
-        configurePopover(controller: controller)
+        configureDefaultPopover(controller: controller)
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
@@ -67,7 +67,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private func configurePopover(controller: DictationController) {
+    private func configureDefaultPopover(controller: DictationController) {
         popover.delegate = self
         popover.behavior = .transient
         popover.animates = true
@@ -83,10 +83,93 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         )
     }
 
+    func showSelectionCorrection(
+        term: String,
+        sourceAppName: String?,
+        onSave: @escaping (String) -> Void
+    ) {
+        guard let controller else { return }
+        guard let button = statusItem?.button else { return }
+
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
+        popover.delegate = self
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 360, height: 292)
+        popover.contentViewController = NSHostingController(
+            rootView: SelectionCorrectionPopoverView(
+                term: term,
+                sourceAppName: sourceAppName,
+                appearancePreference: controller.preferences.general.appearancePreference,
+                onCancel: { [weak self] in
+                    self?.closePopover()
+                },
+                onSave: { [weak self] replacement in
+                    self?.closePopover()
+                    onSave(replacement)
+                }
+            )
+        )
+
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        installOutsideClickMonitors()
+    }
+
+    func showSelectionSnippet(
+        expansion: String,
+        onSave: @escaping (String) -> Void
+    ) {
+        guard let controller else { return }
+        guard let button = statusItem?.button else { return }
+
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
+        popover.delegate = self
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 360, height: 300)
+        popover.contentViewController = NSHostingController(
+            rootView: SelectionSnippetPopoverView(
+                expansion: expansion,
+                appearancePreference: controller.preferences.general.appearancePreference,
+                onCancel: { [weak self] in
+                    self?.closePopover()
+                },
+                onSave: { [weak self] trigger in
+                    self?.closePopover()
+                    onSave(trigger)
+                }
+            )
+        )
+
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        installOutsideClickMonitors()
+    }
+
     private func togglePopover(relativeTo button: NSStatusBarButton) {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            if let controller {
+                configureDefaultPopover(controller: controller)
+            }
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             installOutsideClickMonitors()
         }
@@ -146,7 +229,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func handleToggleTranscription() {
-        closePopover()
         controller?.toggleMenuBarTranscription()
     }
 
@@ -173,6 +255,303 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         removeOutsideClickMonitors()
+    }
+}
+
+private struct SelectionCorrectionPopoverView: View {
+    let term: String
+    let sourceAppName: String?
+    let appearancePreference: AppAppearancePreference
+    let onCancel: () -> Void
+    let onSave: (String) -> Void
+
+    @State private var replacement = ""
+    @FocusState private var isReplacementFocused: Bool
+
+    private var trimmedReplacement: String {
+        replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appearancePreference {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Image("RecordBackground")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .saturation(0.94)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.10))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(VoceDesign.border.opacity(0.9), lineWidth: 1)
+                )
+                .padding(10)
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                HStack(spacing: VoceDesign.sm) {
+                    Image(systemName: "text.badge.checkmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(VoceDesign.warmAccentText)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(VoceDesign.warmAccentFill)
+                        )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Teach Voce")
+                            .font(VoceDesign.bodyEmphasis())
+                            .foregroundStyle(VoceDesign.textPrimary)
+                        Text(sourceAppName.map { "Fix selected text in \($0)" } ?? "Fix selected text")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(MenuBarIconButtonStyle())
+                    .help("Cancel")
+                }
+
+                VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    Text("Voce heard")
+                        .font(VoceDesign.labelEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    Text(term)
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(VoceDesign.md)
+                .background(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .fill(VoceDesign.surfaceSecondary.opacity(0.88))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                                .stroke(VoceDesign.border, lineWidth: 1)
+                        )
+                )
+
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("Replace with")
+                        .font(VoceDesign.labelEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    TextField("Correct spelling or phrase", text: $replacement)
+                        .textFieldStyle(.plain)
+                        .font(VoceDesign.body())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(VoceDesign.surface.opacity(0.92))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(VoceDesign.warmAccentText.opacity(isReplacementFocused ? 0.28 : 0.10), lineWidth: 1)
+                                )
+                        )
+                        .focused($isReplacementFocused)
+                        .onSubmit(save)
+                }
+
+                HStack(spacing: VoceDesign.sm) {
+                    Button("Cancel", action: onCancel)
+                        .buttonStyle(MenuBarActionButtonStyle())
+
+                    Button("Save and replace", action: save)
+                        .buttonStyle(MenuBarPrimaryActionButtonStyle())
+                        .disabled(trimmedReplacement.isEmpty)
+                }
+            }
+            .padding(VoceDesign.lg)
+            .padding(10)
+        }
+        .frame(width: 360)
+        .preferredColorScheme(preferredColorScheme)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                isReplacementFocused = true
+            }
+        }
+    }
+
+    private func save() {
+        let value = trimmedReplacement
+        guard !value.isEmpty else { return }
+        onSave(value)
+    }
+}
+
+private struct SelectionSnippetPopoverView: View {
+    let expansion: String
+    let appearancePreference: AppAppearancePreference
+    let onCancel: () -> Void
+    let onSave: (String) -> Void
+
+    @State private var trigger = ""
+    @FocusState private var isTriggerFocused: Bool
+
+    private var trimmedTrigger: String {
+        trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appearancePreference {
+        case .system:
+            return nil
+        case .light:
+            return .light
+        case .dark:
+            return .dark
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Image("RecordBackground")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .saturation(0.94)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.10))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(VoceDesign.border.opacity(0.9), lineWidth: 1)
+                )
+                .padding(10)
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                HStack(spacing: VoceDesign.sm) {
+                    Image(systemName: "text.quote")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(VoceDesign.warmAccentText)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(VoceDesign.warmAccentFill)
+                        )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Create shortcut")
+                            .font(VoceDesign.bodyEmphasis())
+                            .foregroundStyle(VoceDesign.textPrimary)
+                        Text("Give selected text a spoken trigger")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(MenuBarIconButtonStyle())
+                    .help("Cancel")
+                }
+
+                VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    Text("Insert")
+                        .font(VoceDesign.labelEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    Text(expansion)
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .lineLimit(3)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(VoceDesign.md)
+                .background(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .fill(VoceDesign.surfaceSecondary.opacity(0.88))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                                .stroke(VoceDesign.border, lineWidth: 1)
+                        )
+                )
+
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("Say")
+                        .font(VoceDesign.labelEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    TextField("Shortcut phrase", text: $trigger)
+                        .textFieldStyle(.plain)
+                        .font(VoceDesign.body())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(VoceDesign.surface.opacity(0.92))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(VoceDesign.warmAccentText.opacity(isTriggerFocused ? 0.28 : 0.10), lineWidth: 1)
+                                )
+                        )
+                        .focused($isTriggerFocused)
+                        .onSubmit(save)
+                }
+
+                HStack(spacing: VoceDesign.sm) {
+                    Button("Cancel", action: onCancel)
+                        .buttonStyle(MenuBarActionButtonStyle())
+
+                    Button("Save shortcut", action: save)
+                        .buttonStyle(MenuBarPrimaryActionButtonStyle())
+                        .disabled(trimmedTrigger.isEmpty)
+                }
+            }
+            .padding(VoceDesign.lg)
+            .padding(10)
+        }
+        .frame(width: 360)
+        .preferredColorScheme(preferredColorScheme)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                isTriggerFocused = true
+            }
+        }
+    }
+
+    private func save() {
+        let value = trimmedTrigger
+        guard !value.isEmpty else { return }
+        onSave(value)
     }
 }
 
@@ -300,6 +679,13 @@ private struct MenuBarPopoverView: View {
                         )
                 )
 
+                if controller.isRecording || controller.handsFreeOn {
+                    Button(action: onToggleTranscription) {
+                        Label("Stop dictation", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(MenuBarPrimaryActionButtonStyle())
+                }
+
                 HStack(spacing: VoceDesign.sm) {
                     Button(action: onCopyLastDictation) {
                         Label("Copy", systemImage: "doc.on.doc")
@@ -323,20 +709,43 @@ private struct MenuBarPopoverView: View {
 }
 
 private struct MenuBarActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(VoceDesign.callout())
-            .foregroundStyle(VoceDesign.textPrimary)
+            .foregroundStyle(isEnabled ? VoceDesign.textPrimary : VoceDesign.textSecondary.opacity(0.72))
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(VoceDesign.surfaceSecondary.opacity(configuration.isPressed ? 0.96 : 1))
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(VoceDesign.surfaceSecondary.opacity(isEnabled ? (configuration.isPressed ? 0.96 : 1) : 0.72))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(VoceDesign.border, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(VoceDesign.border.opacity(isEnabled ? 1 : 0.72), lineWidth: 1)
                     )
             )
+    }
+}
+
+private struct MenuBarPrimaryActionButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(VoceDesign.callout())
+            .foregroundStyle(isEnabled ? VoceDesign.warmAccentText : VoceDesign.textSecondary.opacity(0.72))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isEnabled ? VoceDesign.warmAccentFill.opacity(configuration.isPressed ? 0.84 : 1) : VoceDesign.surfaceSecondary.opacity(0.72))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(isEnabled ? VoceDesign.warmAccentText.opacity(0.14) : VoceDesign.border.opacity(0.72), lineWidth: 1)
+                    )
+            )
+            .opacity(configuration.isPressed && isEnabled ? 0.92 : 1)
     }
 }
 
@@ -345,10 +754,10 @@ private struct MenuBarIconButtonStyle: ButtonStyle {
         configuration.label
             .foregroundStyle(VoceDesign.textPrimary)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(VoceDesign.surfaceSecondary.opacity(configuration.isPressed ? 0.96 : 1))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .stroke(VoceDesign.border, lineWidth: 1)
                     )
             )

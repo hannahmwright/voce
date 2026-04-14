@@ -12,6 +12,10 @@ private final class TapContext: @unchecked Sendable {
     var aiFinishHotkey: HandsFreeHotkey?
     var aiWorkflowFinishHotkeys: [HandsFreeHotkey] = []
     var onAIFinish: ((HandsFreeHotkey?) -> Void)?
+    var onCaptureSelectionCorrection: (() -> Void)?
+    var onCaptureSelectionSnippet: (() -> Void)?
+    var selectionCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault
+    var selectionSnippetHotkey: VoceKeyboardShortcut = .snippetCreationDefault
     var isSubmitEnabled = false
     var isAIFinishEnabled = false
     var machPort: CFMachPort?
@@ -33,7 +37,35 @@ public final class MacHotkeyMonitor: HotkeyService {
     public var onFinishActiveRecordingWithAI: ((HandsFreeHotkey?) -> Void)? {
         didSet { tapContext.onAIFinish = onFinishActiveRecordingWithAI }
     }
+    public var onCaptureSelectionCorrection: (() -> Void)? {
+        didSet {
+            tapContext.onCaptureSelectionCorrection = onCaptureSelectionCorrection
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
+    public var onCaptureSelectionSnippet: (() -> Void)? {
+        didSet {
+            tapContext.onCaptureSelectionSnippet = onCaptureSelectionSnippet
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
     public var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)?
+    public var selectionCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault {
+        didSet {
+            tapContext.selectionCorrectionHotkey = selectionCorrectionHotkey
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
+    public var selectionSnippetHotkey: VoceKeyboardShortcut = .snippetCreationDefault {
+        didSet {
+            tapContext.selectionSnippetHotkey = selectionSnippetHotkey
+            guard hasStarted else { return }
+            updateHandsFreeStatus()
+        }
+    }
 
     public var isOptionPressToTalkEnabled: Bool = true
     public var pressToTalkHotkey: PressToTalkHotkey = .default {
@@ -107,6 +139,10 @@ public final class MacHotkeyMonitor: HotkeyService {
         tapContext.aiFinishHotkey = aiFinishHotkey
         tapContext.aiWorkflowFinishHotkeys = aiWorkflowFinishHotkeys
         tapContext.isAIFinishEnabled = isAIFinishEnabled
+        tapContext.onCaptureSelectionCorrection = onCaptureSelectionCorrection
+        tapContext.onCaptureSelectionSnippet = onCaptureSelectionSnippet
+        tapContext.selectionCorrectionHotkey = selectionCorrectionHotkey
+        tapContext.selectionSnippetHotkey = selectionSnippetHotkey
     }
 
     public func start() {
@@ -361,6 +397,11 @@ public final class MacHotkeyMonitor: HotkeyService {
     }
 
     private func updateHandsFreeStatus() {
+        let needsEventTap = tapContext.onCaptureSelectionCorrection != nil
+            || tapContext.onCaptureSelectionSnippet != nil
+            || isSubmitActiveRecordingEnabled
+            || isAIFinishEnabled
+
         if isOptionPressToTalkEnabled,
            let globalToggleHotkey,
            case .modifier(let modifier) = globalToggleHotkey.hotkey,
@@ -435,14 +476,14 @@ public final class MacHotkeyMonitor: HotkeyService {
         case .keyCode?:
             installEventTap()
         case .modifier?:
-            if isSubmitActiveRecordingEnabled || isAIFinishEnabled {
+            if needsEventTap {
                 installEventTap()
             } else {
                 uninstallEventTap()
                 onRegistrationStatusChanged?(.registered)
             }
         case nil:
-            if isSubmitActiveRecordingEnabled || isAIFinishEnabled {
+            if needsEventTap {
                 installEventTap()
             } else {
                 uninstallEventTap()
@@ -485,6 +526,24 @@ public final class MacHotkeyMonitor: HotkeyService {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
         let userMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+
+        if ctx.onCaptureSelectionCorrection != nil,
+           matchesSelectionCorrectionHotkey(keyCode: keyCode, flags: flags, shortcut: ctx.selectionCorrectionHotkey),
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            DispatchQueue.main.async {
+                ctx.onCaptureSelectionCorrection?()
+            }
+            return nil
+        }
+
+        if ctx.onCaptureSelectionSnippet != nil,
+           matchesSelectionCorrectionHotkey(keyCode: keyCode, flags: flags, shortcut: ctx.selectionSnippetHotkey),
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            DispatchQueue.main.async {
+                ctx.onCaptureSelectionSnippet?()
+            }
+            return nil
+        }
 
         if ctx.isSubmitEnabled,
            isReturnKeyCode(keyCode),
@@ -548,6 +607,8 @@ public final class MacHotkeyMonitor: HotkeyService {
             tapContext.onToggle = nil
             tapContext.onSubmit = nil
             tapContext.onAIFinish = nil
+            tapContext.onCaptureSelectionCorrection = nil
+            tapContext.onCaptureSelectionSnippet = nil
             tapContext.hotkey = nil
             tapContext.aiFinishHotkey = nil
             tapContext.monitor = nil
@@ -578,6 +639,22 @@ public final class MacHotkeyMonitor: HotkeyService {
         }
 
         return nil
+    }
+
+    private static func matchesSelectionCorrectionHotkey(
+        keyCode: UInt16,
+        flags: CGEventFlags,
+        shortcut: VoceKeyboardShortcut
+    ) -> Bool {
+        let userMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+        return keyCode == shortcut.keyCode
+            && flags.intersection(userMods) == cgFlags(for: shortcut.modifiers)
+    }
+
+    private static func cgFlags(for modifiers: [VoceKeyboardShortcut.Modifier]) -> CGEventFlags {
+        modifiers.reduce(into: CGEventFlags()) { partialResult, modifier in
+            partialResult.insert(modifier.cgFlag)
+        }
     }
 
     // MARK: - Utilities
@@ -638,6 +715,17 @@ private extension HandsFreeHotkey.Modifier {
         case .command: return .command
         case .shift: return .shift
         case .function: return .function
+        }
+    }
+}
+
+private extension VoceKeyboardShortcut.Modifier {
+    var cgFlag: CGEventFlags {
+        switch self {
+        case .control: return .maskControl
+        case .option: return .maskAlternate
+        case .command: return .maskCommand
+        case .shift: return .maskShift
         }
     }
 }

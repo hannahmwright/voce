@@ -5,6 +5,9 @@ public protocol HistoryStoreProtocol: Sendable {
     /// Appends a new transcript entry to the history.
     func append(entry: TranscriptEntry) async throws
 
+    /// Replaces an existing transcript entry.
+    func update(entry: TranscriptEntry) async throws
+
     /// Deletes the entry with the given ID.
     func delete(entryID: UUID) async throws
 

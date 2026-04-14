@@ -96,6 +96,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var pressToTalkHotkey: PressToTalkHotkey
         var handsFreeGlobalHotkey: HandsFreeToggleHotkey?
         var enterFinishesHandsFreeAndSubmits: Bool
+        var dictionaryCorrectionHotkey: VoceKeyboardShortcut
+        var snippetCreationHotkey: VoceKeyboardShortcut
 
         enum CodingKeys: String, CodingKey {
             case optionPressToTalkEnabled
@@ -104,18 +106,24 @@ struct AppPreferences: Codable, Sendable, Equatable {
             case handsFreeGlobalHotkey
             case handsFreeGlobalKeyCode
             case enterFinishesHandsFreeAndSubmits
+            case dictionaryCorrectionHotkey
+            case snippetCreationHotkey
         }
 
         init(
             optionPressToTalkEnabled: Bool,
             pressToTalkHotkey: PressToTalkHotkey = .default,
             handsFreeGlobalHotkey: HandsFreeToggleHotkey? = .init(hotkey: .keyCode(79)),
-            enterFinishesHandsFreeAndSubmits: Bool = false
+            enterFinishesHandsFreeAndSubmits: Bool = false,
+            dictionaryCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault,
+            snippetCreationHotkey: VoceKeyboardShortcut = .snippetCreationDefault
         ) {
             self.optionPressToTalkEnabled = optionPressToTalkEnabled
             self.pressToTalkHotkey = pressToTalkHotkey
             self.handsFreeGlobalHotkey = handsFreeGlobalHotkey
             self.enterFinishesHandsFreeAndSubmits = enterFinishesHandsFreeAndSubmits
+            self.dictionaryCorrectionHotkey = dictionaryCorrectionHotkey
+            self.snippetCreationHotkey = snippetCreationHotkey
         }
 
         init(from decoder: Decoder) throws {
@@ -141,6 +149,10 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
             }
             enterFinishesHandsFreeAndSubmits = try container.decodeIfPresent(Bool.self, forKey: .enterFinishesHandsFreeAndSubmits) ?? false
+            dictionaryCorrectionHotkey = try container.decodeIfPresent(VoceKeyboardShortcut.self, forKey: .dictionaryCorrectionHotkey)
+                ?? .dictionaryCorrectionDefault
+            snippetCreationHotkey = try container.decodeIfPresent(VoceKeyboardShortcut.self, forKey: .snippetCreationHotkey)
+                ?? .snippetCreationDefault
         }
 
         func encode(to encoder: Encoder) throws {
@@ -149,6 +161,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             try container.encode(pressToTalkHotkey, forKey: .pressToTalkHotkey)
             try container.encodeIfPresent(handsFreeGlobalHotkey, forKey: .handsFreeGlobalHotkey)
             try container.encode(enterFinishesHandsFreeAndSubmits, forKey: .enterFinishesHandsFreeAndSubmits)
+            try container.encode(dictionaryCorrectionHotkey, forKey: .dictionaryCorrectionHotkey)
+            try container.encode(snippetCreationHotkey, forKey: .snippetCreationHotkey)
         }
     }
 
@@ -351,7 +365,9 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 optionPressToTalkEnabled: false,
                 pressToTalkHotkey: .default,
                 handsFreeGlobalHotkey: .init(hotkey: .keyCode(79)),
-                enterFinishesHandsFreeAndSubmits: false
+                enterFinishesHandsFreeAndSubmits: false,
+                dictionaryCorrectionHotkey: .dictionaryCorrectionDefault,
+                snippetCreationHotkey: .snippetCreationDefault
             ),
             dictation: .init(
                 localeIdentifier: "en-US"

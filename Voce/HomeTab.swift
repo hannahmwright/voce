@@ -194,8 +194,6 @@ struct HomeTab: View {
             .background(VoceDesign.accent.opacity(0.06))
             .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
             .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-        } else if !controller.lastTranscript.isEmpty {
-            lastTranscriptCard
         }
     }
 
@@ -222,6 +220,7 @@ struct HomeTab: View {
                             title: "Lifetime",
                             unit: "words"
                         )
+
                     }
                     .padding(VoceDesign.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -236,6 +235,10 @@ struct HomeTab: View {
                     .shadowStyle(.sm)
                     .padding(VoceDesign.md)
                     .padding(.top, VoceDesign.lg)
+
+                    activityHeatmapCard
+                        .padding(.horizontal, VoceDesign.md)
+                        .padding(.bottom, VoceDesign.md)
 
                     if !visiblePermissionCallouts.isEmpty {
                         VStack(spacing: VoceDesign.sm) {
@@ -332,6 +335,192 @@ struct HomeTab: View {
         value.formatted(.number.grouping(.automatic))
     }
 
+    private var activityHeatmapCard: some View {
+        let cells = activityHeatmapGridCells
+        let columns = Array(repeating: GridItem(.fixed(activityHeatmapColumnWidth), spacing: activityHeatmapSpacing), count: 7)
+
+        return VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Activity")
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Text("6 weeks")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(activityCurrentMonthLabel)
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                LazyVGrid(
+                    columns: columns,
+                    alignment: .center,
+                    spacing: activityHeatmapSpacing
+                ) {
+                    ForEach(activityWeekdayLabels, id: \.self) { label in
+                        Text(label)
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(width: activityHeatmapColumnWidth, height: 14, alignment: .center)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+
+                LazyVGrid(
+                    columns: columns,
+                    alignment: .center,
+                    spacing: activityHeatmapSpacing
+                ) {
+                    ForEach(cells) { cell in
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(activityHeatmapColor(for: cell.level, isFuture: cell.isFuture))
+                            .frame(width: activityHeatmapCellSize, height: activityHeatmapCellSize)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .stroke(VoceDesign.border.opacity(cell.level == 0 ? 0.55 : 0.18), lineWidth: VoceDesign.borderThin)
+                            )
+                            .help(activityTooltip(for: cell))
+                            .accessibilityLabel(activityAccessibilityLabel(for: cell))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+        }
+        .padding(VoceDesign.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.contentBackground)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+        )
+        .shadowStyle(.sm)
+    }
+
+    private var activityHeatmapGridCells: [HomeActivityCell] {
+        activityHeatmapWeeks.flatMap(\.self)
+    }
+
+    private var activityHeatmapWeeks: [[HomeActivityCell]] {
+        let calendar = activityCalendar
+        let today = calendar.startOfDay(for: currentTime)
+        let currentWeekStart = calendar.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+        let firstWeekStart = calendar.date(byAdding: .weekOfYear, value: -5, to: currentWeekStart) ?? currentWeekStart
+
+        let statsByDay = Dictionary(uniqueKeysWithValues: controller.dailyUsageActivity.map { stat in
+            (calendar.startOfDay(for: stat.day), stat)
+        })
+        let maxWords = max(statsByDay.values.map(\.wordCount).max() ?? 0, 1)
+
+        return (0..<6).map { weekOffset in
+            let weekStart = calendar.date(byAdding: .weekOfYear, value: weekOffset, to: firstWeekStart) ?? firstWeekStart
+
+            return (0..<7).map { dayOffset in
+                let date = calendar.date(byAdding: .day, value: dayOffset, to: weekStart) ?? weekStart
+                let isFuture = date > today
+                let stat = isFuture ? nil : statsByDay[calendar.startOfDay(for: date)]
+                let words = stat?.wordCount ?? 0
+                let sessions = stat?.sessionCount ?? 0
+
+                return HomeActivityCell(
+                    date: date,
+                    wordCount: words,
+                    sessionCount: sessions,
+                    level: activityHeatmapLevel(wordCount: words, maxWords: maxWords),
+                    isFuture: isFuture
+                )
+            }
+        }
+    }
+
+    private var activityCurrentMonthLabel: String {
+        activityMonthFormatter.string(from: currentTime)
+    }
+
+    private var activityWeekdayLabels: [String] {
+        ["M", "T", "W", "TH", "F", "SA", "S"]
+    }
+
+    private var activityHeatmapCellSize: CGFloat {
+        13
+    }
+
+    private var activityHeatmapColumnWidth: CGFloat {
+        18
+    }
+
+    private var activityHeatmapSpacing: CGFloat {
+        3
+    }
+
+    private var activityCalendar: Calendar {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        return calendar
+    }
+
+    private func activityHeatmapLevel(wordCount: Int, maxWords: Int) -> Int {
+        guard wordCount > 0 else { return 0 }
+        let scaled = Int(ceil((Double(wordCount) / Double(maxWords)) * 4.0))
+        return min(max(scaled, 1), 4)
+    }
+
+    private func activityHeatmapColor(for level: Int, isFuture: Bool) -> Color {
+        if isFuture {
+            return VoceDesign.surfaceSecondary.opacity(0.35)
+        }
+
+        switch level {
+        case 0:
+            return VoceDesign.surfaceSecondary
+        case 1:
+            return VoceDesign.warmAccentFill.opacity(0.62)
+        case 2:
+            return VoceDesign.sage.opacity(0.70)
+        case 3:
+            return VoceDesign.success.opacity(0.82)
+        default:
+            return VoceDesign.warmAccentText.opacity(0.95)
+        }
+    }
+
+    private func activityTooltip(for cell: HomeActivityCell) -> String {
+        let date = activityDateFormatter.string(from: cell.date)
+        if cell.isFuture || cell.wordCount == 0 {
+            return "\(date): no dictation"
+        }
+        let wordUnit = cell.wordCount == 1 ? "word" : "words"
+        let sessionUnit = cell.sessionCount == 1 ? "session" : "sessions"
+        return "\(date): \(cell.wordCount) \(wordUnit) in \(cell.sessionCount) \(sessionUnit)"
+    }
+
+    private func activityAccessibilityLabel(for cell: HomeActivityCell) -> String {
+        activityTooltip(for: cell)
+    }
+
+    private var activityDateFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }
+
+    private var activityMonthFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "LLLL"
+        return formatter
+    }
+
     // MARK: - Hotkey Badge (warm color from backdrop palette)
 
     private func hotkeyBadge(_ label: String) -> some View {
@@ -342,51 +531,6 @@ struct HomeTab: View {
             .padding(.vertical, VoceDesign.xs + VoceDesign.xxs)
             .background(VoceDesign.warmAccentFill)
             .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
-    }
-
-    // MARK: - Last Transcript Card
-
-    private var lastTranscriptCard: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            Text(controller.lastTranscript)
-                .font(VoceDesign.font(size: 13))
-                .foregroundStyle(VoceDesign.textPrimary)
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: VoceDesign.md) {
-                Text("Last transcript")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-
-                Spacer()
-
-                Button {
-                    controller.copyCurrentTranscript()
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    controller.pasteCurrentTranscript()
-                } label: {
-                    Label("Paste", systemImage: "doc.on.clipboard")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.accent)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(VoceDesign.md)
-        .background(VoceDesign.surfaceSolid.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
-        )
     }
 
     // MARK: - History
@@ -488,14 +632,18 @@ struct HomeTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let aiName = entry.aiWorkflowName, !aiName.isEmpty {
-                    Text(aiName)
-                        .font(VoceDesign.font(size: 10, weight: .medium))
-                        .foregroundStyle(VoceDesign.accent)
-                        .padding(.horizontal, VoceDesign.xs + VoceDesign.xxs)
-                        .padding(.vertical, VoceDesign.xxs)
-                        .background(
-                            Capsule().fill(VoceDesign.accent.opacity(0.08))
-                        )
+                    HStack(spacing: VoceDesign.xxs) {
+                        Text(aiName)
+                            .font(VoceDesign.font(size: 10, weight: .medium))
+                            .foregroundStyle(VoceDesign.accent)
+                            .padding(.horizontal, VoceDesign.xs + VoceDesign.xxs)
+                            .padding(.vertical, VoceDesign.xxs)
+                            .background(
+                                Capsule().fill(VoceDesign.accent.opacity(0.08))
+                            )
+
+                        rerunAIButton(for: entry)
+                    }
                 }
             }
 
@@ -536,10 +684,68 @@ struct HomeTab: View {
                 }
             }
             Divider()
+            aiContextMenuItems(for: entry)
+            Divider()
             Button(role: .destructive) { controller.deleteEntry(entry) } label: {
                 Label("Delete", systemImage: "trash")
             }
         }
+    }
+
+    @ViewBuilder
+    private func rerunAIButton(for entry: TranscriptEntry) -> some View {
+        if controller.historyAIProcessingEntryID == entry.id {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 18, height: 18)
+                .accessibilityLabel("Running AI")
+        } else if let workflow = matchingWorkflow(for: entry) {
+            Button {
+                controller.runAIWorkflow(workflow, on: entry)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(VoceDesign.font(size: 10, weight: .semibold))
+                    .foregroundStyle(VoceDesign.accent)
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .help("Re-run \(workflow.name)")
+            .accessibilityLabel("Re-run \(workflow.name)")
+        }
+    }
+
+    @ViewBuilder
+    private func aiContextMenuItems(for entry: TranscriptEntry) -> some View {
+        if let workflow = matchingWorkflow(for: entry) {
+            Button {
+                controller.runAIWorkflow(workflow, on: entry)
+            } label: {
+                Label("Re-run \(workflow.name)", systemImage: "arrow.clockwise")
+            }
+        }
+
+        if controller.enabledAIWorkflows.isEmpty {
+            Text("No AI workflows enabled")
+        } else {
+            Menu("Run AI") {
+                ForEach(controller.enabledAIWorkflows) { workflow in
+                    Button {
+                        controller.runAIWorkflow(workflow, on: entry)
+                    } label: {
+                        Text(workflow.name)
+                    }
+                }
+            }
+        }
+    }
+
+    private func matchingWorkflow(for entry: TranscriptEntry) -> AIWorkflow? {
+        guard let aiWorkflowName = entry.aiWorkflowName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !aiWorkflowName.isEmpty else {
+            return nil
+        }
+
+        return controller.enabledAIWorkflows.first { $0.name == aiWorkflowName }
     }
 
     // MARK: - Permission & Error Banners
@@ -875,6 +1081,24 @@ struct HomeTab: View {
 private struct HomeDayGroup {
     let label: String
     let entries: [TranscriptEntry]
+}
+
+private struct HomeActivityCell: Identifiable {
+    var id: String {
+        HomeActivityCell.idFormatter.string(from: date)
+    }
+
+    let date: Date
+    let wordCount: Int
+    let sessionCount: Int
+    let level: Int
+    let isFuture: Bool
+
+    private static let idFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }
 
 private struct HomeLayout {

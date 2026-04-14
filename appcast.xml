@@ -3,6 +3,29 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.32</title>
+      <sparkle:version>35</sparkle:version>
+      <sparkle:shortVersionString>0.4.32</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.32</h2>
+        <ul>
+          <li>Adds keyboard shortcuts to turn selected text into dictionary fixes and snippets</li>
+          <li>Reworks Dictionary and Snippets into editable tables with modal create and edit flows</li>
+          <li>Adds a six-week activity calendar to Home with a clearer recent-usage layout</li>
+          <li>Improves the dictation bubble so Stop and AI finish actions are available directly from the overlay</li>
+          <li>Updates AI refresh behavior so rerunning a workflow updates the existing history item instead of creating a duplicate</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 14 Apr 2026 23:25:01 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.32/Voce-0.4.32.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="gsPq6tsXFVUNbhRSJp9hQMuqbeWYue3Zt7P9nhvK+L6TadKrUCp1uUQzO9FAMizmrVmn+JcfNlrqAwc141a+Bg=="
+        length="17465420"
+      />
+    </item>
+    <item>
       <title>Version 0.4.31</title>
       <sparkle:version>34</sparkle:version>
       <sparkle:shortVersionString>0.4.31</sparkle:shortVersionString>

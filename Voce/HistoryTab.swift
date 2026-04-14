@@ -216,7 +216,10 @@ struct HistoryTab: View {
                 }
 
                 if let aiWorkflowName = entry.aiWorkflowName, !aiWorkflowName.isEmpty {
-                    aiWorkflowBadge(aiWorkflowName)
+                    HStack(spacing: VoceDesign.xxs) {
+                        aiWorkflowBadge(aiWorkflowName)
+                        rerunAIButton(for: entry)
+                    }
                 }
 
                 statusDot(entry.insertionStatus)
@@ -253,12 +256,70 @@ struct HistoryTab: View {
                 }
             }
             Divider()
+            aiContextMenuItems(for: entry)
+            Divider()
             Button(role: .destructive) {
                 controller.deleteEntry(entry)
             } label: {
                 Label("Delete", systemImage: "trash")
             }
         }
+    }
+
+    @ViewBuilder
+    private func rerunAIButton(for entry: TranscriptEntry) -> some View {
+        if controller.historyAIProcessingEntryID == entry.id {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 18, height: 18)
+                .accessibilityLabel("Running AI")
+        } else if let workflow = matchingWorkflow(for: entry) {
+            Button {
+                controller.runAIWorkflow(workflow, on: entry)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(VoceDesign.font(size: 10, weight: .semibold))
+                    .foregroundStyle(VoceDesign.accent)
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+            .help("Re-run \(workflow.name)")
+            .accessibilityLabel("Re-run \(workflow.name)")
+        }
+    }
+
+    @ViewBuilder
+    private func aiContextMenuItems(for entry: TranscriptEntry) -> some View {
+        if let workflow = matchingWorkflow(for: entry) {
+            Button {
+                controller.runAIWorkflow(workflow, on: entry)
+            } label: {
+                Label("Re-run \(workflow.name)", systemImage: "arrow.clockwise")
+            }
+        }
+
+        if controller.enabledAIWorkflows.isEmpty {
+            Text("No AI workflows enabled")
+        } else {
+            Menu("Run AI") {
+                ForEach(controller.enabledAIWorkflows) { workflow in
+                    Button {
+                        controller.runAIWorkflow(workflow, on: entry)
+                    } label: {
+                        Text(workflow.name)
+                    }
+                }
+            }
+        }
+    }
+
+    private func matchingWorkflow(for entry: TranscriptEntry) -> AIWorkflow? {
+        guard let aiWorkflowName = entry.aiWorkflowName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !aiWorkflowName.isEmpty else {
+            return nil
+        }
+
+        return controller.enabledAIWorkflows.first { $0.name == aiWorkflowName }
     }
 
     // MARK: - Status Dot (replaces verbose pill)
