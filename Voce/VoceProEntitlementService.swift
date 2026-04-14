@@ -290,7 +290,11 @@ actor VoceProEntitlementService {
 final class VoceAccessSessionStore: @unchecked Sendable {
     static let shared = VoceAccessSessionStore()
 
-    private let service = "io.voceapp.voce.access-session"
+#if DEBUG
+    private let service = "io.voceapp.voce.debug.access-session.v2"
+#else
+    private let service = "io.voceapp.voce.access-session.v2"
+#endif
 
     func save(sessionToken: String, email: String) throws {
         let account = normalizedEmail(email)
@@ -329,11 +333,12 @@ final class VoceAccessSessionStore: @unchecked Sendable {
             kSecAttrAccount as String: normalizedEmail(email),
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
         ]
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
+        if status == errSecItemNotFound || status == errSecInteractionNotAllowed {
             return nil
         }
         guard status == errSecSuccess else {

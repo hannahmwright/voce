@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.31</title>
+      <sparkle:version>34</sparkle:version>
+      <sparkle:shortVersionString>0.4.31</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.31</h2>
+        <ul>
+          <li>Prevents Voce access checks from triggering macOS Keychain password prompts</li>
+          <li>Keeps debug and release access sessions in separate Keychain entries</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 14 Apr 2026 14:35:31 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.31/Voce-0.4.31.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="RXOxKFxCd3n53qRiXPIJ5qQqHpjguG0kzj0GsbvdmrU4vNrqKQn7aO+JuCseEtvizfEV5rnehcJjv1G3CUJBDA=="
+        length="17187626"
+      />
+    </item>
+    <item>
       <title>Version 0.4.30</title>
       <sparkle:version>33</sparkle:version>
       <sparkle:shortVersionString>0.4.30</sparkle:shortVersionString>
