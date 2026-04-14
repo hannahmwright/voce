@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.30</title>
+      <sparkle:version>33</sparkle:version>
+      <sparkle:shortVersionString>0.4.30</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.30</h2>
+        <ul>
+          <li>Refines the Voce access flow with email code verification and clearer Free and Pro choices</li>
+          <li>Improves the Pro status screens for paid and invited accounts</li>
+          <li>Improves subscription status checks and access-code error handling</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 14 Apr 2026 05:34:30 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.30/Voce-0.4.30.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="sPD9i/ePiekj3ZN4cX880aWAC7GeOQLal1dNZwZDQVkRM5XW4frJ74MCwUYnr++y7HJkEjh14/CrJpqbCEKICg=="
+        length="17187755"
+      />
+    </item>
+    <item>
       <title>Version 0.4.29</title>
       <sparkle:version>32</sparkle:version>
       <sparkle:shortVersionString>0.4.29</sparkle:shortVersionString>

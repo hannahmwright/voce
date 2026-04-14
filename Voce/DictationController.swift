@@ -397,6 +397,43 @@ final class DictationController: ObservableObject {
         scheduleVoceProEntitlementRefresh(immediate: true)
     }
 
+    func requestVoceAccessCode(email: String) async throws {
+        try await entitlementService.requestVerificationCode(email: email)
+    }
+
+    func verifyVoceAccessCode(email: String, code: String) async throws {
+        _ = try await entitlementService.verifyCode(email: email, code: code)
+        scheduleVoceProEntitlementRefresh(immediate: true)
+    }
+
+    #if DEBUG
+    func resetVoceAccessSessionForTesting() {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else {
+            voceProEntitlementStatus = .missingEmail
+            return
+        }
+
+        Task { [weak self, entitlementService] in
+            do {
+                try await entitlementService.clearSession(email: email)
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.status = "Voce access session reset."
+                    self?.voceProEntitlementStatus = .needsVerification(email: email)
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not reset Voce access."
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                }
+            }
+        }
+    }
+    #endif
+
     func openVoceProCheckout() {
         NSWorkspace.shared.open(VoceProEntitlementService.checkoutURL)
     }
@@ -1302,6 +1339,10 @@ final class DictationController: ObservableObject {
             status = "Enter your email in Settings to start Voce."
             lastError = status
             return false
+        case .needsVerification:
+            status = "Verify your email to start Voce."
+            lastError = status
+            return false
         case .checking:
             status = "Checking Voce access..."
             return false
@@ -1366,7 +1407,11 @@ final class DictationController: ObservableObject {
                     ?? "Could not check Voce access."
                 await MainActor.run {
                     guard self?.normalizedSubscriberEmail == email else { return }
-                    self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                    if case VoceProEntitlementError.authenticationRequired = error {
+                        self?.voceProEntitlementStatus = .needsVerification(email: email)
+                    } else {
+                        self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                    }
                 }
             }
         }
@@ -1394,7 +1439,11 @@ final class DictationController: ObservableObject {
                     ?? "Could not update Voce usage."
                 await MainActor.run {
                     guard self?.normalizedSubscriberEmail == email else { return }
-                    self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                    if case VoceProEntitlementError.authenticationRequired = error {
+                        self?.voceProEntitlementStatus = .needsVerification(email: email)
+                    } else {
+                        self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                    }
                 }
             }
         }

@@ -32,6 +32,12 @@ struct ContentView: View {
     @State private var settingsLaunchTarget: SettingsLaunchTarget?
     @State private var preferencesDraft: AppPreferences = .default
     @State private var accessEmailDraft = ""
+    @State private var accessVerificationCodeDraft = ""
+    @State private var accessVerificationCodeWasSent = false
+    @State private var accessAuthIsWorking = false
+    @State private var accessAuthError = ""
+    @State private var accessEmailWasSubmitted = false
+    @State private var accessPromptCompleted = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 
@@ -273,8 +279,10 @@ struct ContentView: View {
         guard selectedTab != .settings else { return false }
         switch controller.voceProEntitlementStatus {
         case .entitled:
-            return false
-        case .missingEmail, .checking, .notEntitled, .failed:
+            return accessEmailWasSubmitted && !accessPromptCompleted
+        case .checking:
+            return true
+        case .missingEmail, .needsVerification, .notEntitled, .failed:
             return true
         }
     }
@@ -282,22 +290,88 @@ struct ContentView: View {
     private var accessPrompt: some View {
         AccessPromptView(
             email: $accessEmailDraft,
+            verificationCode: $accessVerificationCodeDraft,
             entitlementStatus: controller.voceProEntitlementStatus,
-            onStartFree: startFreeAccess,
+            didSubmitEmail: accessEmailWasSubmitted,
+            didSendVerificationCode: accessVerificationCodeWasSent,
+            isAuthWorking: accessAuthIsWorking,
+            authError: accessAuthError,
+            onNext: requestAccessCode,
+            onVerifyCode: verifyAccessCode,
+            onResendCode: requestAccessCode,
+            onChooseFree: continueWithFreeAccess,
             onSubscribe: subscribeToPro,
-            onOpenSettings: { openSettings() }
+            onContinue: completeAccessPrompt,
+            onBackToEmail: resetAccessEmailStep
         )
     }
 
-    private func startFreeAccess() {
+    private func requestAccessCode() {
         guard saveAccessEmail() else { return }
-        controller.refreshVoceProEntitlement()
+        accessAuthError = ""
+        accessAuthIsWorking = true
+        accessPromptCompleted = false
+
+        Task {
+            do {
+                try await controller.requestVoceAccessCode(email: normalizedAccessEmail)
+                accessVerificationCodeWasSent = true
+                accessVerificationCodeDraft = ""
+            } catch {
+                accessAuthError = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not send an access code."
+            }
+            accessAuthIsWorking = false
+        }
+    }
+
+    private func verifyAccessCode() {
+        let email = normalizedAccessEmail
+        let code = accessVerificationCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty, !code.isEmpty else { return }
+
+        accessAuthError = ""
+        accessAuthIsWorking = true
+
+        Task {
+            do {
+                try await controller.verifyVoceAccessCode(email: email, code: code)
+                accessEmailWasSubmitted = true
+                accessVerificationCodeWasSent = false
+                accessPromptCompleted = false
+            } catch {
+                accessAuthError = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not verify that code."
+            }
+            accessAuthIsWorking = false
+        }
+    }
+
+    private func continueWithFreeAccess() {
+        guard case .entitled(let entitlement) = controller.voceProEntitlementStatus,
+              entitlement.source == .free
+        else { return }
+
+        accessPromptCompleted = true
     }
 
     private func subscribeToPro() {
         guard saveAccessEmail() else { return }
-        controller.refreshVoceProEntitlement()
+        accessPromptCompleted = false
         controller.openVoceProCheckout()
+    }
+
+    private func completeAccessPrompt() {
+        accessPromptCompleted = true
+    }
+
+    private func resetAccessEmailStep() {
+        accessEmailWasSubmitted = false
+        accessVerificationCodeWasSent = false
+        accessVerificationCodeDraft = ""
+        accessAuthError = ""
+        accessAuthIsWorking = false
+        accessPromptCompleted = false
     }
 
     @discardableResult
@@ -376,163 +450,807 @@ enum SettingsLaunchTarget: Equatable {
 
 private struct AccessPromptView: View {
     @Binding var email: String
+    @Binding var verificationCode: String
     let entitlementStatus: VoceProEntitlementStatus
-    let onStartFree: () -> Void
+    let didSubmitEmail: Bool
+    let didSendVerificationCode: Bool
+    let isAuthWorking: Bool
+    let authError: String
+    let onNext: () -> Void
+    let onVerifyCode: () -> Void
+    let onResendCode: () -> Void
+    let onChooseFree: () -> Void
     let onSubscribe: () -> Void
-    let onOpenSettings: () -> Void
+    let onContinue: () -> Void
+    let onBackToEmail: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var heartGlowPulse = false
 
     private var normalizedEmail: String {
         email.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var canSubmit: Bool {
-        !normalizedEmail.isEmpty && !entitlementStatus.isChecking
+    private var canGoNext: Bool {
+        !normalizedEmail.isEmpty && !entitlementStatus.isChecking && !isAuthWorking
     }
 
-    private var isNotEntitled: Bool {
-        if case .notEntitled = entitlementStatus {
+    private var normalizedVerificationCode: String {
+        verificationCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canVerifyCode: Bool {
+        normalizedVerificationCode.count == 6 && !isAuthWorking
+    }
+
+    private var shouldShowVerificationStep: Bool {
+        didSendVerificationCode && !didSubmitEmail
+    }
+
+    private var shouldShowEmailStep: Bool {
+        guard !shouldShowVerificationStep else { return false }
+        switch entitlementStatus {
+        case .missingEmail, .needsVerification, .failed:
             return true
-        }
-        return false
-    }
-
-    private var title: String {
-        switch entitlementStatus {
-        case .notEntitled:
-            return "Keep using Voce"
-        case .failed:
-            return "Check Voce access"
         case .checking:
-            return "Checking Voce access"
-        case .missingEmail, .entitled:
-            return "Start using Voce"
-        }
-    }
-
-    private var detail: String {
-        switch entitlementStatus {
-        case .notEntitled:
-            return "Monthly free time is used. Subscribe for unlimited dictation."
-        case .failed:
-            return "Enter the email you use for Voce and check access again."
-        case .checking:
-            return "This usually takes a moment."
-        case .missingEmail, .entitled:
-            return "Enter an email to get 30 free minutes each month or subscribe for unlimited dictation."
+            return !didSubmitEmail && normalizedEmail.isEmpty
+        case .entitled, .notEntitled:
+            return !didSubmitEmail
         }
     }
 
     var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(VoceDesign.windowBackground.opacity(0.58))
-                .overlay(.regularMaterial.opacity(0.34))
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
+            progressBar
+                .padding(.horizontal, VoceDesign.lg)
+                .padding(.top, VoceDesign.lg)
 
-            VStack(alignment: .leading, spacing: VoceDesign.lg) {
-                header
-                emailField
-                actions
-                footer
+            GeometryReader { _ in
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+
+                    VStack(spacing: VoceDesign.md) {
+                        Group {
+                            if shouldShowVerificationStep {
+                                verificationStep
+                            } else if shouldShowEmailStep {
+                                emailStep
+                            } else {
+                                accessStep
+                            }
+                        }
+                        .frame(maxWidth: 860)
+
+                        navigationBar
+                    }
+                    .frame(maxWidth: 860)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.horizontal, VoceDesign.xl)
+                .padding(.bottom, VoceDesign.md)
             }
-            .frame(width: 430, alignment: .leading)
-            .padding(VoceDesign.xl)
-            .background {
-                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                    .fill(VoceDesign.surface.opacity(0.92))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                            .fill(.regularMaterial.opacity(0.40))
-                    )
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                    .stroke(Color.white.opacity(0.34), lineWidth: VoceDesign.borderThin)
-            )
-            .shadowStyle(.xl)
-            .padding(VoceDesign.xl)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            HStack(spacing: VoceDesign.sm) {
-                Image(systemName: "waveform.circle.fill")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(VoceDesign.accent)
-
-                Text(title)
-                    .font(VoceDesign.heading2())
-                    .foregroundStyle(VoceDesign.textPrimary)
+        .background {
+            ZStack {
+                VoceWindowBackdrop()
+                readabilityWash
             }
-
-            Text(detail)
-                .font(VoceDesign.body())
-                .foregroundStyle(VoceDesign.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var emailField: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.xs) {
-            Text("Email")
-                .font(VoceDesign.captionEmphasis())
-                .foregroundStyle(VoceDesign.textPrimary)
+    private var readabilityWash: some View {
+        ZStack {
+            Rectangle()
+                .fill(VoceDesign.contentBackground.opacity(colorScheme == .dark ? 0.62 : 0.42))
 
-            TextField("email@example.com", text: $email)
-                .textFieldStyle(.plain)
-                .settingsInputChrome()
-                .onSubmit(onStartFree)
-
-            Text("Already subscribed? Use the email from checkout.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+            LinearGradient(
+                colors: [
+                    VoceDesign.surfaceSolid.opacity(colorScheme == .dark ? 0.72 : 0.66),
+                    VoceDesign.surfaceSolid.opacity(colorScheme == .dark ? 0.36 : 0.30),
+                    VoceDesign.contentBackground.opacity(colorScheme == .dark ? 0.58 : 0.48)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
     }
 
-    private var actions: some View {
-        HStack(spacing: VoceDesign.sm) {
-            Button {
-                onStartFree()
-            } label: {
-                if entitlementStatus.isChecking {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Text(isNotEntitled ? "Check access" : "Start free")
+    private var progressBar: some View {
+        HStack(spacing: VoceDesign.xs) {
+            ForEach(0..<2, id: \.self) { step in
+                RoundedRectangle(cornerRadius: VoceDesign.radiusTiny)
+                    .fill(step <= currentStepIndex ? warmText : VoceDesign.border)
+                    .frame(height: VoceDesign.xs)
+            }
+        }
+        .accessibilityLabel("Step \(currentStepIndex + 1) of 2")
+    }
+
+    private var emailStep: some View {
+        VStack(spacing: VoceDesign.xl) {
+            accessHero(
+                icon: "person.crop.circle.fill",
+                title: "Let's set up access",
+                subtitle: "Voce uses your email to find Pro access or start your free monthly time."
+            )
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                Text("Email")
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                TextField("email@example.com", text: $email)
+                    .textFieldStyle(.plain)
+                    .settingsInputChrome()
+                    .onSubmit {
+                        if canGoNext {
+                            onNext()
+                        }
+                    }
+
+                if case .failed = entitlementStatus {
+                    statusLabel
+                }
+
+                if !authError.isEmpty {
+                    errorLabel(authError)
                 }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canSubmit)
-
-            Button("Subscribe to Pro") {
-                onSubscribe()
-            }
-            .buttonStyle(.bordered)
-            .disabled(normalizedEmail.isEmpty)
-
-            Button("Settings") {
-                onOpenSettings()
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(VoceDesign.textSecondary)
+            .frame(maxWidth: 520)
+            .cardStyle(padding: VoceDesign.lg)
         }
     }
 
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.xs) {
-            if entitlementStatus != .missingEmail {
-                Label(entitlementStatus.message, systemImage: statusIconName)
+    private var verificationStep: some View {
+        VStack(spacing: VoceDesign.xl) {
+            accessHero(
+                icon: "envelope.badge.fill",
+                title: "Check your email",
+                subtitle: "Enter the 6-digit code sent to \(normalizedEmail)."
+            )
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                Text("Access code")
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                TextField("", text: $verificationCode)
+                    .textFieldStyle(.plain)
+                    .settingsInputChrome()
+                    .textContentType(.oneTimeCode)
+                    .onChange(of: verificationCode) { _, newValue in
+                        let digits = newValue.filter(\.isNumber)
+                        verificationCode = String(digits.prefix(6))
+                    }
+                    .onSubmit {
+                        if canVerifyCode {
+                            onVerifyCode()
+                        }
+                    }
+
+                HStack(spacing: VoceDesign.sm) {
+                    Text("Codes expire after 10 minutes.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    Button {
+                        onResendCode()
+                    } label: {
+                        Text("Send a new code")
+                            .font(VoceDesign.captionEmphasis())
+                            .foregroundStyle(isAuthWorking ? VoceDesign.textSecondary : warmText)
+                            .padding(.horizontal, VoceDesign.md)
+                            .padding(.vertical, VoceDesign.xs)
+                            .background(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .fill(isAuthWorking ? VoceDesign.surfaceSecondary : warmFill)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isAuthWorking)
+                }
+
+                if !authError.isEmpty {
+                    errorLabel(authError)
+                }
+            }
+            .frame(maxWidth: 520)
+            .cardStyle(padding: VoceDesign.lg)
+        }
+    }
+
+    private var accessStep: some View {
+        VStack(spacing: VoceDesign.xl) {
+            if showsProActiveCard {
+                proActiveCard
+            } else {
+                accessHero(
+                    icon: accessHeroIcon,
+                    title: accessTitle,
+                    subtitle: accessSubtitle
+                )
+
+                switch entitlementStatus {
+                case .checking:
+                    checkingCard
+                case .entitled:
+                    planChoiceCards
+                case .notEntitled:
+                    planChoiceCards
+                case .failed, .missingEmail, .needsVerification:
+                    emailStep
+                }
+            }
+        }
+    }
+
+    private var checkingCard: some View {
+        HStack(spacing: VoceDesign.md) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Checking access for \(normalizedEmail)...")
+                .font(VoceDesign.body())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+        .frame(maxWidth: 520, alignment: .leading)
+        .cardStyle(padding: VoceDesign.lg)
+    }
+
+    private var warmFill: Color {
+        colorScheme == .dark
+            ? VoceDesign.sage.opacity(0.28)
+            : VoceDesign.warmAccentFill
+    }
+
+    private var warmText: Color {
+        colorScheme == .dark
+            ? VoceDesign.sage
+            : VoceDesign.warmAccentText
+    }
+
+    private var warmBadgeFill: Color {
+        colorScheme == .dark
+            ? VoceDesign.sage.opacity(0.22)
+            : VoceDesign.warmAccentText
+    }
+
+    private var warmBadgeText: Color {
+        colorScheme == .dark
+            ? VoceDesign.sage
+            : .white
+    }
+
+    private var proActiveCard: some View {
+        VStack(spacing: VoceDesign.lg) {
+            HStack(spacing: VoceDesign.sm) {
+                Text("Pro")
+                    .font(VoceDesign.labelEmphasis())
+                    .foregroundStyle(warmBadgeText)
+                    .padding(.horizontal, VoceDesign.md)
+                    .padding(.vertical, VoceDesign.xs + 1)
+                    .background(
+                        Capsule()
+                            .fill(warmBadgeFill)
+                    )
+
+                Text("Active")
+                    .font(VoceDesign.labelEmphasis())
+                .foregroundStyle(colorScheme == .dark ? VoceDesign.sage : VoceDesign.success)
+                .padding(.horizontal, VoceDesign.md)
+                .padding(.vertical, VoceDesign.xs + 1)
+                .background(
+                    Capsule()
+                        .fill(colorScheme == .dark ? VoceDesign.sage.opacity(0.14) : VoceDesign.successBackground)
+                        .overlay(
+                            Capsule()
+                                .stroke(colorScheme == .dark ? VoceDesign.sage.opacity(0.2) : VoceDesign.successBorder, lineWidth: VoceDesign.borderThin)
+                        )
+                )
+            }
+
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                warmFill.opacity(colorScheme == .dark ? 0.8 : 0.6),
+                                warmFill.opacity(0.0),
+                            ],
+                            center: .center,
+                            startRadius: 20,
+                            endRadius: 52
+                        )
+                    )
+                    .frame(width: 104, height: 104)
+                    .scaleEffect(heartGlowPulse ? 1.18 : 1.0)
+                    .opacity(heartGlowPulse ? 0.9 : 0.45)
+
+                Circle()
+                    .fill(warmFill)
+                    .frame(width: 58, height: 58)
+                    .overlay(
+                        Circle()
+                            .stroke(warmText.opacity(0.16), lineWidth: VoceDesign.borderThin)
+                    )
+
+                Image(systemName: proActiveIconName)
+                    .font(.system(size: 26, weight: .semibold))
+                    .foregroundStyle(warmText)
+            }
+            .accessibilityHidden(true)
+
+            VStack(spacing: VoceDesign.xs) {
+                Text(proActiveTitle)
+                    .font(VoceDesign.heading1())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(proActiveDetail)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(warmText)
+            }
+            .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, VoceDesign.xl)
+        .padding(.vertical, VoceDesign.xl)
+        .frame(maxWidth: 560)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.92))
+                .overlay(
+                    LinearGradient(
+                        colors: [
+                            warmFill.opacity(colorScheme == .dark ? 0.3 : 0.5),
+                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.08 : 0.22),
+                            VoceDesign.roseLight.opacity(colorScheme == .dark ? 0.04 : 0.1),
+                            VoceDesign.surface.opacity(0.4),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RadialGradient(
+                        colors: [
+                            warmFill.opacity(colorScheme == .dark ? 0.15 : 0.25),
+                            Color.clear,
+                        ],
+                        center: .center,
+                        startRadius: 10,
+                        endRadius: 200
+                    )
+                )
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            warmText.opacity(0.22),
+                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.08 : 0.16),
+                            warmText.opacity(0.08),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: VoceDesign.borderThin
+                )
+        )
+        .shadowStyle(.lg)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(
+                .easeInOut(duration: VoceDesign.animationGlow)
+                .repeatForever(autoreverses: true)
+            ) {
+                heartGlowPulse = true
+            }
+        }
+    }
+
+    private var planChoiceCards: some View {
+        HStack(alignment: .top, spacing: VoceDesign.md) {
+            freePlanCard
+            proPlanCard
+        }
+        .frame(maxWidth: 680)
+    }
+
+    // MARK: - Free plan card
+
+    private var freePlanCard: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.lg) {
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                Text("Free")
+                    .font(VoceDesign.heading3())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(freePlanDetail)
                     .font(VoceDesign.caption())
-                    .foregroundStyle(statusColor)
+                    .foregroundStyle(VoceDesign.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("Have a promo code? Enter it at checkout.")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                planFeatureRow(icon: "clock", text: "30 minutes per month", muted: true)
+                planFeatureRow(icon: "mic.fill", text: "Standard dictation", muted: true)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                onChooseFree()
+            } label: {
+                Text(freePlanActionTitle)
+                    .font(VoceDesign.callout())
+                    .foregroundStyle(canChooseFree ? VoceDesign.textPrimary : VoceDesign.textSecondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, VoceDesign.sm + 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(VoceDesign.surfaceSecondary)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canChooseFree)
+            .opacity(canChooseFree ? 1 : VoceDesign.opacityDisabled)
         }
+        .padding(VoceDesign.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.44))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+        )
+    }
+
+    // MARK: - Pro plan card
+
+    private var proPlanCard: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.lg) {
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                HStack {
+                    Text("Pro")
+                        .font(VoceDesign.heading3())
+                        .foregroundStyle(VoceDesign.textPrimary)
+
+                    Spacer(minLength: 0)
+
+                    Text("Recommended")
+                        .font(VoceDesign.label())
+                        .foregroundStyle(warmText)
+                        .padding(.horizontal, VoceDesign.sm)
+                        .padding(.vertical, VoceDesign.xxs + 1)
+                        .background(
+                            Capsule()
+                                .fill(warmFill)
+                        )
+                }
+
+                Text("Everything you need, no limits.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                planFeatureRow(icon: "infinity", text: "Unlimited dictation", muted: false)
+                planFeatureRow(icon: "sparkles", text: "AI polish and cleanup", muted: false)
+                planFeatureRow(icon: "star.fill", text: "Full Pro access", muted: false)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                onSubscribe()
+            } label: {
+                Text("Subscribe to Pro")
+                    .font(VoceDesign.callout())
+                    .fontWeight(.semibold)
+                    .foregroundStyle(warmText)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, VoceDesign.sm + 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(warmFill)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .stroke(warmText.opacity(0.14), lineWidth: VoceDesign.borderThin)
+                            )
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(normalizedEmail.isEmpty)
+            .opacity(normalizedEmail.isEmpty ? VoceDesign.opacityDisabled : 1)
+        }
+        .padding(VoceDesign.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.6))
+                .overlay(
+                    LinearGradient(
+                        colors: [
+                            warmFill.opacity(colorScheme == .dark ? 0.2 : 0.32),
+                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.06 : 0.12),
+                            VoceDesign.surface.opacity(0.2),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [
+                            warmText.opacity(0.2),
+                            VoceDesign.wheat.opacity(colorScheme == .dark ? 0.06 : 0.12),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: VoceDesign.borderThin
+                )
+        )
+        .shadowStyle(.md)
+    }
+
+    // MARK: - Plan feature row
+
+    private func planFeatureRow(icon: String, text: String, muted: Bool) -> some View {
+        HStack(spacing: VoceDesign.sm) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(muted ? VoceDesign.textSecondary : warmText)
+                .frame(width: 18, alignment: .center)
+
+            Text(text)
+                .font(VoceDesign.callout())
+                .foregroundStyle(muted ? VoceDesign.textSecondary : VoceDesign.textPrimary)
+        }
+    }
+
+    private var navigationBar: some View {
+        HStack {
+            if (didSubmitEmail || didSendVerificationCode) && !entitlementStatus.isChecking {
+                Button {
+                    onBackToEmail()
+                } label: {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(VoceDesign.surface.opacity(0.42)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Change email")
+            }
+
+            Spacer()
+
+            if shouldShowVerificationStep {
+                Button {
+                    onVerifyCode()
+                } label: {
+                    primaryButtonLabel("Verify")
+                }
+                .buttonStyle(.plain)
+                .disabled(!canVerifyCode)
+                .opacity(canVerifyCode ? 1 : VoceDesign.opacityDisabled)
+            } else if shouldShowEmailStep {
+                Button {
+                    onNext()
+                } label: {
+                    if isAuthWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                            .padding(.horizontal, VoceDesign.xl)
+                            .padding(.vertical, VoceDesign.sm)
+                            .background(Capsule().fill(warmFill))
+                    } else {
+                        primaryButtonLabel("Send code")
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!canGoNext)
+                .opacity(canGoNext ? 1 : VoceDesign.opacityDisabled)
+            } else if canContinueToApp {
+                Button {
+                    onContinue()
+                } label: {
+                    primaryButtonLabel("Continue")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: 860)
+    }
+
+    private func accessHero(icon: String, title: String, subtitle: String) -> some View {
+        VStack(spacing: VoceDesign.lg) {
+            ZStack {
+                Circle()
+                    .fill(warmFill)
+                    .frame(width: 88, height: 88)
+
+                Image(systemName: icon)
+                    .font(.system(size: 36, weight: .semibold))
+                    .foregroundStyle(warmText)
+            }
+            .accessibilityHidden(true)
+
+            VStack(spacing: VoceDesign.xs) {
+                Text(title)
+                    .font(VoceDesign.heading1())
+                    .foregroundStyle(VoceDesign.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
+
+                Text(subtitle)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary.opacity(0.76))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 760)
+            }
+            .shadow(color: heroTextShadowColor, radius: 7, x: 0, y: 1)
+        }
+    }
+
+    private func primaryButtonLabel(_ title: String) -> some View {
+        Text(title)
+            .font(VoceDesign.bodyEmphasis())
+            .foregroundStyle(warmText)
+            .padding(.horizontal, VoceDesign.xl)
+            .padding(.vertical, VoceDesign.sm)
+            .background(Capsule().fill(warmFill))
+    }
+
+    private func errorLabel(_ message: String) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(VoceDesign.caption())
+            .foregroundStyle(VoceDesign.error)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var heroTextShadowColor: Color {
+        colorScheme == .dark
+            ? Color.black.opacity(0.32)
+            : Color.white.opacity(0.72)
+    }
+
+    private var statusLabel: some View {
+        Label(entitlementStatus.message, systemImage: statusIconName)
+            .font(VoceDesign.caption())
+            .foregroundStyle(statusColor)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var accessHeroIcon: String {
+        switch entitlementStatus {
+        case .entitled(let entitlement):
+            switch entitlement.source {
+            case .manual:
+                return "checkmark.seal.fill"
+            case .free:
+                return "wand.and.stars"
+            default:
+                return "checkmark.circle.fill"
+            }
+        case .checking:
+            return "arrow.triangle.2.circlepath"
+        case .notEntitled:
+            return "sparkles"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .missingEmail, .needsVerification:
+            return "person.crop.circle.fill"
+        }
+    }
+
+    private var proActiveIconName: String {
+        "heart.fill"
+    }
+
+    private var proActiveTitle: String {
+        guard case .entitled(let entitlement) = entitlementStatus else {
+            return "Voce Pro is active"
+        }
+        return entitlement.source == .manual ? "Voce loves you" : "Voce Pro is active"
+    }
+
+    private var proActiveDetail: String {
+        guard case .entitled(let entitlement) = entitlementStatus else {
+            return "You're all set."
+        }
+        return entitlement.source == .manual ? "Pro is on us." : "You're all set."
+    }
+
+    private var showsProActiveCard: Bool {
+        guard case .entitled(let entitlement) = entitlementStatus else { return false }
+        return entitlement.source == .manual || entitlement.source == .stripe
+    }
+
+    private var accessTitle: String {
+        switch entitlementStatus {
+        case .entitled(let entitlement):
+            switch entitlement.source {
+            case .manual, .stripe:
+                return "Pro is ready"
+            case .free:
+                return "Choose your plan"
+            case nil:
+                return "Voce is ready"
+            }
+        case .checking:
+            return "Checking access"
+        case .notEntitled:
+            return "Choose your plan"
+        case .failed:
+            return "Check Voce access"
+        case .missingEmail, .needsVerification:
+            return "Let's set up access"
+        }
+    }
+
+    private var accessSubtitle: String {
+        switch entitlementStatus {
+        case .entitled(let entitlement):
+            switch entitlement.source {
+            case .manual, .stripe:
+                return "We found Pro for \(normalizedEmail)."
+            case .free:
+                return "Select the plan that works best for you."
+            case nil:
+                return "Access is active for \(normalizedEmail)."
+            }
+        case .checking:
+            return "Looking for an active subscription or granted Pro access."
+        case .notEntitled:
+            return "Upgrade to unlock unlimited dictation and Pro features."
+        case .failed:
+            return "Try the email you used for checkout."
+        case .missingEmail, .needsVerification:
+            return "Voce uses your email to find Pro access or start your free monthly time."
+        }
+    }
+
+    private var canChooseFree: Bool {
+        guard case .entitled(let entitlement) = entitlementStatus else { return false }
+        return entitlement.source == .free
+    }
+
+    private var canContinueToApp: Bool {
+        guard case .entitled(let entitlement) = entitlementStatus else { return false }
+        return entitlement.source == .manual || entitlement.source == .stripe || entitlement.source == nil
+    }
+
+    private var freePlanDetail: String {
+        guard case .entitled(let entitlement) = entitlementStatus,
+              entitlement.source == .free
+        else {
+            return "Free monthly time is used for this email."
+        }
+        if let remaining = entitlement.freeRemainingMinutesText {
+            return "\(remaining) included this month."
+        }
+        return "Monthly free dictation time is available."
+    }
+
+    private var freePlanActionTitle: String {
+        canChooseFree ? "Continue free" : "Free used"
+    }
+
+    private var currentStepIndex: Int {
+        shouldShowEmailStep || shouldShowVerificationStep ? 0 : 1
     }
 
     private var statusIconName: String {
@@ -543,7 +1261,7 @@ private struct AccessPromptView: View {
             return "exclamationmark.triangle.fill"
         case .checking:
             return "arrow.triangle.2.circlepath"
-        case .missingEmail, .notEntitled:
+        case .missingEmail, .needsVerification, .notEntitled:
             return "info.circle.fill"
         }
     }
@@ -554,7 +1272,7 @@ private struct AccessPromptView: View {
             return VoceDesign.accent
         case .failed:
             return VoceDesign.error
-        case .missingEmail, .checking, .notEntitled:
+        case .missingEmail, .needsVerification, .checking, .notEntitled:
             return VoceDesign.textSecondary
         }
     }

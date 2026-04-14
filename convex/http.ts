@@ -6,6 +6,8 @@ import Stripe from "stripe";
 const http = httpRouter();
 
 const DEFAULT_FEATURE = "voce_app_access";
+const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -18,6 +20,100 @@ function bearerToken(request: Request) {
   const authorization = request.headers.get("authorization") ?? "";
   const prefix = "Bearer ";
   return authorization.startsWith(prefix) ? authorization.slice(prefix.length) : null;
+}
+
+function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function randomDigits(length: number) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => String(byte % 10)).join("");
+}
+
+function randomToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Hex(value: string) {
+  const data = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function authSecret() {
+  return process.env.VOCE_AUTH_SECRET;
+}
+
+async function codeHash(email: string, code: string) {
+  const secret = authSecret();
+  if (!secret) {
+    throw new Error("Voce auth is not configured");
+  }
+  return await sha256Hex(`${secret}:code:${normalizeEmail(email)}:${code}`);
+}
+
+async function tokenHash(token: string) {
+  const secret = authSecret();
+  if (!secret) {
+    throw new Error("Voce auth is not configured");
+  }
+  return await sha256Hex(`${secret}:session:${token}`);
+}
+
+async function sendAccessCodeEmail(email: string, code: string) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.VOCE_AUTH_EMAIL_FROM ?? "Voce <access@voceapp.io>";
+  if (!apiKey) {
+    throw new Error("Email auth is not configured");
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: email,
+      subject: "Your Voce access code",
+      text: `Your Voce access code is ${code}. It expires in 10 minutes.`,
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`Resend rejected access code email with ${response.status}: ${responseText}`);
+  }
+}
+
+async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: string) {
+  const token = request.headers.get("x-voce-session-token");
+  if (!token) {
+    return null;
+  }
+
+  const hash = await tokenHash(token);
+  const session = await ctx.runQuery(internal.auth.sessionForTokenHash, { tokenHash: hash });
+  if (!session || session.expiresAt <= Date.now()) {
+    return null;
+  }
+
+  const email = normalizeEmail(requestedEmail);
+  if (session.email !== email) {
+    return null;
+  }
+
+  await ctx.runMutation(internal.auth.touchSession, { tokenHash: hash });
+  return email;
 }
 
 function productIdFromPrice(price: Stripe.Price | string | null | undefined) {
@@ -182,6 +278,80 @@ async function createPortalSession(ctx: any, email: string) {
 
 
 http.route({
+  path: "/auth/start",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const body = (await request.json()) as { email?: string };
+    if (!body.email) {
+      return jsonResponse({ error: "Missing email" }, 400);
+    }
+
+    const email = normalizeEmail(body.email);
+    if (!isValidEmail(email)) {
+      return jsonResponse({ error: "Invalid email" }, 400);
+    }
+
+    const code = randomDigits(6);
+    const hash = await codeHash(email, code);
+    await ctx.runMutation(internal.auth.createEmailCode, {
+      email,
+      codeHash: hash,
+      expiresAt: Date.now() + EMAIL_CODE_TTL_MS,
+    });
+    try {
+      await sendAccessCodeEmail(email, code);
+    } catch (error) {
+      console.error("Could not send Voce access code", {
+        emailDomain: email.split("@")[1] ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return jsonResponse({ error: "Could not send access code" }, 502);
+    }
+
+    return jsonResponse({ sent: true, email });
+  }),
+});
+
+http.route({
+  path: "/auth/verify",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const body = (await request.json()) as { email?: string; code?: string };
+    if (!body.email || !body.code) {
+      return jsonResponse({ error: "Missing email or code" }, 400);
+    }
+
+    const email = normalizeEmail(body.email);
+    if (!isValidEmail(email)) {
+      return jsonResponse({ error: "Invalid email" }, 400);
+    }
+
+    const code = body.code.trim();
+    if (!/^\d{6}$/.test(code)) {
+      return jsonResponse({ error: "Invalid code" }, 400);
+    }
+
+    const hash = await codeHash(email, code);
+    const isValid = await ctx.runMutation(internal.auth.consumeEmailCode, {
+      email,
+      codeHash: hash,
+    });
+    if (!isValid) {
+      return jsonResponse({ error: "Invalid or expired code" }, 401);
+    }
+
+    const sessionToken = randomToken();
+    await ctx.runMutation(internal.auth.createSession, {
+      email,
+      tokenHash: await tokenHash(sessionToken),
+      expiresAt: Date.now() + SESSION_TTL_MS,
+    });
+
+    return jsonResponse({ email, sessionToken, expiresAt: Date.now() + SESSION_TTL_MS });
+  }),
+});
+
+http.route({
   path: "/entitlements/check",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
@@ -194,9 +364,13 @@ http.route({
     if (!body.email) {
       return jsonResponse({ error: "Missing email" }, 400);
     }
+    const email = await verifiedSessionEmail(ctx, request, body.email);
+    if (!email) {
+      return jsonResponse({ error: "Email verification required" }, 401);
+    }
 
     const entitlement = await ctx.runQuery(api.entitlements.check, {
-      email: body.email,
+      email,
       feature: body.feature ?? DEFAULT_FEATURE,
     });
     return jsonResponse(entitlement);
@@ -216,12 +390,16 @@ http.route({
     if (!body.email) {
       return jsonResponse({ error: "Missing email" }, 400);
     }
+    const email = await verifiedSessionEmail(ctx, request, body.email);
+    if (!email) {
+      return jsonResponse({ error: "Email verification required" }, 401);
+    }
     if (typeof body.seconds !== "number" || !Number.isFinite(body.seconds)) {
       return jsonResponse({ error: "Missing usage seconds" }, 400);
     }
 
     const entitlement = await ctx.runMutation(api.entitlements.recordUsage, {
-      email: body.email,
+      email,
       feature: body.feature ?? DEFAULT_FEATURE,
       seconds: body.seconds,
     });
@@ -286,8 +464,12 @@ http.route({
     if (!body.email) {
       return jsonResponse({ error: "Missing email" }, 400);
     }
+    const email = await verifiedSessionEmail(ctx, request, body.email);
+    if (!email) {
+      return jsonResponse({ error: "Email verification required" }, 401);
+    }
 
-    return await createPortalSession(ctx, body.email);
+    return await createPortalSession(ctx, email);
   }),
 });
 

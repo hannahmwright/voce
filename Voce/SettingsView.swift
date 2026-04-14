@@ -202,6 +202,16 @@ struct SettingsView: View {
     private func groupContent(_ group: SettingsGroup) -> some View {
         switch group {
         case .setup:
+            #if DEBUG
+            VoceAccessSettingsSection(
+                preferences: $preferencesDraft,
+                entitlementStatus: controller.voceProEntitlementStatus,
+                onRefreshEntitlement: controller.refreshVoceProEntitlement,
+                onSubscribe: controller.openVoceProCheckout,
+                onManageSubscription: controller.openVoceProPortal,
+                onResetAccessSession: controller.resetVoceAccessSessionForTesting
+            )
+            #else
             VoceAccessSettingsSection(
                 preferences: $preferencesDraft,
                 entitlementStatus: controller.voceProEntitlementStatus,
@@ -209,6 +219,7 @@ struct SettingsView: View {
                 onSubscribe: controller.openVoceProCheckout,
                 onManageSubscription: controller.openVoceProPortal
             )
+            #endif
             PermissionsSettingsSection()
             RecordingSettingsSection(
                 preferences: $preferencesDraft,

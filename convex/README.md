@@ -17,12 +17,18 @@ npx convex run entitlements:revokeManual '{"email":"friend@example.com"}'
 Environment variables to set in Convex:
 
 ```sh
+npx convex env set VOCE_AUTH_SECRET <long-random-secret>
+npx convex env set RESEND_API_KEY re_...
+npx convex env set VOCE_AUTH_EMAIL_FROM "Voce <access@your-domain.com>"
 npx convex env set STRIPE_SECRET_KEY sk_test_...
 npx convex env set STRIPE_WEBHOOK_SECRET whsec_...
 npx convex env set STRIPE_PORTAL_CONFIGURATION_ID bpc_...
 ```
 
-`VOCE_ENTITLEMENT_API_SECRET` is optional. Only set it if the Mac app is also configured to send the same bearer token.
+`VOCE_AUTH_SECRET` is required for hashing one-time email codes and app session tokens.
+`RESEND_API_KEY` and `VOCE_AUTH_EMAIL_FROM` are required for sending access codes.
+`VOCE_ENTITLEMENT_API_SECRET` is optional and should not be used as the primary app access control.
+The Mac app requires a verified email session token for entitlement checks, usage recording, and subscription portal sessions.
 
 Stripe should send subscription webhooks to:
 
@@ -34,6 +40,13 @@ The app entitlement check endpoint is:
 
 ```txt
 https://<convex-deployment>.convex.site/entitlements/check
+```
+
+The app email verification endpoints are:
+
+```txt
+https://<convex-deployment>.convex.site/auth/start
+https://<convex-deployment>.convex.site/auth/verify
 ```
 
 The app usage endpoint is:

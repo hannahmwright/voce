@@ -2,6 +2,27 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  emailAuthCodes: defineTable({
+    email: v.string(),
+    codeHash: v.string(),
+    expiresAt: v.number(),
+    attempts: v.number(),
+    consumedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_email", ["email"])
+    .index("by_email_code_hash", ["email", "codeHash"]),
+
+  authSessions: defineTable({
+    email: v.string(),
+    tokenHash: v.string(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    lastSeenAt: v.number(),
+  })
+    .index("by_token_hash", ["tokenHash"])
+    .index("by_email", ["email"]),
+
   manualEntitlements: defineTable({
     email: v.string(),
     feature: v.string(),
