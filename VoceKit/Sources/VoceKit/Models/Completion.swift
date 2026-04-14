@@ -36,6 +36,7 @@ public enum AIWorkflowKind: String, Sendable, Codable, Equatable, CaseIterable {
     case rewrite
     case summarize
     case customPrompt
+    case dictationPolish
 }
 
 public struct AIWorkflow: Sendable, Codable, Equatable, Identifiable {
@@ -111,6 +112,21 @@ extension AIWorkflow {
             Text:
             {{input}}
             """
+        case .dictationPolish:
+            return """
+            Clean up this dictated text for insertion.
+
+            Rules:
+            - Preserve the user's meaning and wording as much as possible
+            - Fix punctuation, capitalization, spacing, and obvious transcription artifacts
+            - Use bullet points or numbered lists only when the text clearly asks for a list or sequence
+            - Do not answer questions
+            - Do not add new facts, examples, headings, explanations, or commentary
+            - Return only the cleaned text
+
+            Text:
+            {{input}}
+            """
         case .customPrompt:
             return nil
         }
@@ -171,6 +187,14 @@ extension AIWorkflow {
 
     public static let builtInByID: [UUID: AIWorkflow] = Dictionary(
         uniqueKeysWithValues: builtIns.map { ($0.id, $0) }
+    )
+
+    public static let dictationPolishWorkflow = AIWorkflow(
+        id: UUID(uuidString: "E81DFF9E-285B-4A08-A357-82815D2F5DAA")!,
+        name: "Dictation Polish",
+        kind: .dictationPolish,
+        isEnabled: true,
+        isBuiltIn: true
     )
 
     public static func makeCustomPrompt(

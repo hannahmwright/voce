@@ -189,6 +189,7 @@ final class DictationController: ObservableObject {
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var recordingElapsed: TimeInterval = 0
     @Published var hasBootstrapped = false
+    @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService = MacClipboardService()
@@ -198,6 +199,7 @@ final class DictationController: ObservableObject {
     private let mediaInterruption: MediaInterruptionService
     private let preferencesStore: AppPreferencesStore
     private let launchAtLoginService: LaunchAtLoginService
+    private let entitlementService: VoceProEntitlementService
     private let clipboardRecoveryPrompt = ClipboardRecoveryPromptPresenter()
 
     private var lexiconService: PersonalLexiconService
@@ -224,8 +226,10 @@ final class DictationController: ObservableObject {
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var overlayDismissTask: Task<Void, Never>?
+    private var entitlementRefreshTask: Task<Void, Never>?
     private var terminationObserver: Any?
     private var overlayPersistenceBundleIdentifier: String?
+    private var activeFreeUsageLimitSeconds: TimeInterval?
     private var suppressNextPressToTalkStop = false
 
     init(
@@ -233,13 +237,15 @@ final class DictationController: ObservableObject {
         overlay: MacOverlayPresenter = MacOverlayPresenter(),
         mediaInterruption: MediaInterruptionService = MacMediaInterruptionService(),
         preferencesStore: AppPreferencesStore = AppPreferencesStore(),
-        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService()
+        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
+        entitlementService: VoceProEntitlementService = VoceProEntitlementService()
     ) {
         self.hotkey = hotkey
         self.overlay = overlay
         self.mediaInterruption = mediaInterruption
         self.preferencesStore = preferencesStore
         self.launchAtLoginService = launchAtLoginService
+        self.entitlementService = entitlementService
         self.historyStore = HistoryStore(clipboardService: clipboardService)
         self.lexiconService = PersonalLexiconService(entries: AppPreferences.default.lexiconEntries)
         self.styleProfileService = StyleProfileService(
@@ -303,6 +309,8 @@ final class DictationController: ObservableObject {
         hotkey.stop()
         overlayDismissTask?.cancel()
         overlayDismissTask = nil
+        entitlementRefreshTask?.cancel()
+        entitlementRefreshTask = nil
         overlay.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
@@ -342,12 +350,15 @@ final class DictationController: ObservableObject {
         await inferLifetimeTrackingStartIfNeeded()
         overlay.prepareWindow()
         hasBootstrapped = true
+        scheduleVoceProEntitlementRefresh(immediate: true)
     }
 
     func savePreferences(announceImmediateSave: Bool = true) {
+        let previousSubscriberEmail = normalizedSubscriberEmail
         var snapshot = preferences
         snapshot.normalize()
         preferences = snapshot
+        scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: previousSubscriberEmail)
 
         Task {
             await preferencesStore.save(snapshot)
@@ -356,9 +367,11 @@ final class DictationController: ObservableObject {
     }
 
     func applySettingsDraft(preferences draft: AppPreferences, announceImmediateSave: Bool = true) {
+        let previousSubscriberEmail = normalizedSubscriberEmail
         var snapshot = draft
         snapshot.normalize()
         preferences = snapshot
+        scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: previousSubscriberEmail)
 
         Task {
             await preferencesStore.save(snapshot)
@@ -369,12 +382,49 @@ final class DictationController: ObservableObject {
     /// Persist preferences to disk without rebuilding the dictation runtime.
     /// Use this for non-runtime fields like scratchPadContent, userName, and metrics.
     func savePreferencesQuietly(preferences draft: AppPreferences) {
+        let previousSubscriberEmail = normalizedSubscriberEmail
         var snapshot = draft
         snapshot.normalize()
         preferences = snapshot
+        scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: previousSubscriberEmail)
 
         Task {
             await preferencesStore.save(snapshot)
+        }
+    }
+
+    func refreshVoceProEntitlement() {
+        scheduleVoceProEntitlementRefresh(immediate: true)
+    }
+
+    func openVoceProCheckout() {
+        NSWorkspace.shared.open(VoceProEntitlementService.checkoutURL)
+    }
+
+    func openVoceProPortal() {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else {
+            status = "Enter your email to manage your subscription."
+            lastError = status
+            return
+        }
+
+        status = "Opening subscription settings..."
+        Task { [weak self, entitlementService] in
+            do {
+                let portalURL = try await entitlementService.portalURL(email: email)
+                await MainActor.run {
+                    NSWorkspace.shared.open(portalURL)
+                    self?.status = "Subscription settings opened."
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not open subscription settings."
+                await MainActor.run {
+                    self?.status = message
+                    self?.lastError = message
+                }
+            }
         }
     }
 
@@ -478,6 +528,7 @@ final class DictationController: ObservableObject {
 
     func pressToTalkStart() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        guard canStartRecordingNow() else { return }
         suppressNextPressToTalkStop = false
         apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
     }
@@ -495,6 +546,9 @@ final class DictationController: ObservableObject {
     }
 
     func toggleHandsFree() {
+        if recordingLifecycleState == .idle {
+            guard canStartRecordingNow() else { return }
+        }
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
     }
 
@@ -762,6 +816,7 @@ final class DictationController: ObservableObject {
         activeAppContext = capturedContext
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
         pendingCompletionActionOverride = nil
+        activeFreeUsageLimitSeconds = voceProEntitlementStatus.freeRecordingRemainingSeconds
 
         // Restore per-app overlay position if the user previously dragged it,
         // otherwise fall back to accessibility-based anchoring.
@@ -810,6 +865,7 @@ final class DictationController: ObservableObject {
                 recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.recordingElapsed += 1
+                        self?.stopIfFreeUsageLimitReached()
                     }
                 }
                 overlay.setAnchorSnapshot(overlayAnchorSnapshot)
@@ -835,6 +891,7 @@ final class DictationController: ObservableObject {
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
                 activeAppContext = nil
+                activeFreeUsageLimitSeconds = nil
                 overlayPersistenceBundleIdentifier = nil
                 pendingCompletionActionOverride = nil
                 updateActiveRecordingHotkeys()
@@ -863,6 +920,7 @@ final class DictationController: ObservableObject {
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
+        activeFreeUsageLimitSeconds = nil
         updateActiveRecordingHotkeys()
 
         Task {
@@ -900,15 +958,18 @@ final class DictationController: ObservableObject {
         // Capture streaming session before clearing state.
         let previewSession = activePreviewSession
         activePreviewSession = nil
+        let recordedSeconds = recordingElapsed
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
         recordingTimer = nil
-        accumulateRecordingSeconds(recordingElapsed)
+        accumulateRecordingSeconds(recordedSeconds)
+        recordVoceUsageSeconds(recordedSeconds)
         recordingElapsed = 0
         isRecording = false
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
+        activeFreeUsageLimitSeconds = nil
         updateActiveRecordingHotkeys()
 
         Task {
@@ -981,6 +1042,8 @@ final class DictationController: ObservableObject {
                 if case .aiWorkflow(let workflowID) = routedCompletion.action {
                     let workflowName = preferences.ai.workflows.first(where: { $0.id == workflowID })?.name ?? "AI"
                     status = aiGenerationStatusMessage(for: workflowName)
+                } else if shouldPolishPlainDictation(routedCompletion) {
+                    status = "Polishing…"
                 }
 
                 do {
@@ -993,7 +1056,8 @@ final class DictationController: ObservableObject {
                     let execution = try await executor.execute(
                         routedCompletion: routedCompletion,
                         finalizedTranscript: finalizedTranscript,
-                        workflows: preferences.ai.workflows
+                        workflows: preferences.ai.workflows,
+                        dictationPolishingEnabled: shouldPolishPlainDictation(routedCompletion)
                     )
                     let executionElapsed = executionBeganAt.duration(to: clock.now)
                     let executionElapsedSeconds = Double(executionElapsed.components.seconds)
@@ -1220,6 +1284,122 @@ final class DictationController: ObservableObject {
         preferences.ai.workflows
     }
 
+    private var normalizedSubscriberEmail: String {
+        preferences.billing.subscriberEmail
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private var canUseDictationPolish: Bool {
+        voceProEntitlementStatus.isEntitled
+    }
+
+    private func canStartRecordingNow() -> Bool {
+        switch voceProEntitlementStatus {
+        case .entitled:
+            return true
+        case .missingEmail:
+            status = "Enter your email in Settings to start Voce."
+            lastError = status
+            return false
+        case .checking:
+            status = "Checking Voce access..."
+            return false
+        case .notEntitled:
+            status = "Monthly free time is used. Subscribe to keep using Voce."
+            lastError = status
+            return false
+        case .failed:
+            status = "Could not check Voce access."
+            lastError = voceProEntitlementStatus.message
+            scheduleVoceProEntitlementRefresh(immediate: true)
+            return false
+        }
+    }
+
+    private func stopIfFreeUsageLimitReached() {
+        guard let activeFreeUsageLimitSeconds,
+              activeFreeUsageLimitSeconds > 0,
+              recordingElapsed >= activeFreeUsageLimitSeconds,
+              isRecording
+        else {
+            return
+        }
+
+        status = "Monthly free time reached."
+        stopActiveRecording()
+    }
+
+    private func scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: String) {
+        if previousEmail != normalizedSubscriberEmail {
+            scheduleVoceProEntitlementRefresh(immediate: false)
+        }
+    }
+
+    private func scheduleVoceProEntitlementRefresh(immediate: Bool) {
+        let email = normalizedSubscriberEmail
+        entitlementRefreshTask?.cancel()
+
+        guard !email.isEmpty else {
+            voceProEntitlementStatus = .missingEmail
+            return
+        }
+
+        voceProEntitlementStatus = .checking(email: email)
+        let delayNanoseconds: UInt64 = immediate ? 0 : 500_000_000
+        entitlementRefreshTask = Task { [weak self, entitlementService] in
+            if delayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: delayNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+
+            do {
+                let entitlement = try await entitlementService.check(email: email)
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.voceProEntitlementStatus = entitlement.entitled
+                        ? .entitled(entitlement)
+                        : .notEntitled(email: email)
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not check Voce access."
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                }
+            }
+        }
+    }
+
+    private func recordVoceUsageSeconds(_ seconds: TimeInterval) {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty, seconds > 0 else { return }
+
+        let wholeSeconds = max(1, Int(ceil(seconds)))
+        Task { [weak self, entitlementService] in
+            do {
+                let entitlement = try await entitlementService.recordUsage(
+                    email: email,
+                    seconds: wholeSeconds
+                )
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.voceProEntitlementStatus = entitlement.entitled
+                        ? .entitled(entitlement)
+                        : .notEntitled(email: email)
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not update Voce usage."
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.voceProEntitlementStatus = .failed(email: email, message: message)
+                }
+            }
+        }
+    }
+
     private func validateEngineConfiguration() {
         let localeIdentifier = preferences.dictation.localeIdentifier
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1379,6 +1559,11 @@ final class DictationController: ObservableObject {
         if let submitWarning = execution.submitWarning, !submitWarning.isEmpty {
             messages.append(submitWarning)
         }
+        if execution.dictationPolishingApplied {
+            messages.append("Polished.")
+        } else if execution.dictationPolishingSkippedReason != nil {
+            messages.append("Polish skipped.")
+        }
         status = messages.joined(separator: " ")
     }
 
@@ -1429,6 +1614,19 @@ final class DictationController: ObservableObject {
 
     private func aiGenerationStatusMessage(for workflowName: String) -> String {
         "Generating \(workflowName.lowercased())…"
+    }
+
+    private func shouldPolishPlainDictation(_ routedCompletion: RoutedCompletion) -> Bool {
+        guard aiRuntimeEnabled, preferences.ai.dictationPolishingEnabled, canUseDictationPolish else {
+            return false
+        }
+
+        switch routedCompletion.action {
+        case .insert, .copyToClipboard, .insertAndSubmit:
+            return true
+        case .aiWorkflow:
+            return false
+        }
     }
 
     private func appendHistoryEntry(

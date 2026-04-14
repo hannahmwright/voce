@@ -9,6 +9,7 @@ CLAUDE.md
 *.mobileprovision
 *.key
 vendor/
+node_modules/
 .build/
 .swiftpm/
 DerivedData/

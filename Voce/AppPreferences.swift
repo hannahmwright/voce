@@ -214,6 +214,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var defaultHandsFreeWorkflowID: UUID?
         var handsFreeFinishHotkey: HandsFreeHotkey?
         var leadingPhraseSelectionEnabled: Bool
+        var dictationPolishingEnabled: Bool
         var workflows: [AIWorkflow]
 
         init(
@@ -221,12 +222,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
             defaultHandsFreeWorkflowID: UUID? = AIWorkflow.askID,
             handsFreeFinishHotkey: HandsFreeHotkey? = nil,
             leadingPhraseSelectionEnabled: Bool = true,
+            dictationPolishingEnabled: Bool = false,
             workflows: [AIWorkflow] = AIWorkflow.builtIns
         ) {
             self.isEnabled = isEnabled
             self.defaultHandsFreeWorkflowID = defaultHandsFreeWorkflowID
             self.handsFreeFinishHotkey = handsFreeFinishHotkey
             self.leadingPhraseSelectionEnabled = leadingPhraseSelectionEnabled
+            self.dictationPolishingEnabled = dictationPolishingEnabled
             self.workflows = workflows
         }
 
@@ -236,7 +239,21 @@ struct AppPreferences: Codable, Sendable, Equatable {
             defaultHandsFreeWorkflowID = try container.decodeIfPresent(UUID.self, forKey: .defaultHandsFreeWorkflowID) ?? AIWorkflow.askID
             handsFreeFinishHotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeFinishHotkey)
             leadingPhraseSelectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .leadingPhraseSelectionEnabled) ?? true
+            dictationPolishingEnabled = try container.decodeIfPresent(Bool.self, forKey: .dictationPolishingEnabled) ?? false
             workflows = try container.decodeIfPresent([AIWorkflow].self, forKey: .workflows) ?? AIWorkflow.builtIns
+        }
+    }
+
+    struct Billing: Codable, Sendable, Equatable {
+        var subscriberEmail: String
+
+        init(subscriberEmail: String = "") {
+            self.subscriberEmail = subscriberEmail
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            subscriberEmail = try container.decodeIfPresent(String.self, forKey: .subscriberEmail) ?? ""
         }
     }
 
@@ -246,6 +263,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var insertion: Insertion
     var media: Media
     var ai: AI
+    var billing: Billing
 
     var lexiconEntries: [LexiconEntry]
     var globalStyleProfile: StyleProfile
@@ -266,6 +284,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         insertion: Insertion,
         media: Media,
         ai: AI,
+        billing: Billing = Billing(),
         lexiconEntries: [LexiconEntry],
         globalStyleProfile: StyleProfile,
         appStyleProfiles: [String: StyleProfile],
@@ -284,6 +303,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         self.insertion = insertion
         self.media = media
         self.ai = ai
+        self.billing = billing
         self.lexiconEntries = lexiconEntries
         self.globalStyleProfile = globalStyleProfile
         self.appStyleProfiles = appStyleProfiles
@@ -305,6 +325,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         insertion = try container.decode(Insertion.self, forKey: .insertion)
         media = try container.decode(Media.self, forKey: .media)
         ai = try container.decodeIfPresent(AI.self, forKey: .ai) ?? AI()
+        billing = try container.decodeIfPresent(Billing.self, forKey: .billing) ?? Billing()
         lexiconEntries = try container.decodeIfPresent([LexiconEntry].self, forKey: .lexiconEntries) ?? []
         globalStyleProfile = try container.decodeIfPresent(StyleProfile.self, forKey: .globalStyleProfile) ?? AppPreferences.default.globalStyleProfile
         appStyleProfiles = try container.decodeIfPresent([String: StyleProfile].self, forKey: .appStyleProfiles) ?? [:]
@@ -338,6 +359,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
             ai: .init(),
+            billing: .init(),
             lexiconEntries: seededHiddenLexiconEntries,
             globalStyleProfile: .init(
                 name: "Default",
@@ -423,6 +445,10 @@ struct AppPreferences: Codable, Sendable, Equatable {
         if dictation.localeIdentifier.isEmpty {
             dictation.localeIdentifier = "en-US"
         }
+
+        billing.subscriberEmail = billing.subscriberEmail
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 
     func runtimeRelevantSnapshot() -> AppPreferences {
@@ -435,6 +461,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         snapshot.metricsLastRecordingDate = ""
         snapshot.general.userName = ""
         snapshot.general.appearancePreference = .currentSystemDefault
+        snapshot.billing.subscriberEmail = ""
         return snapshot
     }
 

@@ -22,6 +22,11 @@ public enum AIWorkflowOutputNormalizer {
                 trimmed,
                 labels: ["summary", "summarized text", "concise summary"]
             )
+        case .dictationPolish:
+            return normalizeDirectiveOutput(
+                trimmed,
+                labels: ["cleaned text", "polished text", "formatted text", "cleaned-up text"]
+            )
         case .ask, .customPrompt:
             return trimmed
         }

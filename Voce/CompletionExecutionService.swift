@@ -9,6 +9,8 @@ struct CompletionExecutionOutcome {
     var aiWorkflowName: String?
     var aiProvider: AIProvider?
     var submitWarning: String?
+    var dictationPolishingApplied: Bool = false
+    var dictationPolishingSkippedReason: String?
 }
 
 @MainActor
@@ -20,65 +22,84 @@ struct CompletionExecutionService {
     func execute(
         routedCompletion: RoutedCompletion,
         finalizedTranscript: FinalizedTranscript,
-        workflows: [AIWorkflow]
+        workflows: [AIWorkflow],
+        dictationPolishingEnabled: Bool = false
     ) async throws -> CompletionExecutionOutcome {
         switch routedCompletion.action {
         case .insert:
+            let polished = await polishedDictationTextIfNeeded(
+                finalizedTranscript.cleanText,
+                enabled: dictationPolishingEnabled
+            )
             var result = await insertionService.insert(
-                text: finalizedTranscript.cleanText,
+                text: polished.text,
                 target: finalizedTranscript.appContext
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             return CompletionExecutionOutcome(
                 insertResult: result,
-                finalText: finalizedTranscript.cleanText,
-                sourceText: nil,
+                finalText: polished.text,
+                sourceText: polished.sourceText,
                 action: .insert,
                 aiWorkflowName: nil,
                 aiProvider: nil,
-                submitWarning: nil
+                submitWarning: nil,
+                dictationPolishingApplied: polished.applied,
+                dictationPolishingSkippedReason: polished.skippedReason
             )
 
         case .copyToClipboard:
+            let polished = await polishedDictationTextIfNeeded(
+                finalizedTranscript.cleanText,
+                enabled: dictationPolishingEnabled
+            )
             do {
-                try await clipboardService.setString(finalizedTranscript.cleanText)
+                try await clipboardService.setString(polished.text)
                 var result = InsertResult(
                     status: .copiedOnly,
                     method: .clipboardPaste,
-                    insertedText: finalizedTranscript.cleanText
+                    insertedText: polished.text
                 )
                 result.cleanupOutcome = finalizedTranscript.cleanupOutcome
                 return CompletionExecutionOutcome(
                     insertResult: result,
-                    finalText: finalizedTranscript.cleanText,
-                    sourceText: nil,
+                    finalText: polished.text,
+                    sourceText: polished.sourceText,
                     action: .copyToClipboard,
                     aiWorkflowName: nil,
                     aiProvider: nil,
-                    submitWarning: nil
+                    submitWarning: nil,
+                    dictationPolishingApplied: polished.applied,
+                    dictationPolishingSkippedReason: polished.skippedReason
                 )
             } catch {
                 var result = InsertResult(
                     status: .failed,
                     method: .none,
-                    insertedText: finalizedTranscript.cleanText,
+                    insertedText: polished.text,
                     errorMessage: error.localizedDescription
                 )
                 result.cleanupOutcome = finalizedTranscript.cleanupOutcome
                 return CompletionExecutionOutcome(
                     insertResult: result,
-                    finalText: finalizedTranscript.cleanText,
-                    sourceText: nil,
+                    finalText: polished.text,
+                    sourceText: polished.sourceText,
                     action: .copyToClipboard,
                     aiWorkflowName: nil,
                     aiProvider: nil,
-                    submitWarning: nil
+                    submitWarning: nil,
+                    dictationPolishingApplied: polished.applied,
+                    dictationPolishingSkippedReason: polished.skippedReason
                 )
             }
 
         case .insertAndSubmit:
+            let polished = await polishedDictationTextIfNeeded(
+                finalizedTranscript.cleanText,
+                enabled: dictationPolishingEnabled
+            )
             var result = await insertionService.insert(
-                text: finalizedTranscript.cleanText,
+                text: polished.text,
                 target: finalizedTranscript.appContext
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
@@ -91,12 +112,14 @@ struct CompletionExecutionService {
             }
             return CompletionExecutionOutcome(
                 insertResult: result,
-                finalText: finalizedTranscript.cleanText,
-                sourceText: nil,
+                finalText: polished.text,
+                sourceText: polished.sourceText,
                 action: .insertAndSubmit,
                 aiWorkflowName: nil,
                 aiProvider: nil,
-                submitWarning: submitWarning
+                submitWarning: submitWarning,
+                dictationPolishingApplied: polished.applied,
+                dictationPolishingSkippedReason: polished.skippedReason
             )
 
         case .aiWorkflow(let workflowID):
@@ -118,6 +141,36 @@ struct CompletionExecutionService {
                 aiProvider: aiResult.provider,
                 submitWarning: nil
             )
+        }
+    }
+
+    private func polishedDictationTextIfNeeded(
+        _ text: String,
+        enabled: Bool
+    ) async -> (text: String, sourceText: String?, applied: Bool, skippedReason: String?) {
+        guard enabled else {
+            return (text, nil, false, nil)
+        }
+
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return (text, nil, false, nil)
+        }
+
+        do {
+            let result = try await aiGenerationService.generate(
+                workflow: .dictationPolishWorkflow,
+                input: text
+            )
+            let output = result.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !output.isEmpty else {
+                return (text, nil, false, "AI returned no output.")
+            }
+            let sourceText = output == text ? nil : text
+            return (output, sourceText, true, nil)
+        } catch let error as AIWorkflowError {
+            return (text, nil, false, error.errorDescription ?? "AI polish failed.")
+        } catch {
+            return (text, nil, false, error.localizedDescription)
         }
     }
 }

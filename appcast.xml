@@ -3,6 +3,28 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.29</title>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>0.4.29</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.29</h2>
+        <ul>
+          <li>Adds Voce Pro access with Stripe subscriptions, monthly free usage, and manually granted Pro accounts</li>
+          <li>Adds subscription management from Settings for paying customers</li>
+          <li>Adds AI dictation polish as a Pro-gated automatic cleanup option</li>
+          <li>Fixes AI voice triggers so trailing phrases like "rewrite this" are detected at the end of dictation</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 14 Apr 2026 02:35:36 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.29/Voce-0.4.29.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="eV1jfbGrQcG9ZSQoe58MFf2eVIZwih3krWXgyr1NEuNFrGNkpx8q1h0biZTFPkdpJBrrii8MIECDI8YG4cSQDw=="
+        length="17010546"
+      />
+    </item>
+    <item>
       <title>Version 0.4.28</title>
       <sparkle:version>31</sparkle:version>
       <sparkle:shortVersionString>0.4.28</sparkle:shortVersionString>

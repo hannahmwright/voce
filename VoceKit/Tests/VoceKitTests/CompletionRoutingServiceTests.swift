@@ -108,6 +108,70 @@ func completionRoutingAcceptsNewlineAfterTrigger() throws {
     #expect(routed.inputText == "quarterly update")
 }
 
+@Test("CompletionRoutingService selects trailing AI phrases and strips them")
+func completionRoutingSelectsTrailingPhrase() throws {
+    let service = CompletionRoutingService()
+    let transcript = FinalizedTranscript(
+        rawText: "make this tighter rewrite this",
+        cleanText: "make this tighter rewrite this",
+        appContext: .unknown,
+        sourceSessionID: UUID()
+    )
+
+    let routed = try service.route(
+        finalizedTranscript: transcript,
+        preferredAction: nil,
+        leadingPhraseSelectionEnabled: true,
+        workflows: AIWorkflow.builtIns
+    )
+
+    #expect(routed.action == .aiWorkflow(id: AIWorkflow.rewriteID))
+    #expect(routed.inputText == "make this tighter")
+    #expect(routed.selectedBy == .leadingPhrase(workflowID: AIWorkflow.rewriteID, matchedPhrase: "rewrite this"))
+}
+
+@Test("CompletionRoutingService accepts punctuation around trailing AI trigger phrases")
+func completionRoutingAcceptsPunctuationAroundTrailingTrigger() throws {
+    let service = CompletionRoutingService()
+    let transcript = FinalizedTranscript(
+        rawText: "make this tighter, rewrite this.",
+        cleanText: "make this tighter, rewrite this.",
+        appContext: .unknown,
+        sourceSessionID: UUID()
+    )
+
+    let routed = try service.route(
+        finalizedTranscript: transcript,
+        preferredAction: nil,
+        leadingPhraseSelectionEnabled: true,
+        workflows: AIWorkflow.builtIns
+    )
+
+    #expect(routed.action == .aiWorkflow(id: AIWorkflow.rewriteID))
+    #expect(routed.inputText == "make this tighter")
+}
+
+@Test("CompletionRoutingService ignores trailing AI phrases inside larger words")
+func completionRoutingIgnoresTrailingPhraseWithoutBoundary() throws {
+    let service = CompletionRoutingService()
+    let transcript = FinalizedTranscript(
+        rawText: "make this tighter prerewrite",
+        cleanText: "make this tighter prerewrite",
+        appContext: .unknown,
+        sourceSessionID: UUID()
+    )
+
+    let routed = try service.route(
+        finalizedTranscript: transcript,
+        preferredAction: nil,
+        leadingPhraseSelectionEnabled: true,
+        workflows: AIWorkflow.builtIns
+    )
+
+    #expect(routed.action == .insert)
+    #expect(routed.inputText == "make this tighter prerewrite")
+}
+
 @Test("CompletionRoutingService still throws when trigger is followed only by punctuation")
 func completionRoutingFailsWhenOnlyPunctuationFollowsTrigger() throws {
     let service = CompletionRoutingService()

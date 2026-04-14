@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var lastNonSettingsTab: VoceTab = .home
     @State private var settingsLaunchTarget: SettingsLaunchTarget?
     @State private var preferencesDraft: AppPreferences = .default
+    @State private var accessEmailDraft = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
 
@@ -83,10 +84,14 @@ struct ContentView: View {
         )
         .onAppear {
             preferencesDraft = controller.preferences
+            accessEmailDraft = controller.preferences.billing.subscriberEmail
         }
         .onChange(of: controller.preferences) { _, newValue in
             if newValue != preferencesDraft {
                 preferencesDraft = newValue
+            }
+            if newValue.billing.subscriberEmail != normalizedAccessEmail {
+                accessEmailDraft = newValue.billing.subscriberEmail
             }
         }
         .onChange(of: preferencesDraft) { _, newValue in
@@ -234,7 +239,17 @@ struct ContentView: View {
                 value: selectedTab
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if showsAccessPrompt {
+                accessPrompt
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
+                    .zIndex(5)
+            }
         }
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
+            value: showsAccessPrompt
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
@@ -246,6 +261,56 @@ struct ContentView: View {
                     lineWidth: VoceDesign.borderThin
                 )
         )
+    }
+
+    private var normalizedAccessEmail: String {
+        accessEmailDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private var showsAccessPrompt: Bool {
+        guard selectedTab != .settings else { return false }
+        switch controller.voceProEntitlementStatus {
+        case .entitled:
+            return false
+        case .missingEmail, .checking, .notEntitled, .failed:
+            return true
+        }
+    }
+
+    private var accessPrompt: some View {
+        AccessPromptView(
+            email: $accessEmailDraft,
+            entitlementStatus: controller.voceProEntitlementStatus,
+            onStartFree: startFreeAccess,
+            onSubscribe: subscribeToPro,
+            onOpenSettings: { openSettings() }
+        )
+    }
+
+    private func startFreeAccess() {
+        guard saveAccessEmail() else { return }
+        controller.refreshVoceProEntitlement()
+    }
+
+    private func subscribeToPro() {
+        guard saveAccessEmail() else { return }
+        controller.refreshVoceProEntitlement()
+        controller.openVoceProCheckout()
+    }
+
+    @discardableResult
+    private func saveAccessEmail() -> Bool {
+        let email = normalizedAccessEmail
+        guard !email.isEmpty else { return false }
+
+        var snapshot = preferencesDraft
+        snapshot.billing.subscriberEmail = email
+        snapshot.normalize()
+        preferencesDraft = snapshot
+        controller.applySettingsDraft(preferences: snapshot, announceImmediateSave: false)
+        return true
     }
 
     private func sidebarButton(_ tab: VoceTab, isCompact: Bool = false) -> some View {
@@ -307,6 +372,192 @@ struct ContentView: View {
 
 enum SettingsLaunchTarget: Equatable {
     case handsFreeGlobalHotkey
+}
+
+private struct AccessPromptView: View {
+    @Binding var email: String
+    let entitlementStatus: VoceProEntitlementStatus
+    let onStartFree: () -> Void
+    let onSubscribe: () -> Void
+    let onOpenSettings: () -> Void
+
+    private var normalizedEmail: String {
+        email.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSubmit: Bool {
+        !normalizedEmail.isEmpty && !entitlementStatus.isChecking
+    }
+
+    private var isNotEntitled: Bool {
+        if case .notEntitled = entitlementStatus {
+            return true
+        }
+        return false
+    }
+
+    private var title: String {
+        switch entitlementStatus {
+        case .notEntitled:
+            return "Keep using Voce"
+        case .failed:
+            return "Check Voce access"
+        case .checking:
+            return "Checking Voce access"
+        case .missingEmail, .entitled:
+            return "Start using Voce"
+        }
+    }
+
+    private var detail: String {
+        switch entitlementStatus {
+        case .notEntitled:
+            return "Monthly free time is used. Subscribe for unlimited dictation."
+        case .failed:
+            return "Enter the email you use for Voce and check access again."
+        case .checking:
+            return "This usually takes a moment."
+        case .missingEmail, .entitled:
+            return "Enter an email to get 30 free minutes each month or subscribe for unlimited dictation."
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(VoceDesign.windowBackground.opacity(0.58))
+                .overlay(.regularMaterial.opacity(0.34))
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: VoceDesign.lg) {
+                header
+                emailField
+                actions
+                footer
+            }
+            .frame(width: 430, alignment: .leading)
+            .padding(VoceDesign.xl)
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                    .fill(VoceDesign.surface.opacity(0.92))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                            .fill(.regularMaterial.opacity(0.40))
+                    )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                    .stroke(Color.white.opacity(0.34), lineWidth: VoceDesign.borderThin)
+            )
+            .shadowStyle(.xl)
+            .padding(VoceDesign.xl)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            HStack(spacing: VoceDesign.sm) {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(VoceDesign.accent)
+
+                Text(title)
+                    .font(VoceDesign.heading2())
+                    .foregroundStyle(VoceDesign.textPrimary)
+            }
+
+            Text(detail)
+                .font(VoceDesign.body())
+                .foregroundStyle(VoceDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var emailField: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            Text("Email")
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(VoceDesign.textPrimary)
+
+            TextField("email@example.com", text: $email)
+                .textFieldStyle(.plain)
+                .settingsInputChrome()
+                .onSubmit(onStartFree)
+
+            Text("Already subscribed? Use the email from checkout.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: VoceDesign.sm) {
+            Button {
+                onStartFree()
+            } label: {
+                if entitlementStatus.isChecking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text(isNotEntitled ? "Check access" : "Start free")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!canSubmit)
+
+            Button("Subscribe to Pro") {
+                onSubscribe()
+            }
+            .buttonStyle(.bordered)
+            .disabled(normalizedEmail.isEmpty)
+
+            Button("Settings") {
+                onOpenSettings()
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(VoceDesign.textSecondary)
+        }
+    }
+
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            if entitlementStatus != .missingEmail {
+                Label(entitlementStatus.message, systemImage: statusIconName)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(statusColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("Have a promo code? Enter it at checkout.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+    }
+
+    private var statusIconName: String {
+        switch entitlementStatus {
+        case .entitled:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .checking:
+            return "arrow.triangle.2.circlepath"
+        case .missingEmail, .notEntitled:
+            return "info.circle.fill"
+        }
+    }
+
+    private var statusColor: Color {
+        switch entitlementStatus {
+        case .entitled:
+            return VoceDesign.accent
+        case .failed:
+            return VoceDesign.error
+        case .missingEmail, .checking, .notEntitled:
+            return VoceDesign.textSecondary
+        }
+    }
 }
 
 // MARK: - Tab Visibility Modifier

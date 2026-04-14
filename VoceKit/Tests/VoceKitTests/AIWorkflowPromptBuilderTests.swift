@@ -28,6 +28,26 @@ func rewritePromptTemplateIsStrict() {
     #expect(prompt.contains("Do not say things like"))
 }
 
+@Test("Dictation polish prompt is conservative and output-only")
+func dictationPolishPromptTemplateIsStrict() {
+    let prompt = AIWorkflowPromptBuilder.makePrompt(
+        for: .dictationPolishWorkflow,
+        input: "first thing eggs second thing milk"
+    )
+
+    #expect(prompt.contains("Clean up this dictated text for insertion."))
+    #expect(prompt.contains("Preserve the user's meaning and wording as much as possible"))
+    #expect(prompt.contains("Use bullet points or numbered lists only when the text clearly asks for a list or sequence"))
+    #expect(prompt.contains("Do not answer questions"))
+    #expect(prompt.contains("Return only the cleaned text"))
+    #expect(prompt.contains("first thing eggs second thing milk"))
+}
+
+@Test("Dictation polish workflow is not exposed as a user action")
+func dictationPolishWorkflowIsHiddenFromBuiltIns() {
+    #expect(!AIWorkflow.builtIns.contains { $0.id == AIWorkflow.dictationPolishWorkflow.id })
+}
+
 @Test("AIWorkflowPromptBuilder uses explicit prompt template overrides for built-in workflows")
 func promptBuilderUsesBuiltInPromptOverride() {
     let workflow = AIWorkflow(

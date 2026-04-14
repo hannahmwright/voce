@@ -60,6 +60,7 @@ struct AISettingsSection: View {
     }
 
     @Binding var preferences: AppPreferences
+    let entitlementStatus: VoceProEntitlementStatus
     @State private var sheetMode: SheetMode?
     @State private var draft = WorkflowDraft()
     @State private var hoveredWorkflowID: UUID?
@@ -74,6 +75,15 @@ struct AISettingsSection: View {
                     help: "Turns on Apple Intelligence actions."
                 )
             }
+
+            Toggle(isOn: dictationPolishingBinding) {
+                settingInlineLabel(
+                    "Polish dictated text",
+                    help: "Requires Voce access. Cleans up punctuation, spacing, and obvious list formatting before insertion. Explicit AI actions skip this."
+                )
+            }
+            .disabled(!preferences.ai.isEnabled || !entitlementStatus.isEntitled)
+            .opacity(preferences.ai.isEnabled && entitlementStatus.isEntitled ? 1 : 0.55)
 
             voiceTriggerRow
 
@@ -101,6 +111,17 @@ struct AISettingsSection: View {
                 workflowSection("Custom", indices: [], showsNewButton: true)
             }
         }
+    }
+
+    private var dictationPolishingBinding: Binding<Bool> {
+        Binding(
+            get: {
+                preferences.ai.dictationPolishingEnabled && entitlementStatus.isEntitled
+            },
+            set: { newValue in
+                preferences.ai.dictationPolishingEnabled = newValue
+            }
+        )
     }
 
     private func workflowSection(
@@ -234,6 +255,8 @@ struct AISettingsSection: View {
             return "Rewrite text"
         case .summarize:
             return "Short summary"
+        case .dictationPolish:
+            return "Clean up dictated text"
         case .customPrompt:
             if workflow.id == AIWorkflow.aiPromptID {
                 return "Clean up a prompt"
@@ -250,6 +273,8 @@ struct AISettingsSection: View {
             return "Rewrite"
         case .summarize:
             return "Summarize"
+        case .dictationPolish:
+            return "Polish"
         case .customPrompt:
             if workflow.id == AIWorkflow.aiPromptID {
                 return "Better prompt"
@@ -352,7 +377,7 @@ struct AISettingsSection: View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
             settingInlineLabel(
                 "Trigger mode",
-                help: "Use just the hotkey, or also say rewrite, summarize, or your custom phrase first."
+                help: "Use just the hotkey, or also say rewrite, summarize, or your custom phrase before or after the text."
             )
 
             HStack(spacing: VoceDesign.xs) {

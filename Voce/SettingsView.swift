@@ -202,6 +202,13 @@ struct SettingsView: View {
     private func groupContent(_ group: SettingsGroup) -> some View {
         switch group {
         case .setup:
+            VoceAccessSettingsSection(
+                preferences: $preferencesDraft,
+                entitlementStatus: controller.voceProEntitlementStatus,
+                onRefreshEntitlement: controller.refreshVoceProEntitlement,
+                onSubscribe: controller.openVoceProCheckout,
+                onManageSubscription: controller.openVoceProPortal
+            )
             PermissionsSettingsSection()
             RecordingSettingsSection(
                 preferences: $preferencesDraft,
@@ -216,7 +223,10 @@ struct SettingsView: View {
             MediaSettingsSection(preferences: $preferencesDraft)
             AnchorOverrideSettingsSection(preferences: $preferencesDraft)
         case .ai:
-            AISettingsSection(preferences: $preferencesDraft)
+            AISettingsSection(
+                preferences: $preferencesDraft,
+                entitlementStatus: controller.voceProEntitlementStatus
+            )
         case .general:
             GeneralSettingsSection(
                 preferences: $preferencesDraft,
