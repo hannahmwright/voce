@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.36</title>
+      <sparkle:version>39</sparkle:version>
+      <sparkle:shortVersionString>0.4.36</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.36</h2>
+        <ul>
+          <li>Fixes Spotify media interruption resume by recognizing Spotify's paused MediaRemote signature</li>
+          <li>Keeps playback-state handling conservative for Apple Music, Safari, and Chrome</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 21 Apr 2026 19:48:09 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.36/Voce-0.4.36.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="6biUVR9sSu3ChjnPBFsjfGikatITFIlX0BxvMUmH66i5nJTqOC8cvpothKsmJ2zBCwE++dYbeTBAcOoVXHvDDw=="
+        length="18048168"
+      />
+    </item>
+    <item>
       <title>Version 0.4.35</title>
       <sparkle:version>38</sparkle:version>
       <sparkle:shortVersionString>0.4.35</sparkle:shortVersionString>
