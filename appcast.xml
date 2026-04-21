@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.37</title>
+      <sparkle:version>40</sparkle:version>
+      <sparkle:shortVersionString>0.4.37</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.37</h2>
+        <ul>
+          <li>Fixes Spotify media interruption resume by tracking when Spotify was the interrupted playback owner</li>
+          <li>Resumes Spotify directly when MediaRemote still reports an ambiguous paused state after dictation</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 21 Apr 2026 20:55:29 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.37/Voce-0.4.37.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="2mtu/dwaRcBXvoK9/rOT+gjt5Pao7vClgPeOGeO8cBsMWQNp/jp626nEGcfbnh55tKVTi4rKMfBUI2zxsByUCg=="
+        length="17398903"
+      />
+    </item>
+    <item>
       <title>Version 0.4.36</title>
       <sparkle:version>39</sparkle:version>
       <sparkle:shortVersionString>0.4.36</sparkle:shortVersionString>
