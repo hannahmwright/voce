@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.35</title>
+      <sparkle:version>38</sparkle:version>
+      <sparkle:shortVersionString>0.4.35</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.35</h2>
+        <ul>
+          <li>Restores reliable media pause behavior for active playback while still avoiding stray resume toggles that could wake Apple Music</li>
+          <li>Fixes Settings tab navigation so tab switches respond on the first click and no longer keep every tab view alive in the background</li>
+          <li>Adds in-app support, bug report, and feature request forms under Help</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 21 Apr 2026 18:39:28 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.35/Voce-0.4.35.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="i5x+I+oG5p3LKCEe/srRX+DMKqJCa0jmnFz0x0N4gML70YJlpl5nod0U/TAYDO912N055tUPYSqN9cfj7+97AQ=="
+        length="18025073"
+      />
+    </item>
+    <item>
       <title>Version 0.4.34</title>
       <sparkle:version>37</sparkle:version>
       <sparkle:shortVersionString>0.4.34</sparkle:shortVersionString>
