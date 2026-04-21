@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.34] - 2026-04-21
+
+### Fixed
+- Fixed tap-to-talk media interruption so Voce no longer sends stray play/pause toggles that can wake Apple Music when no audio was previously playing.
+
 ## [0.4.33] - 2026-04-21
 
 ### Added
