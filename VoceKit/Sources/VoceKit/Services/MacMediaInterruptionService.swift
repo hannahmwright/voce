@@ -16,32 +16,46 @@ internal func voceMediaKeyTapLocation(
 @MainActor
 public final class MacMediaInterruptionService: MediaInterruptionService {
     private static let logger = VoceKitDiagnostics.logger
+    private static let spotifyDisplayID = "com.spotify.client"
     private var activeTokens: Set<UUID> = []
+    private var interruptedPlaybackOwner: InterruptedPlaybackOwner?
     private let playbackDetector: any MediaPlaybackStateDetector
+    private let spotifyPlaybackController: any SpotifyPlaybackControlling
     private let sendPlayPauseKey: () -> Bool
     private let minimumResumeDelayNanoseconds: UInt64
     private let pauseConfirmationDelayNanoseconds: UInt64
+    private let unknownResumeRetryDelayNanoseconds: UInt64
+    private let maximumUnknownResumeRetryCount: Int
     private var pendingResumeTask: Task<Void, Never>?
     private var pauseSentAtUptimeNanoseconds: UInt64?
 
     public init() {
         let bridge = MediaRemoteBridge()
         self.playbackDetector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+        self.spotifyPlaybackController = SpotifyPlaybackController()
         self.sendPlayPauseKey = SystemMediaKeySender.sendPlayPause
         self.minimumResumeDelayNanoseconds = 300_000_000
         self.pauseConfirmationDelayNanoseconds = 120_000_000
+        self.unknownResumeRetryDelayNanoseconds = 150_000_000
+        self.maximumUnknownResumeRetryCount = 2
     }
 
     init(
         playbackDetector: any MediaPlaybackStateDetector,
+        spotifyPlaybackController: any SpotifyPlaybackControlling = UnavailableSpotifyPlaybackController(),
         sendPlayPauseKey: @escaping () -> Bool,
         minimumResumeDelayNanoseconds: UInt64 = 300_000_000,
-        pauseConfirmationDelayNanoseconds: UInt64 = 120_000_000
+        pauseConfirmationDelayNanoseconds: UInt64 = 120_000_000,
+        unknownResumeRetryDelayNanoseconds: UInt64 = 150_000_000,
+        maximumUnknownResumeRetryCount: Int = 2
     ) {
         self.playbackDetector = playbackDetector
+        self.spotifyPlaybackController = spotifyPlaybackController
         self.sendPlayPauseKey = sendPlayPauseKey
         self.minimumResumeDelayNanoseconds = minimumResumeDelayNanoseconds
         self.pauseConfirmationDelayNanoseconds = pauseConfirmationDelayNanoseconds
+        self.unknownResumeRetryDelayNanoseconds = unknownResumeRetryDelayNanoseconds
+        self.maximumUnknownResumeRetryCount = maximumUnknownResumeRetryCount
     }
 
     public func beginInterruption() async -> MediaInterruptionToken? {
@@ -63,6 +77,12 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         }
 
         let detection = await playbackDetector.detect()
+        let interruptedApplicationDisplayID = playbackDetector.lastDetectedDisplayID
+        let interruptedPlaybackOwner = await identifyInterruptedPlaybackOwner(
+            detection: detection,
+            displayID: interruptedApplicationDisplayID
+        )
+        Self.logger.notice("Media interruption begin detection=\(detection.logValue, privacy: .public)")
         if Task.isCancelled {
             Self.logger.debug("Skipping media interruption because task is cancelled after detection.")
             return nil
@@ -87,27 +107,44 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             }
 
             let postPauseDetection = await playbackDetector.detect()
+            Self.logger.notice(
+                """
+                Media interruption post-pause detection=\(postPauseDetection.logValue, privacy: .public) \
+                initial=\(detection.logValue, privacy: .public)
+                """
+            )
             guard !Task.isCancelled else {
                 Self.logger.debug("Skipping media interruption because task is cancelled after pause confirmation.")
                 return nil
             }
 
-            guard postPauseDetection == .notPlaying else {
+            if postPauseDetection != .notPlaying {
                 Self.logger.debug(
                     """
-                    Media interruption pause was not confirmed. \
+                    Media interruption pause was not confirmed immediately, \
+                    but preserving the resume token because playback was active \
+                    before the pause key send. \
                     Initial=\(detection.logValue, privacy: .public) \
                     afterPause=\(postPauseDetection.logValue, privacy: .public)
                     """
                 )
-                return nil
             }
 
             activeTokens.insert(token.id)
+            self.interruptedPlaybackOwner = interruptedPlaybackOwner
             pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+            Self.logger.notice(
+                """
+                Media interruption token activated. \
+                Active tokens: \(self.activeTokens.count, privacy: .public) \
+                interruptedApp=\(interruptedApplicationDisplayID ?? "nil", privacy: .public) \
+                interruptedOwner=\(interruptedPlaybackOwner?.logValue ?? "nil", privacy: .public)
+                """
+            )
             Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
             return token
         case .notPlaying, .unknown:
+            Self.logger.notice("Media interruption skipped at begin because detection=\(detection.logValue, privacy: .public)")
             Self.logger.debug("Media interruption skipped. Detection: \(detection.logValue, privacy: .public)")
             return nil
         }
@@ -129,6 +166,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         pendingResumeTask?.cancel()
         let pauseSentAtUptimeNanoseconds = self.pauseSentAtUptimeNanoseconds
         let minimumResumeDelayNanoseconds = self.minimumResumeDelayNanoseconds
+        Self.logger.notice("Media interruption scheduling resume check.")
         pendingResumeTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
@@ -149,6 +187,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         defer {
             pendingResumeTask = nil
             pauseSentAtUptimeNanoseconds = nil
+            interruptedPlaybackOwner = nil
         }
 
         guard !Task.isCancelled else {
@@ -161,7 +200,37 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return
         }
 
-        let detection = await playbackDetector.detect()
+        if interruptedPlaybackOwner == .spotify {
+            let spotifyState = await spotifyPlaybackController.playerState()
+            Self.logger.notice(
+                "Media interruption Spotify state at resume=\(spotifyState.logValue, privacy: .public)"
+            )
+            switch spotifyState {
+            case .playing:
+                Self.logger.notice(
+                    "Media interruption resume skipped because Spotify already resumed itself."
+                )
+                Self.logger.debug("Skipping media interruption resume because Spotify already resumed itself.")
+                return
+            case .paused:
+                let didResume = await spotifyPlaybackController.play()
+                Self.logger.notice("Media interruption Spotify resume attempted: \(didResume, privacy: .public)")
+                Self.logger.debug("Media interruption Spotify resume attempted: \(didResume, privacy: .public)")
+                return
+            case .stopped:
+                Self.logger.notice("Media interruption resume skipped because Spotify is stopped.")
+                Self.logger.debug("Skipping media interruption resume because Spotify is stopped.")
+                return
+            case .unknown:
+                let didResume = await spotifyPlaybackController.play()
+                Self.logger.notice("Media interruption Spotify fallback resume attempted: \(didResume, privacy: .public)")
+                Self.logger.debug("Media interruption Spotify fallback resume attempted: \(didResume, privacy: .public)")
+                return
+            }
+        }
+
+        let detection = await stabilizedResumeDetection()
+        Self.logger.notice("Media interruption resume detection=\(detection.logValue, privacy: .public)")
         guard !Task.isCancelled else {
             Self.logger.debug("Skipping media interruption resume because task was cancelled after detection.")
             return
@@ -174,15 +243,54 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         switch detection {
         case .playing, .likelyPlaying:
+            Self.logger.notice(
+                "Media interruption resume skipped because playback already appears active: \(detection.logValue, privacy: .public)"
+            )
             Self.logger.debug(
                 "Skipping media interruption resume because playback already appears active: \(detection.logValue, privacy: .public)"
             )
         case .unknown:
+            Self.logger.notice("Media interruption resume skipped because playback state is unknown.")
             Self.logger.debug("Skipping media interruption resume because playback state is unknown.")
         case .notPlaying:
             let didSend = sendPlayPauseKey()
+            Self.logger.notice("Media interruption resume key send attempted: \(didSend, privacy: .public)")
             Self.logger.debug("Media interruption resume key send attempted: \(didSend, privacy: .public)")
         }
+    }
+
+    private func identifyInterruptedPlaybackOwner(
+        detection: PlaybackDetectionResult,
+        displayID: String?
+    ) async -> InterruptedPlaybackOwner? {
+        guard detection == .playing || detection == .likelyPlaying else { return nil }
+        if displayID == Self.spotifyDisplayID {
+            return .spotify
+        }
+        guard displayID == nil else { return nil }
+        let spotifyState = await spotifyPlaybackController.playerState()
+        return spotifyState == .playing ? .spotify : nil
+    }
+
+    private func stabilizedResumeDetection() async -> PlaybackDetectionResult {
+        var detection = await playbackDetector.detect()
+        var attempt = 0
+
+        while detection == .unknown && attempt < maximumUnknownResumeRetryCount {
+            attempt += 1
+            Self.logger.notice(
+                "Media interruption resume detection unresolved on attempt \(attempt, privacy: .public); retrying."
+            )
+
+            if unknownResumeRetryDelayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: unknownResumeRetryDelayNanoseconds)
+            }
+            guard !Task.isCancelled else { return .unknown }
+
+            detection = await playbackDetector.detect()
+        }
+
+        return detection
     }
 }
 
@@ -206,9 +314,41 @@ enum PlaybackDetectionResult: Sendable, Equatable {
     }
 }
 
+enum InterruptedPlaybackOwner: Sendable, Equatable {
+    case spotify
+
+    var logValue: String {
+        switch self {
+        case .spotify:
+            "spotify"
+        }
+    }
+}
+
+enum SpotifyPlaybackState: Sendable, Equatable {
+    case playing
+    case paused
+    case stopped
+    case unknown
+
+    var logValue: String {
+        switch self {
+        case .playing:
+            "playing"
+        case .paused:
+            "paused"
+        case .stopped:
+            "stopped"
+        case .unknown:
+            "unknown"
+        }
+    }
+}
+
 @MainActor
 protocol MediaPlaybackStateDetector {
     func detect() async -> PlaybackDetectionResult
+    var lastDetectedDisplayID: String? { get }
 }
 
 @MainActor
@@ -226,9 +366,9 @@ protocol MediaRemoteBridging: Sendable {
 final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
     private static let logger = VoceKitDiagnostics.logger
     private static let weakPositiveConfirmationDelayNanoseconds: UInt64 = 80_000_000
-    private static let spotifyDisplayID = "com.spotify.client"
-    private static let spotifyPausedPlaybackState = 2
+    private static let pausedPlaybackState = 2
     private let bridge: any MediaRemoteBridging
+    private(set) var lastDetectedDisplayID: String?
 
     init(bridge: any MediaRemoteBridging = MediaRemoteBridge()) {
         self.bridge = bridge
@@ -244,21 +384,26 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
 
         let secondDecision: DetectionDecision?
         let result: PlaybackDetectionResult
+        let finalDisplayID: String?
 
         switch firstDecision {
         case .playing:
             secondDecision = nil
             result = .playing
+            finalDisplayID = firstSnapshot.displayID
         case .notPlaying:
             secondDecision = nil
             result = .notPlaying
+            finalDisplayID = firstSnapshot.displayID
         case .unknown:
             secondDecision = nil
             result = .unknown
+            finalDisplayID = firstSnapshot.displayID
         case .weakPositivePending:
             if Task.isCancelled {
                 secondDecision = nil
                 result = .unknown
+                finalDisplayID = firstSnapshot.displayID
                 break
             }
 
@@ -266,6 +411,7 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
             if Task.isCancelled {
                 secondDecision = nil
                 result = .unknown
+                finalDisplayID = firstSnapshot.displayID
                 break
             }
 
@@ -284,11 +430,15 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
             case .unknown:
                 result = .unknown
             }
+            finalDisplayID = secondSnapshot.displayID ?? firstSnapshot.displayID
         }
+
+        lastDetectedDisplayID = finalDisplayID
 
         Self.logger.debug(
             """
             Media detection final result=\(result.logValue, privacy: .public) \
+            displayID=\(finalDisplayID ?? "nil", privacy: .public) \
             pass1=\(firstDecision.logValue, privacy: .public) \
             pass2=\(secondDecision?.logValue ?? "none", privacy: .public)
             """
@@ -348,7 +498,7 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
     }
 
     private func classify(_ snapshot: ProbeSnapshot) -> DetectionDecision {
-        if Self.isSpotifyPausedSignature(snapshot) {
+        if Self.isPausedSignature(snapshot) {
             return .notPlaying
         }
         if snapshot.hasStrongPositive && !snapshot.hasStrongNegative {
@@ -403,11 +553,10 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
         return (false, "uncorroborated-state")
     }
 
-    private static func isSpotifyPausedSignature(_ snapshot: ProbeSnapshot) -> Bool {
-        snapshot.displayID == spotifyDisplayID
-            && snapshot.anyPlaying == false
+    private static func isPausedSignature(_ snapshot: ProbeSnapshot) -> Bool {
+        snapshot.anyPlaying == false
             && snapshot.nowPlaying == false
-            && snapshot.playbackState == spotifyPausedPlaybackState
+            && snapshot.playbackState == pausedPlaybackState
             && snapshot.playbackRate == nil
     }
 
@@ -706,6 +855,65 @@ struct MediaRemoteAsyncProbeRunner {
             register { value in
                 gate.resumeOnce(value)
             }
+        }
+    }
+}
+
+protocol SpotifyPlaybackControlling: Sendable {
+    func playerState() async -> SpotifyPlaybackState
+    func play() async -> Bool
+}
+
+struct UnavailableSpotifyPlaybackController: SpotifyPlaybackControlling {
+    func playerState() async -> SpotifyPlaybackState { .unknown }
+    func play() async -> Bool { false }
+}
+
+struct SpotifyPlaybackController: SpotifyPlaybackControlling {
+    func playerState() async -> SpotifyPlaybackState {
+        let script = """
+        if application id "com.spotify.client" is running then
+            tell application id "com.spotify.client"
+                return player state as string
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func play() async -> Bool {
+        let script = """
+        tell application id "com.spotify.client"
+            play
+            return player state as string
+        end tell
+        """
+        guard let output = await runAppleScript(script) else { return false }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "playing"
+    }
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
         }
     }
 }

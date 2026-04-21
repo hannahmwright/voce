@@ -6,9 +6,11 @@ import Testing
 
 private final class StaticPlaybackDetector: MediaPlaybackStateDetector {
     private let result: PlaybackDetectionResult
+    let lastDetectedDisplayID: String?
 
-    init(_ result: PlaybackDetectionResult) {
+    init(_ result: PlaybackDetectionResult, lastDetectedDisplayID: String? = nil) {
         self.result = result
+        self.lastDetectedDisplayID = lastDetectedDisplayID
     }
 
     func detect() async -> PlaybackDetectionResult {
@@ -19,10 +21,12 @@ private final class StaticPlaybackDetector: MediaPlaybackStateDetector {
 private final class DelayedPlaybackDetector: MediaPlaybackStateDetector {
     private let result: PlaybackDetectionResult
     private let delayNanoseconds: UInt64
+    let lastDetectedDisplayID: String?
 
-    init(_ result: PlaybackDetectionResult, delayNanoseconds: UInt64) {
+    init(_ result: PlaybackDetectionResult, delayNanoseconds: UInt64, lastDetectedDisplayID: String? = nil) {
         self.result = result
         self.delayNanoseconds = delayNanoseconds
+        self.lastDetectedDisplayID = lastDetectedDisplayID
     }
 
     func detect() async -> PlaybackDetectionResult {
@@ -34,13 +38,28 @@ private final class DelayedPlaybackDetector: MediaPlaybackStateDetector {
 private final class SequencedPlaybackDetector: MediaPlaybackStateDetector {
     private var results: [PlaybackDetectionResult]
     private let fallback: PlaybackDetectionResult
+    private var displayIDs: [String?]
+    let fallbackDisplayID: String?
+    private(set) var lastDetectedDisplayID: String?
 
-    init(_ results: [PlaybackDetectionResult], fallback: PlaybackDetectionResult = .unknown) {
+    init(
+        _ results: [PlaybackDetectionResult],
+        fallback: PlaybackDetectionResult = .unknown,
+        displayIDs: [String?] = [],
+        fallbackDisplayID: String? = nil
+    ) {
         self.results = results
         self.fallback = fallback
+        self.displayIDs = displayIDs
+        self.fallbackDisplayID = fallbackDisplayID
     }
 
     func detect() async -> PlaybackDetectionResult {
+        if !displayIDs.isEmpty {
+            lastDetectedDisplayID = displayIDs.removeFirst()
+        } else {
+            lastDetectedDisplayID = fallbackDisplayID
+        }
         if !results.isEmpty {
             return results.removeFirst()
         }
@@ -114,6 +133,29 @@ private final class MediaKeySendRecorder {
     func send() -> Bool {
         sendCalls += 1
         return nextResult
+    }
+}
+
+private actor FakeSpotifyPlaybackController: SpotifyPlaybackControlling {
+    private var states: [SpotifyPlaybackState]
+    private let fallbackState: SpotifyPlaybackState
+    private(set) var playCalls = 0
+
+    init(_ states: [SpotifyPlaybackState], fallbackState: SpotifyPlaybackState = .unknown) {
+        self.states = states
+        self.fallbackState = fallbackState
+    }
+
+    func playerState() async -> SpotifyPlaybackState {
+        if !states.isEmpty {
+            return states.removeFirst()
+        }
+        return fallbackState
+    }
+
+    func play() async -> Bool {
+        playCalls += 1
+        return true
     }
 }
 
@@ -316,18 +358,50 @@ func mediaInterruptionSkipsResumeIfPlaybackAlreadyActive() async {
 }
 
 @MainActor
-@Test("Media interruption drops token when pause is not confirmed")
-func mediaInterruptionDropsTokenWhenPauseDoesNotStick() async {
+@Test("Media interruption keeps token when pause confirmation lags")
+func mediaInterruptionKeepsTokenWhenPauseConfirmationLags() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: SequencedPlaybackDetector([.playing, .playing]),
+        playbackDetector: SequencedPlaybackDetector([.playing, .playing, .notPlaying]),
         sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0,
         pauseConfirmationDelayNanoseconds: 0
     )
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
+    #expect(token != nil)
+
+    guard let token else {
+        Issue.record("Expected interruption token even when pause confirmation is delayed.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(recorder.sendCalls == 2)
+}
+
+@MainActor
+@Test("Media interruption still skips resume when playback never paused")
+func mediaInterruptionSkipsResumeWhenPlaybackNeverPaused() async {
+    let recorder = MediaKeySendRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.playing, .playing, .playing]),
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for active playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
     #expect(recorder.sendCalls == 1)
 }
 
@@ -336,10 +410,11 @@ func mediaInterruptionDropsTokenWhenPauseDoesNotStick() async {
 func mediaInterruptionSkipsResumeIfPlaybackStateIsUnknown() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .unknown]),
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .unknown, .unknown, .unknown]),
         sendPlayPauseKey: { recorder.send() },
         minimumResumeDelayNanoseconds: 0,
-        pauseConfirmationDelayNanoseconds: 0
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
     )
 
     guard let token = await service.beginInterruption() else {
@@ -351,6 +426,87 @@ func mediaInterruptionSkipsResumeIfPlaybackStateIsUnknown() async {
     try? await Task.sleep(nanoseconds: 20_000_000)
 
     #expect(recorder.sendCalls == 1)
+}
+
+@MainActor
+@Test("Media interruption resumes when unknown state settles to not playing")
+func mediaInterruptionResumesWhenUnknownStateSettlesToNotPlaying() async {
+    let recorder = MediaKeySendRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.playing, .notPlaying, .unknown, .notPlaying]),
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for confirmed active playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(recorder.sendCalls == 2)
+}
+
+@MainActor
+@Test("Media interruption resumes on unresolved unknown for interrupted Spotify playback")
+func mediaInterruptionResumesOnUnresolvedUnknownForSpotify() async {
+    let recorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([.playing, .paused])
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying, .unknown, .unknown, .unknown],
+            displayIDs: [nil, nil, nil, nil, nil]
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(recorder.sendCalls == 1)
+    #expect(await spotify.playCalls == 1)
+}
+
+@MainActor
+@Test("Media interruption skips Spotify resume when Spotify is already playing again")
+func mediaInterruptionSkipsSpotifyResumeWhenSpotifyAlreadyPlaying() async {
+    let recorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([.playing, .playing])
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying, .unknown, .unknown, .unknown],
+            displayIDs: [nil, nil, nil, nil, nil]
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { recorder.send() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    try? await Task.sleep(nanoseconds: 20_000_000)
+
+    #expect(recorder.sendCalls == 1)
+    #expect(await spotify.playCalls == 0)
 }
 
 @MainActor
@@ -428,8 +584,8 @@ func detectorTreatsUncorroboratedNonzeroStateAsWeakPositiveCandidate() async {
 }
 
 @MainActor
-@Test("Detector returns unknown for uncorroborated nonzero state without weak positives")
-func detectorReturnsUnknownForUncorroboratedNonzeroStateWithoutWeakPositiveSignals() async {
+@Test("Detector treats paused signature without weak positives as not playing")
+func detectorTreatsPausedSignatureWithoutWeakPositiveSignalsAsNotPlaying() async {
     let bridge = FakeMediaRemoteBridge()
     bridge.anyApplicationIsPlayingValue = false
     bridge.nowPlayingApplicationIsPlayingValue = false
@@ -440,7 +596,7 @@ func detectorReturnsUnknownForUncorroboratedNonzeroStateWithoutWeakPositiveSigna
     let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
     let result = await detector.detect()
 
-    #expect(result == .unknown)
+    #expect(result == .notPlaying)
 }
 
 @MainActor
@@ -460,11 +616,11 @@ func detectorTreatsObservedSpotifyPausedSignatureAsNotPlaying() async {
 }
 
 @MainActor
-@Test("Detector keeps generic paused signature unknown without Spotify identity")
-func detectorKeepsGenericPausedSignatureUnknownWithoutSpotifyIdentity() async {
+@Test("Detector treats generic paused signature as not playing without app identity")
+func detectorTreatsGenericPausedSignatureAsNotPlayingWithoutAppIdentity() async {
     let bridge = FakeMediaRemoteBridge()
     bridge.anyApplicationIsPlayingValue = false
-    bridge.nowPlayingApplicationDisplayIDValue = "com.apple.Music"
+    bridge.nowPlayingApplicationDisplayIDValue = nil
     bridge.nowPlayingApplicationIsPlayingValue = false
     bridge.nowPlayingPlaybackStateValue = 2
     bridge.nowPlayingPlaybackRateValue = nil
@@ -472,7 +628,7 @@ func detectorKeepsGenericPausedSignatureUnknownWithoutSpotifyIdentity() async {
     let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
     let result = await detector.detect()
 
-    #expect(result == .unknown)
+    #expect(result == .notPlaying)
 }
 
 @MainActor

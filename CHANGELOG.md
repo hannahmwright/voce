@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.37] - 2026-04-21
+
+### Fixed
+- Fixed Spotify media interruption resume by tracking when Spotify was the interrupted playback owner and resuming Spotify directly when MediaRemote still reports an ambiguous paused state after dictation.
+
 ## [0.4.36] - 2026-04-21
 
 ### Fixed
