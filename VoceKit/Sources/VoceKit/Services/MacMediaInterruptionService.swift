@@ -69,7 +69,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         }
 
         switch detection {
-        case .playing:
+        case .playing, .likelyPlaying:
             if Task.isCancelled {
                 Self.logger.debug("Skipping media interruption because task is cancelled before key send.")
                 return nil
@@ -107,7 +107,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
             return token
-        case .likelyPlaying, .notPlaying, .unknown:
+        case .notPlaying, .unknown:
             Self.logger.debug("Media interruption skipped. Detection: \(detection.logValue, privacy: .public)")
             return nil
         }

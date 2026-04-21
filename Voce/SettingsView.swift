@@ -156,6 +156,7 @@ struct SettingsView: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .accessibilityLabel(group.title)
         .accessibilityValue(selectedGroup == group ? "Selected" : "")
     }
@@ -164,19 +165,15 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
             contentHeader(isCompactHeight: isCompactHeight)
 
-            ZStack(alignment: .topLeading) {
-                ForEach(visibleGroups, id: \.self) { group in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: VoceDesign.sm) {
-                            groupContent(group)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, VoceDesign.xs)
-                    }
-                    .scrollIndicators(.visible)
-                    .settingsGroupVisibility(selectedGroup == group)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    groupContent(selectedGroup)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, VoceDesign.xs)
             }
+            .id(selectedGroup)
+            .scrollIndicators(.visible)
         }
         .padding(isCompactHeight ? VoceDesign.md : VoceDesign.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -291,6 +288,16 @@ struct SettingsView: View {
                     return steps
                 }()
             )
+            HelpSupportSection(
+                subscriberEmail: preferencesDraft.billing.subscriberEmail,
+                appearancePreference: preferencesDraft.general.appearancePreference,
+                launchAtLoginEnabled: preferencesDraft.general.launchAtLoginEnabled,
+                showDockIcon: preferencesDraft.general.showDockIcon,
+                tapHotkeyLabel: settingsTapToTalkLabel,
+                holdHotkeyLabel: settingsHoldToTalkLabel,
+                hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage,
+                aiAvailable: controller.aiAvailabilityIsAvailable
+            )
             HelpFAQSection(
                 tapHotkeyLabel: settingsTapToTalkLabel,
                 holdHotkeyLabel: settingsHoldToTalkLabel,
@@ -365,7 +372,7 @@ private enum SettingsGroup: String, CaseIterable {
         case .behavior: return "Text and media"
         case .ai: return "Workflows, triggers"
         case .general: return "Profile, launch, app"
-        case .help: return "Walkthrough, answers"
+        case .help: return "Walkthrough, support"
         }
     }
 
@@ -380,7 +387,7 @@ private enum SettingsGroup: String, CaseIterable {
         case .general:
             return "Manage app-level preferences like your display name, launch behavior, and Dock visibility."
         case .help:
-            return "Replay the core teaching flow and get quick answers about dictation, shortcuts, and fixes."
+            return "Replay the core teaching flow, get quick answers, and contact support when something goes wrong."
         }
     }
 
@@ -453,6 +460,269 @@ private struct HelpFAQSection: View {
     }
 }
 
+private struct HelpSupportSection: View {
+    @EnvironmentObject private var controller: DictationController
+    let subscriberEmail: String
+    let appearancePreference: AppAppearancePreference
+    let launchAtLoginEnabled: Bool
+    let showDockIcon: Bool
+    let tapHotkeyLabel: String
+    let holdHotkeyLabel: String
+    let hotkeyRegistrationMessage: String
+    let aiAvailable: Bool
+
+    @State private var selectedCategory: VoceSupportRequestCategory?
+    @State private var feedbackMessage = ""
+    @State private var feedbackIsError = false
+
+    var body: some View {
+        settingsCardWithSubtitle(
+            "Support",
+            subtitle: "Send a question, bug report, or feature request without leaving Voce."
+        ) {
+            if !feedbackMessage.isEmpty {
+                Text(feedbackMessage)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(feedbackIsError ? VoceDesign.error : VoceDesign.textPrimary)
+                    .padding(.horizontal, VoceDesign.md)
+                    .padding(.vertical, VoceDesign.sm)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(feedbackIsError ? VoceDesign.errorBackground : VoceDesign.surfaceSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .stroke(
+                                feedbackIsError ? VoceDesign.errorBorder : VoceDesign.border,
+                                lineWidth: VoceDesign.borderThin
+                            )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                ForEach(VoceSupportRequestCategory.allCases) { category in
+                    settingsSubcard {
+                        HStack(alignment: .top, spacing: VoceDesign.md) {
+                            VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                                Text(category.title)
+                                    .font(VoceDesign.bodyEmphasis())
+                                    .foregroundStyle(VoceDesign.textPrimary)
+
+                                Text(category.subtitle)
+                                    .font(VoceDesign.caption())
+                                    .foregroundStyle(VoceDesign.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer(minLength: 0)
+
+                            Button("Open") {
+                                selectedCategory = category
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+            }
+
+            Text("Bug reports can include lightweight diagnostics like app version, macOS version, and current shortcut settings only when you explicitly enable that option.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .sheet(item: $selectedCategory) { category in
+            SupportRequestFormSheet(
+                category: category,
+                initialEmail: subscriberEmail,
+                diagnostics: diagnosticsText,
+                onSubmitted: { confirmation in
+                    feedbackMessage = confirmation
+                    feedbackIsError = false
+                    selectedCategory = nil
+                }
+            )
+            .environmentObject(controller)
+        }
+    }
+
+    private var diagnosticsText: String {
+        let bundle = Bundle.main
+        let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        let values = [
+            "app_version=\(appVersion)",
+            "build=\(buildNumber)",
+            "macos=\(ProcessInfo.processInfo.operatingSystemVersionString)",
+            "tap_hotkey=\(tapHotkeyLabel)",
+            "hold_hotkey=\(holdHotkeyLabel)",
+            "appearance=\(appearancePreference.title)",
+            "launch_at_login=\(launchAtLoginEnabled)",
+            "show_dock_icon=\(showDockIcon)",
+            "ai_available=\(aiAvailable)",
+            "hotkey_registration=\(hotkeyRegistrationMessage.isEmpty ? "ok" : hotkeyRegistrationMessage)"
+        ]
+        return values.joined(separator: "\n")
+    }
+}
+
+private struct SupportRequestFormSheet: View {
+    @EnvironmentObject private var controller: DictationController
+    @Environment(\.dismiss) private var dismiss
+
+    let category: VoceSupportRequestCategory
+    let initialEmail: String
+    let diagnostics: String
+    let onSubmitted: (String) -> Void
+
+    @State private var email = ""
+    @State private var subject = ""
+    @State private var message = ""
+    @State private var includeDiagnostics = true
+    @State private var isSubmitting = false
+    @State private var errorMessage = ""
+
+    private let supportService = VoceSupportRequestService()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text(category.title)
+                        .font(VoceDesign.heading2())
+                        .foregroundStyle(VoceDesign.textPrimary)
+
+                    Text(category.subtitle)
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+
+                Spacer()
+
+                Button("Close") {
+                    dismiss()
+                }
+                .buttonStyle(.plain)
+            }
+
+            settingsSubcard {
+                VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    Text("Reply email")
+                        .font(VoceDesign.captionEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    TextField("email@example.com", text: $email)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
+
+                    Text("Subject")
+                        .font(VoceDesign.captionEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    TextField("Short summary", text: $subject)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
+
+                    Text("Message")
+                        .font(VoceDesign.captionEmphasis())
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    TextEditor(text: $message)
+                        .font(VoceDesign.body())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .frame(minHeight: 150)
+                        .padding(.horizontal, VoceDesign.sm)
+                        .padding(.vertical, VoceDesign.xs)
+                        .background(
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                .fill(VoceDesign.surface)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                        .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                                )
+                        )
+
+                    Toggle("Include lightweight diagnostics", isOn: $includeDiagnostics)
+                        .font(VoceDesign.callout())
+
+                    Text("Voce always includes app version and macOS version. This toggle adds non-sensitive context like shortcut labels and display settings.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.error)
+            }
+
+            HStack {
+                Text(appMetadataLine)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+
+                Spacer()
+
+                Button("Send") {
+                    submit()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isSubmitting)
+            }
+        }
+        .padding(VoceDesign.lg)
+        .frame(width: 560)
+        .settingsModalPanel()
+        .onAppear {
+            email = initialEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+            subject = category.defaultSubject
+        }
+    }
+
+    private var appMetadataLine: String {
+        let bundle = Bundle.main
+        let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        return "Voce \(appVersion) (\(buildNumber)) on \(ProcessInfo.processInfo.operatingSystemVersionString)"
+    }
+
+    private func submit() {
+        guard !isSubmitting else { return }
+        errorMessage = ""
+        isSubmitting = true
+
+        let bundle = Bundle.main
+        let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        let payload = VoceSupportRequestPayload(
+            category: category.rawValue,
+            email: email,
+            subject: subject,
+            message: message,
+            appVersion: appVersion,
+            buildNumber: buildNumber,
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            includeDiagnostics: includeDiagnostics,
+            diagnostics: includeDiagnostics ? diagnostics : nil
+        )
+
+        Task {
+            do {
+                try await supportService.submit(payload)
+                await MainActor.run {
+                    isSubmitting = false
+                    onSubmitted("\(category.title) sent. We will reply to \(email.trimmingCharacters(in: .whitespacesAndNewlines)).")
+                }
+            } catch {
+                await MainActor.run {
+                    isSubmitting = false
+                    errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+}
+
 private struct SettingsTopTabButtonLabel: View {
     let group: SettingsGroup
     let isSelected: Bool
@@ -491,24 +761,5 @@ private struct SettingsTopTabButtonLabel: View {
                     lineWidth: VoceDesign.borderThin
                 )
         )
-    }
-}
-
-private struct SettingsGroupVisibilityModifier: ViewModifier {
-    let isVisible: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .opacity(isVisible ? 1 : 0)
-            .allowsHitTesting(isVisible)
-            .accessibilityHidden(!isVisible)
-            .zIndex(isVisible ? 1 : 0)
-    }
-}
-
-private extension View {
-    func settingsGroupVisibility(_ isVisible: Bool) -> some View {
-        modifier(SettingsGroupVisibilityModifier(isVisible: isVisible))
     }
 }

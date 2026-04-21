@@ -287,6 +287,149 @@ actor VoceProEntitlementService {
     }
 }
 
+enum VoceSupportRequestError: LocalizedError {
+    case invalidEmail
+    case invalidSubject
+    case invalidMessage
+    case invalidResponse
+    case server(message: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidEmail:
+            return "Enter a valid email address."
+        case .invalidSubject:
+            return "Add a short subject so we know what this is about."
+        case .invalidMessage:
+            return "Add a message so we can help."
+        case .invalidResponse:
+            return "Could not send your request."
+        case .server(let message):
+            return message
+        }
+    }
+}
+
+enum VoceSupportRequestCategory: String, CaseIterable, Identifiable, Sendable {
+    case support
+    case bug
+    case feature
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .support:
+            return "Contact support"
+        case .bug:
+            return "Report a bug"
+        case .feature:
+            return "Feature request"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .support:
+            return "Ask a question or request help."
+        case .bug:
+            return "Describe what broke and how to reproduce it."
+        case .feature:
+            return "Send an idea for a future improvement."
+        }
+    }
+
+    var defaultSubject: String {
+        switch self {
+        case .support:
+            return ""
+        case .bug:
+            return "Bug report"
+        case .feature:
+            return "Feature request"
+        }
+    }
+}
+
+struct VoceSupportRequestPayload: Encodable, Sendable {
+    var category: String
+    var email: String
+    var subject: String
+    var message: String
+    var appVersion: String
+    var buildNumber: String
+    var macOSVersion: String
+    var includeDiagnostics: Bool
+    var diagnostics: String?
+}
+
+actor VoceSupportRequestService {
+#if DEBUG
+    private static let siteBaseURL = URL(string: "https://cheerful-raven-194.convex.site")!
+#else
+    private static let siteBaseURL = URL(string: "https://combative-ant-133.convex.site")!
+#endif
+
+    private let endpointURL: URL
+    private let session: URLSession
+
+    init(
+        endpointURL: URL = siteBaseURL.appendingPathComponent("support/request"),
+        session: URLSession = .shared
+    ) {
+        self.endpointURL = endpointURL
+        self.session = session
+    }
+
+    func submit(_ payload: VoceSupportRequestPayload) async throws {
+        let normalizedEmail = payload.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let trimmedSubject = payload.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = payload.message.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard isValidEmail(normalizedEmail) else {
+            throw VoceSupportRequestError.invalidEmail
+        }
+        guard !trimmedSubject.isEmpty else {
+            throw VoceSupportRequestError.invalidSubject
+        }
+        guard !trimmedMessage.isEmpty else {
+            throw VoceSupportRequestError.invalidMessage
+        }
+
+        let body = VoceSupportRequestPayload(
+            category: payload.category,
+            email: normalizedEmail,
+            subject: trimmedSubject,
+            message: trimmedMessage,
+            appVersion: payload.appVersion,
+            buildNumber: payload.buildNumber,
+            macOSVersion: payload.macOSVersion,
+            includeDiagnostics: payload.includeDiagnostics,
+            diagnostics: payload.diagnostics?.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        var request = URLRequest(url: endpointURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONEncoder().encode(body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw VoceSupportRequestError.invalidResponse
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let message = (try? JSONDecoder().decode(VoceSupportErrorResponse.self, from: data).error)
+                ?? "Could not send your request."
+            throw VoceSupportRequestError.server(message: message)
+        }
+    }
+
+    private func isValidEmail(_ email: String) -> Bool {
+        let pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+        return email.wholeMatch(of: pattern) != nil
+    }
+}
+
 final class VoceAccessSessionStore: @unchecked Sendable {
     static let shared = VoceAccessSessionStore()
 
@@ -405,4 +548,8 @@ private struct PortalSessionRequest: Encodable {
 
 private struct PortalSessionResponse: Decodable {
     var url: String
+}
+
+private struct VoceSupportErrorResponse: Decodable {
+    var error: String
 }

@@ -146,19 +146,19 @@ func mediaKeyTapLocationFallsBackToHIDForInvalidOverride() {
 }
 
 @MainActor
-@Test("Media interruption skips pause when playback is only likely active")
-func mediaInterruptionSkipsPauseWhenPlaybackIsLikelyActive() async {
+@Test("Media interruption pauses when playback is likely active")
+func mediaInterruptionPausesWhenPlaybackIsLikelyActive() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
-        playbackDetector: StaticPlaybackDetector(.likelyPlaying),
+        playbackDetector: SequencedPlaybackDetector([.likelyPlaying, .notPlaying]),
         sendPlayPauseKey: { recorder.send() },
         pauseConfirmationDelayNanoseconds: 0
     )
 
     let token = await service.beginInterruption()
 
-    #expect(token == nil)
-    #expect(recorder.sendCalls == 0)
+    #expect(token != nil)
+    #expect(recorder.sendCalls == 1)
 }
 
 @MainActor

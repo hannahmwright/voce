@@ -95,6 +95,81 @@ async function sendAccessCodeEmail(email: string, code: string) {
   }
 }
 
+function normalizedMultilineText(value: string) {
+  return value
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+}
+
+function supportCategoryTitle(category: string) {
+  switch (category) {
+    case "bug":
+      return "Bug report";
+    case "feature":
+      return "Feature request";
+    default:
+      return "Support request";
+  }
+}
+
+async function sendSupportEmail(payload: {
+  category: string;
+  email: string;
+  subject: string;
+  message: string;
+  appVersion: string;
+  buildNumber: string;
+  macOSVersion: string;
+  includeDiagnostics: boolean;
+  diagnostics?: string;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.VOCE_SUPPORT_EMAIL_FROM ?? "Voce Support <support@voceapp.io>";
+  const to = process.env.VOCE_SUPPORT_EMAIL_TO ?? "h.wright@vervetechgroup.com";
+  if (!apiKey) {
+    throw new Error("Support email is not configured");
+  }
+
+  const lines = [
+    `Category: ${supportCategoryTitle(payload.category)}`,
+    `From: ${payload.email}`,
+    `Subject: ${payload.subject}`,
+    `App version: ${payload.appVersion} (${payload.buildNumber})`,
+    `macOS: ${payload.macOSVersion}`,
+    `Diagnostics included: ${payload.includeDiagnostics ? "yes" : "no"}`,
+    "",
+    "Message:",
+    payload.message,
+  ];
+
+  if (payload.includeDiagnostics && payload.diagnostics) {
+    lines.push("", "Diagnostics:", payload.diagnostics);
+  }
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      reply_to: payload.email,
+      subject: `[Voce] ${supportCategoryTitle(payload.category)}: ${payload.subject}`,
+      text: lines.join("\n"),
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`Resend rejected support email with ${response.status}: ${responseText}`);
+  }
+}
+
 async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: string) {
   const token = request.headers.get("x-voce-session-token");
   if (!token) {
@@ -470,6 +545,69 @@ http.route({
     }
 
     return await createPortalSession(ctx, email);
+  }),
+});
+
+http.route({
+  path: "/support/request",
+  method: "POST",
+  handler: httpAction(async (_ctx, request) => {
+    try {
+      const body = (await request.json()) as {
+        category?: string;
+        email?: string;
+        subject?: string;
+        message?: string;
+        appVersion?: string;
+        buildNumber?: string;
+        macOSVersion?: string;
+        includeDiagnostics?: boolean;
+        diagnostics?: string;
+      };
+
+      const category = (body.category ?? "support").trim().toLowerCase();
+      const email = normalizeEmail(body.email ?? "");
+      const subject = (body.subject ?? "").trim();
+      const message = normalizedMultilineText(body.message ?? "");
+      const appVersion = (body.appVersion ?? "").trim();
+      const buildNumber = (body.buildNumber ?? "").trim();
+      const macOSVersion = (body.macOSVersion ?? "").trim();
+      const includeDiagnostics = body.includeDiagnostics === true;
+      const diagnostics = normalizedMultilineText(body.diagnostics ?? "");
+
+      if (!["support", "bug", "feature"].includes(category)) {
+        return jsonResponse({ error: "Invalid support category" }, 400);
+      }
+      if (!isValidEmail(email)) {
+        return jsonResponse({ error: "Invalid email" }, 400);
+      }
+      if (subject.length === 0 || subject.length > 140) {
+        return jsonResponse({ error: "Subject is required and must be 140 characters or fewer" }, 400);
+      }
+      if (message.length === 0 || message.length > 5000) {
+        return jsonResponse({ error: "Message is required and must be 5000 characters or fewer" }, 400);
+      }
+      if (appVersion.length === 0 || buildNumber.length === 0 || macOSVersion.length === 0) {
+        return jsonResponse({ error: "Missing app metadata" }, 400);
+      }
+
+      await sendSupportEmail({
+        category,
+        email,
+        subject,
+        message,
+        appVersion,
+        buildNumber,
+        macOSVersion,
+        includeDiagnostics,
+        diagnostics: includeDiagnostics && diagnostics.length > 0 ? diagnostics : undefined,
+      });
+
+      return jsonResponse({ sent: true });
+    } catch (error) {
+      console.error("support request failed", error);
+      return jsonResponse({ error: "Could not send support request" }, 500);
+    }
   }),
 });
 
