@@ -54,11 +54,13 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
     var deactivateCalls = 0
 
     var anyApplicationIsPlayingValue: Bool?
+    var nowPlayingApplicationDisplayIDValue: String?
     var nowPlayingApplicationIsPlayingValue: Bool?
     var nowPlayingPlaybackStateValue: Int?
     var nowPlayingPlaybackRateValue: Double?
     var playbackStateIsAdvancingValue: Bool?
     var anyApplicationIsPlayingSequence: [Bool?] = []
+    var nowPlayingApplicationDisplayIDSequence: [String?] = []
     var nowPlayingApplicationIsPlayingSequence: [Bool?] = []
     var nowPlayingPlaybackStateSequence: [Int?] = []
     var nowPlayingPlaybackRateSequence: [Double?] = []
@@ -74,6 +76,10 @@ private final class FakeMediaRemoteBridge: MediaRemoteBridging {
 
     func anyApplicationIsPlaying() async -> Bool? {
         pullNext(from: &anyApplicationIsPlayingSequence, fallback: anyApplicationIsPlayingValue)
+    }
+
+    func nowPlayingApplicationDisplayID() async -> String? {
+        pullNext(from: &nowPlayingApplicationDisplayIDSequence, fallback: nowPlayingApplicationDisplayIDValue)
     }
 
     func nowPlayingApplicationIsPlaying() async -> Bool? {
@@ -429,6 +435,38 @@ func detectorReturnsUnknownForUncorroboratedNonzeroStateWithoutWeakPositiveSigna
     bridge.nowPlayingApplicationIsPlayingValue = false
     bridge.nowPlayingPlaybackStateValue = 2
     bridge.playbackStateIsAdvancingValue = false
+    bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .unknown)
+}
+
+@MainActor
+@Test("Detector treats observed Spotify paused signature as not playing")
+func detectorTreatsObservedSpotifyPausedSignatureAsNotPlaying() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = false
+    bridge.nowPlayingApplicationDisplayIDValue = "com.spotify.client"
+    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingPlaybackStateValue = 2
+    bridge.nowPlayingPlaybackRateValue = nil
+
+    let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
+    let result = await detector.detect()
+
+    #expect(result == .notPlaying)
+}
+
+@MainActor
+@Test("Detector keeps generic paused signature unknown without Spotify identity")
+func detectorKeepsGenericPausedSignatureUnknownWithoutSpotifyIdentity() async {
+    let bridge = FakeMediaRemoteBridge()
+    bridge.anyApplicationIsPlayingValue = false
+    bridge.nowPlayingApplicationDisplayIDValue = "com.apple.Music"
+    bridge.nowPlayingApplicationIsPlayingValue = false
+    bridge.nowPlayingPlaybackStateValue = 2
     bridge.nowPlayingPlaybackRateValue = nil
 
     let detector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)

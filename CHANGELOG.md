@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.36] - 2026-04-21
+
+### Fixed
+- Fixed media interruption resume for Spotify by recognizing Spotify's paused MediaRemote signature, so Voce can resume what it paused without loosening playback-state handling for Apple Music, Safari, or Chrome.
+
 ## [0.4.34] - 2026-04-21
 
 ### Fixed

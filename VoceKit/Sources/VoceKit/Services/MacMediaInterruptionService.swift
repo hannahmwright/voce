@@ -216,6 +216,7 @@ protocol MediaRemoteBridging: Sendable {
     func activate()
     func deactivate()
     func anyApplicationIsPlaying() async -> Bool?
+    func nowPlayingApplicationDisplayID() async -> String?
     func nowPlayingApplicationIsPlaying() async -> Bool?
     func nowPlayingPlaybackState() async -> Int?
     func nowPlayingPlaybackRate() async -> Double?
@@ -225,6 +226,8 @@ protocol MediaRemoteBridging: Sendable {
 final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
     private static let logger = VoceKitDiagnostics.logger
     private static let weakPositiveConfirmationDelayNanoseconds: UInt64 = 80_000_000
+    private static let spotifyDisplayID = "com.spotify.client"
+    private static let spotifyPausedPlaybackState = 2
     private let bridge: any MediaRemoteBridging
 
     init(bridge: any MediaRemoteBridging = MediaRemoteBridge()) {
@@ -295,11 +298,13 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
 
     private func captureSnapshot() async -> ProbeSnapshot {
         async let anyApplicationIsPlaying = bridge.anyApplicationIsPlaying()
+        async let nowPlayingApplicationDisplayID = bridge.nowPlayingApplicationDisplayID()
         async let nowPlayingApplicationIsPlaying = bridge.nowPlayingApplicationIsPlaying()
         async let nowPlayingPlaybackState = bridge.nowPlayingPlaybackState()
         async let nowPlayingPlaybackRate = bridge.nowPlayingPlaybackRate()
 
         let anyPlaying = await anyApplicationIsPlaying
+        let displayID = await nowPlayingApplicationDisplayID
         let nowPlaying = await nowPlayingApplicationIsPlaying
         let playbackState = await nowPlayingPlaybackState
         let playbackRate = await nowPlayingPlaybackRate
@@ -329,6 +334,7 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
 
         return ProbeSnapshot(
             anyPlaying: anyPlaying,
+            displayID: displayID,
             nowPlaying: nowPlaying,
             playbackState: playbackState,
             playbackRate: playbackRate,
@@ -342,6 +348,9 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
     }
 
     private func classify(_ snapshot: ProbeSnapshot) -> DetectionDecision {
+        if Self.isSpotifyPausedSignature(snapshot) {
+            return .notPlaying
+        }
         if snapshot.hasStrongPositive && !snapshot.hasStrongNegative {
             return .playing
         }
@@ -362,6 +371,7 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
             """
             Media detection pass=\(pass, privacy: .public) \
             any=\(Self.describe(snapshot.anyPlaying), privacy: .public) \
+            displayID=\(snapshot.displayID ?? "nil", privacy: .public) \
             nowPlaying=\(Self.describe(snapshot.nowPlaying), privacy: .public) \
             state=\(Self.describe(snapshot.playbackState), privacy: .public) \
             stateAdvancing=\(Self.describe(snapshot.playbackStateIsAdvancing), privacy: .public) \
@@ -393,8 +403,17 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
         return (false, "uncorroborated-state")
     }
 
+    private static func isSpotifyPausedSignature(_ snapshot: ProbeSnapshot) -> Bool {
+        snapshot.displayID == spotifyDisplayID
+            && snapshot.anyPlaying == false
+            && snapshot.nowPlaying == false
+            && snapshot.playbackState == spotifyPausedPlaybackState
+            && snapshot.playbackRate == nil
+    }
+
     private struct ProbeSnapshot {
         let anyPlaying: Bool?
+        let displayID: String?
         let nowPlaying: Bool?
         let playbackState: Int?
         let playbackRate: Double?
@@ -446,6 +465,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     private typealias RegisterForNowPlayingNotificationsFn = @convention(c) (DispatchQueue) -> Void
     private typealias UnregisterForNowPlayingNotificationsFn = @convention(c) () -> Void
     private typealias BoolProbeFn = @convention(c) (DispatchQueue, @escaping (Bool) -> Void) -> Void
+    private typealias StringProbeFn = @convention(c) (DispatchQueue, @escaping (CFString?) -> Void) -> Void
     private typealias PlaybackStateProbeFn = @convention(c) (DispatchQueue, @escaping (Int) -> Void) -> Void
     private typealias PlaybackStateIsAdvancingFn = @convention(c) (Int) -> Bool
     private typealias NowPlayingInfoProbeFn = @convention(c) (DispatchQueue, @escaping ([AnyHashable: Any]?) -> Void) -> Void
@@ -459,6 +479,7 @@ final class MediaRemoteBridge: MediaRemoteBridging {
     private let registerForNowPlayingNotifications: RegisterForNowPlayingNotificationsFn?
     private let unregisterForNowPlayingNotifications: UnregisterForNowPlayingNotificationsFn?
     private let getAnyApplicationIsPlaying: BoolProbeFn?
+    private let getNowPlayingApplicationDisplayID: StringProbeFn?
     private let getNowPlayingApplicationIsPlaying: BoolProbeFn?
     private let getNowPlayingApplicationPlaybackState: PlaybackStateProbeFn?
     private let playbackStateIsAdvancingFn: PlaybackStateIsAdvancingFn?
@@ -495,6 +516,11 @@ final class MediaRemoteBridge: MediaRemoteBridging {
             handle: handle,
             named: "MRMediaRemoteGetAnyApplicationIsPlaying",
             as: BoolProbeFn.self
+        )
+        self.getNowPlayingApplicationDisplayID = Self.loadSymbol(
+            handle: handle,
+            named: "MRMediaRemoteGetNowPlayingApplicationDisplayID",
+            as: StringProbeFn.self
         )
         self.getNowPlayingApplicationIsPlaying = Self.loadSymbol(
             handle: handle,
@@ -575,6 +601,16 @@ final class MediaRemoteBridge: MediaRemoteBridging {
                 callback(isPlaying)
             }
         }
+    }
+
+    func nowPlayingApplicationDisplayID() async -> String? {
+        guard let getNowPlayingApplicationDisplayID else { return nil }
+        let displayIDResult: String?? = await probeRunner.run { callback in
+            getNowPlayingApplicationDisplayID(callbackQueue) { displayID in
+                callback(displayID as String?)
+            }
+        }
+        return displayIDResult ?? nil
     }
 
     func nowPlayingApplicationIsPlaying() async -> Bool? {
