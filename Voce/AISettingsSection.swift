@@ -69,12 +69,18 @@ struct AISettingsSection: View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
             aiHeader
 
+            if !hasAccess {
+                aiAccessCallout
+            }
+
             Toggle(isOn: $preferences.ai.isEnabled) {
                 settingInlineLabel(
                     "Use AI",
                     help: "Turns on Apple Intelligence actions."
                 )
             }
+            .disabled(!hasAccess)
+            .opacity(hasAccess ? 1 : 0.55)
 
             Toggle(isOn: dictationPolishingBinding) {
                 settingInlineLabel(
@@ -88,7 +94,7 @@ struct AISettingsSection: View {
             voiceTriggerRow
 
             workflowList
-                .opacity(preferences.ai.isEnabled ? 1 : 0.48)
+                .opacity(preferences.ai.isEnabled && hasAccess ? 1 : 0.48)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardStyle()
@@ -124,6 +130,35 @@ struct AISettingsSection: View {
         )
     }
 
+    private var hasAccess: Bool {
+        entitlementStatus.isEntitled
+    }
+
+    private var aiAccessCallout: some View {
+        HStack(alignment: .top, spacing: VoceDesign.sm) {
+            Image(systemName: "person.badge.key.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(VoceDesign.warmAccentText)
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(VoceDesign.warmAccentFill)
+                )
+
+            Text("Verify your email in Setup to use AI actions.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(VoceDesign.sm)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                .fill(VoceDesign.surfaceSecondary.opacity(0.72))
+        )
+    }
+
     private func workflowSection(
         _ title: String,
         indices: [Int],
@@ -148,7 +183,7 @@ struct AISettingsSection: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(VoceDesign.accent)
-                    .disabled(!preferences.ai.isEnabled)
+                    .disabled(!preferences.ai.isEnabled || !hasAccess)
                 }
             }
 
@@ -193,7 +228,7 @@ struct AISettingsSection: View {
             Toggle("", isOn: workflowEnabledBinding(at: index))
                 .labelsHidden()
                 .controlSize(.mini)
-                .disabled(!preferences.ai.isEnabled)
+                .disabled(!preferences.ai.isEnabled || !hasAccess)
                 .accessibilityLabel("\(workflow.name) enabled")
 
             Button {
@@ -204,7 +239,7 @@ struct AISettingsSection: View {
                     .foregroundStyle(isHovered ? VoceDesign.accent : VoceDesign.textSecondary)
             }
             .buttonStyle(.plain)
-            .disabled(!preferences.ai.isEnabled)
+            .disabled(!preferences.ai.isEnabled || !hasAccess)
 
             if workflow.isBuiltIn {
                 Color.clear
@@ -218,7 +253,7 @@ struct AISettingsSection: View {
                         .foregroundStyle(isHovered ? VoceDesign.error : VoceDesign.textSecondary.opacity(0.6))
                 }
                 .buttonStyle(.plain)
-                .disabled(!preferences.ai.isEnabled)
+                .disabled(!preferences.ai.isEnabled || !hasAccess)
             }
         }
         .padding(.horizontal, VoceDesign.md)
@@ -433,7 +468,7 @@ struct AISettingsSection: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(!preferences.ai.isEnabled)
+        .disabled(!preferences.ai.isEnabled || !hasAccess)
     }
 
     private func workflowSheet(mode: SheetMode) -> some View {

@@ -11,25 +11,25 @@
 		043B7C996C8E078FF72C5435 /* StyleTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EA039E7BFEB0F1612ED079B /* StyleTab.swift */; };
 		04B1A91240C329A601315488 /* PermissionDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */; };
 		052A3669946558CC70909BF8 /* LexiconSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F778826155A1B6A51FAEB312 /* LexiconSettingsSection.swift */; };
+		144E998A0705B5EDBA0A1BF1 /* GuidedWalkthroughView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4CCE0404C10AD734117A172 /* GuidedWalkthroughView.swift */; };
 		1AEEA42B54F2CD3B925F30E6 /* RecordTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */; };
 		1FAF5EF6CF40FE79D626E1EA /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A43BDB5365A4C04B39377D7 /* AppPreferences.swift */; };
-		1F698085A86843F8B8248BEF /* VoceProEntitlementService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BE9F44F2D5E493EA2A8FCB5 /* VoceProEntitlementService.swift */; };
-		20A9F21C187742D4AC8E1786 /* VoceAccessSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1F7B873D2F412DB7A0DF91 /* VoceAccessSettingsSection.swift */; };
 		25BC9E70F82B39619CA4E9B7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E7E2EA723CE9133F7D1291F7 /* Sparkle */; };
 		2CFD23B61DBA186E52AB2A9D /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE5EAD5ECFA2403433B65F5 /* LaunchAtLoginService.swift */; };
 		2E860B4B558041E90F57A497 /* VoceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4341CE23927C00B47232FAD /* VoceApp.swift */; };
 		334C29A2B3A157E231B70579 /* Manrope-VariableFont_wght.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0F5F3D0928FA10AFA1045DD5 /* Manrope-VariableFont_wght.ttf */; };
-		356BDE8A1D6E4D8E9A1C2F30 /* processing-background-dark.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 356BDE8A1D6E4D8E9A1C2F31 /* processing-background-dark.mp4 */; };
 		394B2B8101003787AD8B8607 /* CleanupStyleSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30FC345D5219417D3A6101AD /* CleanupStyleSettingsSection.swift */; };
 		3CDA27B2807FEF02B07AAF3C /* AnchorOverrideSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4110D21D399A9F170F3EA70E /* AnchorOverrideSettingsSection.swift */; };
 		411A42D08C3CBEB12F8DB3E3 /* MicButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 340E874BDA6F985AB31A34BB /* MicButton.swift */; };
 		4EAA23EDB4F2808191DE1B16 /* EngineSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C2A713C2627E7814CCA4C0D /* EngineSettingsSection.swift */; };
+		4EB482F30ACA1CE75CAFCA7B /* VoceProEntitlementService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9457C7DCFE3916C4FBC73BD /* VoceProEntitlementService.swift */; };
 		50BCC87176F6578B8C0E4CFE /* CompletionExecutionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */; };
 		5BAA839E86E7873F77D7DD4E /* VoceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2BEFC4EBAAE42E87937FEF83 /* VoceKit */; };
 		642CF2D5C7B667DE66C672A7 /* HomeTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41A4AACACF799B8954E3C2A7 /* HomeTab.swift */; };
 		64771F7D834837E53B18AD89 /* SnippetsSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F8267E63FADBC256B9A7BA6 /* SnippetsSettingsSection.swift */; };
 		68E4DA75E33631C0BD2C328D /* GeneralSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D587D107389F4EA940AA188 /* GeneralSettingsSection.swift */; };
 		7260939FF8378D43937A25D9 /* AISettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC723BFEDDB1B17CE724F0A3 /* AISettingsSection.swift */; };
+		72661E279F90D022F5169EAE /* processing-background-dark.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = AFBB6BF189A08708D31B0F05 /* processing-background-dark.mp4 */; };
 		75D9F00341D3693EFF2F7517 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B575DB65BF978A9BCA10827 /* ContentView.swift */; };
 		7A14C35BFF93A82E7EBDE100 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7D068135E11372BE4386D1 /* MenuBarController.swift */; };
 		7FDD306DDDC34622D1045135 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132DA21638FE9F910C3B310F /* DictationController.swift */; };
@@ -55,6 +55,7 @@
 		E9ECDA9E2393CAE5A12EADC3 /* SettingsViewHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */; };
 		EBB2C0E1F4F720EF5D2D7771 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 627E6D8A9A0959D181744C14 /* HistoryView.swift */; };
 		F5A00A35B80276971C87786A /* processing-background.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 911C21B21664F69036B1443E /* processing-background.mp4 */; };
+		FE46630AA4D6E4E42A6B4D13 /* VoceAccessSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 637E3E73748DCBC86C3599DC /* VoceAccessSettingsSection.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,7 +71,6 @@
 		1ED8BF2AEF421B393FE88D15 /* UpdaterController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterController.swift; sourceTree = "<group>"; };
 		208224CFAB3C44136C4080B2 /* Voce.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Voce.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2DB7A0D8A6C0D851D2F50908 /* AppleSpeechPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSpeechPreviewSession.swift; sourceTree = "<group>"; };
-		2BE9F44F2D5E493EA2A8FCB5 /* VoceProEntitlementService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoceProEntitlementService.swift; sourceTree = "<group>"; };
 		30FC345D5219417D3A6101AD /* CleanupStyleSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupStyleSettingsSection.swift; sourceTree = "<group>"; };
 		32D6BB3AE4EEE92E50CFFE78 /* AppPreferencesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferencesStore.swift; sourceTree = "<group>"; };
 		340E874BDA6F985AB31A34BB /* MicButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicButton.swift; sourceTree = "<group>"; };
@@ -78,7 +78,6 @@
 		41A4AACACF799B8954E3C2A7 /* HomeTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTab.swift; sourceTree = "<group>"; };
 		44244B9B130D6687C53C2ED2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingSettingsSection.swift; sourceTree = "<group>"; };
-		4A1F7B873D2F412DB7A0DF91 /* VoceAccessSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoceAccessSettingsSection.swift; sourceTree = "<group>"; };
 		4A43BDB5365A4C04B39377D7 /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
 		4C2A713C2627E7814CCA4C0D /* EngineSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineSettingsSection.swift; sourceTree = "<group>"; };
 		4FA4D2A4EEE0417D51262F1A /* HistoryTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryTab.swift; sourceTree = "<group>"; };
@@ -86,18 +85,21 @@
 		5D587D107389F4EA940AA188 /* GeneralSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsSection.swift; sourceTree = "<group>"; };
 		5E408341ECED604CAD61B112 /* Voce.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Voce.entitlements; sourceTree = "<group>"; };
 		627E6D8A9A0959D181744C14 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		637E3E73748DCBC86C3599DC /* VoceAccessSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoceAccessSettingsSection.swift; sourceTree = "<group>"; };
 		6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSettingsSection.swift; sourceTree = "<group>"; };
 		7B575DB65BF978A9BCA10827 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewHelpers.swift; sourceTree = "<group>"; };
 		911C21B21664F69036B1443E /* processing-background.mp4 */ = {isa = PBXFileReference; path = "processing-background.mp4"; sourceTree = "<group>"; };
-		356BDE8A1D6E4D8E9A1C2F31 /* processing-background-dark.mp4 */ = {isa = PBXFileReference; path = "processing-background-dark.mp4"; sourceTree = "<group>"; };
 		9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatusCard.swift; sourceTree = "<group>"; };
 		9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsTab.swift; sourceTree = "<group>"; };
 		9DA8DBB014F3CD82D09D9DA8 /* AppleFoundationModelsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleFoundationModelsService.swift; sourceTree = "<group>"; };
 		A3E2FC96193616902F7C0568 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		AFBB6BF189A08708D31B0F05 /* processing-background-dark.mp4 */ = {isa = PBXFileReference; path = "processing-background-dark.mp4"; sourceTree = "<group>"; };
 		B24C5BB59D2CC36789921BB4 /* LearningSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LearningSettingsSection.swift; sourceTree = "<group>"; };
+		B4CCE0404C10AD734117A172 /* GuidedWalkthroughView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedWalkthroughView.swift; sourceTree = "<group>"; };
 		C1D6F6F334166FF103AACA28 /* VoiceCommandsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandsSettingsSection.swift; sourceTree = "<group>"; };
 		CC723BFEDDB1B17CE724F0A3 /* AISettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISettingsSection.swift; sourceTree = "<group>"; };
+		D9457C7DCFE3916C4FBC73BD /* VoceProEntitlementService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoceProEntitlementService.swift; sourceTree = "<group>"; };
 		DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionDiagnostics.swift; sourceTree = "<group>"; };
 		E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsSettingsSection.swift; sourceTree = "<group>"; };
 		EA596049E5E1D02311496B9B /* ScratchPadTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchPadTab.swift; sourceTree = "<group>"; };
@@ -150,6 +152,7 @@
 				18C96AE96BC66A547EF4FDAC /* DictionaryTab.swift */,
 				4C2A713C2627E7814CCA4C0D /* EngineSettingsSection.swift */,
 				5D587D107389F4EA940AA188 /* GeneralSettingsSection.swift */,
+				B4CCE0404C10AD734117A172 /* GuidedWalkthroughView.swift */,
 				4FA4D2A4EEE0417D51262F1A /* HistoryTab.swift */,
 				627E6D8A9A0959D181744C14 /* HistoryView.swift */,
 				41A4AACACF799B8954E3C2A7 /* HomeTab.swift */,
@@ -165,8 +168,8 @@
 				DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */,
 				E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */,
 				9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */,
+				AFBB6BF189A08708D31B0F05 /* processing-background-dark.mp4 */,
 				911C21B21664F69036B1443E /* processing-background.mp4 */,
-				356BDE8A1D6E4D8E9A1C2F31 /* processing-background-dark.mp4 */,
 				47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */,
 				EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */,
 				EA596049E5E1D02311496B9B /* ScratchPadTab.swift */,
@@ -177,9 +180,9 @@
 				0EA039E7BFEB0F1612ED079B /* StyleTab.swift */,
 				1ED8BF2AEF421B393FE88D15 /* UpdaterController.swift */,
 				5E408341ECED604CAD61B112 /* Voce.entitlements */,
-				4A1F7B873D2F412DB7A0DF91 /* VoceAccessSettingsSection.swift */,
+				637E3E73748DCBC86C3599DC /* VoceAccessSettingsSection.swift */,
 				F4341CE23927C00B47232FAD /* VoceApp.swift */,
-				2BE9F44F2D5E493EA2A8FCB5 /* VoceProEntitlementService.swift */,
+				D9457C7DCFE3916C4FBC73BD /* VoceProEntitlementService.swift */,
 				C1D6F6F334166FF103AACA28 /* VoiceCommandsSettingsSection.swift */,
 				47D0F46C83C24CD745A51FC2 /* Resources */,
 			);
@@ -287,8 +290,8 @@
 			files = (
 				03986840139C4AA94F78ABB9 /* Assets.xcassets in Resources */,
 				334C29A2B3A157E231B70579 /* Manrope-VariableFont_wght.ttf in Resources */,
+				72661E279F90D022F5169EAE /* processing-background-dark.mp4 in Resources */,
 				F5A00A35B80276971C87786A /* processing-background.mp4 in Resources */,
-				356BDE8A1D6E4D8E9A1C2F30 /* processing-background-dark.mp4 in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -314,6 +317,7 @@
 				A1EB2E4860AE3E0AAA47D7F1 /* DictionaryTab.swift in Sources */,
 				4EAA23EDB4F2808191DE1B16 /* EngineSettingsSection.swift in Sources */,
 				68E4DA75E33631C0BD2C328D /* GeneralSettingsSection.swift in Sources */,
+				144E998A0705B5EDBA0A1BF1 /* GuidedWalkthroughView.swift in Sources */,
 				8E98A45484BC62B8BFA108D5 /* HistoryTab.swift in Sources */,
 				EBB2C0E1F4F720EF5D2D7771 /* HistoryView.swift in Sources */,
 				642CF2D5C7B667DE66C672A7 /* HomeTab.swift in Sources */,
@@ -337,9 +341,9 @@
 				999D062FB090A37EC72AD453 /* SnippetsTab.swift in Sources */,
 				043B7C996C8E078FF72C5435 /* StyleTab.swift in Sources */,
 				B09E52D335FEAE1F1AEE2A61 /* UpdaterController.swift in Sources */,
-				20A9F21C187742D4AC8E1786 /* VoceAccessSettingsSection.swift in Sources */,
+				FE46630AA4D6E4E42A6B4D13 /* VoceAccessSettingsSection.swift in Sources */,
 				2E860B4B558041E90F57A497 /* VoceApp.swift in Sources */,
-				1F698085A86843F8B8248BEF /* VoceProEntitlementService.swift in Sources */,
+				4EB482F30ACA1CE75CAFCA7B /* VoceProEntitlementService.swift in Sources */,
 				C288B74DADB852D353BC06DE /* VoiceCommandsSettingsSection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -355,7 +359,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
@@ -363,7 +367,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.32;
+				MARKETING_VERSION = 0.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
@@ -434,14 +438,14 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.32;
+				MARKETING_VERSION = 0.4.33;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;

@@ -79,7 +79,8 @@ private struct OutsideClickDismissMonitor: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
+        let view = OutsideClickDismissView(frame: .zero)
+        view.coordinator = context.coordinator
         context.coordinator.attach(to: view)
         return view
     }
@@ -92,6 +93,8 @@ private struct OutsideClickDismissMonitor: NSViewRepresentable {
     final class Coordinator {
         var onDismiss: () -> Void
         private weak var view: NSView?
+        private var windowNumber: Int?
+        private var frameInWindow: CGRect = .zero
         private var monitor: Any?
 
         init(onDismiss: @escaping () -> Void) {
@@ -104,26 +107,46 @@ private struct OutsideClickDismissMonitor: NSViewRepresentable {
             }
         }
 
+        @MainActor
         func attach(to view: NSView) {
             self.view = view
+            refreshGeometry(from: view)
             guard monitor == nil else { return }
 
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
                 guard let self,
-                      let view = self.view,
-                      let window = view.window,
-                      event.window === window else {
+                      let windowNumber = self.windowNumber,
+                      event.windowNumber == windowNumber else {
                     return event
                 }
 
-                let point = view.convert(event.locationInWindow, from: nil)
-                guard !view.bounds.contains(point) else {
+                guard !self.frameInWindow.contains(event.locationInWindow) else {
                     return event
                 }
 
                 self.onDismiss()
                 return nil
             }
+        }
+
+        @MainActor
+        func refreshGeometry(from view: NSView) {
+            windowNumber = view.window?.windowNumber
+            frameInWindow = view.convert(view.bounds, to: nil)
+        }
+    }
+
+    private final class OutsideClickDismissView: NSView {
+        weak var coordinator: Coordinator?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            coordinator?.refreshGeometry(from: self)
+        }
+
+        override func layout() {
+            super.layout()
+            coordinator?.refreshGeometry(from: self)
         }
     }
 }

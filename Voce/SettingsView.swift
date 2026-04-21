@@ -5,12 +5,33 @@ struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.dismiss) private var dismiss
     private let initialLaunchTarget: SettingsLaunchTarget?
+    @Binding private var accessVerificationCode: String
+    private let accessVerificationCodeWasSent: Bool
+    private let accessAuthIsWorking: Bool
+    private let accessAuthError: String
+    private let onRequestAccessCode: (String) -> Void
+    private let onVerifyAccessCode: (String) -> Void
     private let onClose: (() -> Void)?
     @State private var preferencesDraft: AppPreferences = .default
     @State private var selectedGroup: SettingsGroup = .setup
 
-    init(initialLaunchTarget: SettingsLaunchTarget? = nil, onClose: (() -> Void)? = nil) {
+    init(
+        initialLaunchTarget: SettingsLaunchTarget? = nil,
+        accessVerificationCode: Binding<String> = .constant(""),
+        accessVerificationCodeWasSent: Bool = false,
+        accessAuthIsWorking: Bool = false,
+        accessAuthError: String = "",
+        onRequestAccessCode: @escaping (String) -> Void = { _ in },
+        onVerifyAccessCode: @escaping (String) -> Void = { _ in },
+        onClose: (() -> Void)? = nil
+    ) {
         self.initialLaunchTarget = initialLaunchTarget
+        _accessVerificationCode = accessVerificationCode
+        self.accessVerificationCodeWasSent = accessVerificationCodeWasSent
+        self.accessAuthIsWorking = accessAuthIsWorking
+        self.accessAuthError = accessAuthError
+        self.onRequestAccessCode = onRequestAccessCode
+        self.onVerifyAccessCode = onVerifyAccessCode
         self.onClose = onClose
         _selectedGroup = State(initialValue: Self.group(for: initialLaunchTarget))
     }
@@ -101,13 +122,10 @@ struct SettingsView: View {
     }
 
     private func topTabBar(isCompactHeight: Bool) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: VoceDesign.sm) {
-                ForEach(visibleGroups, id: \.self) { group in
-                    topTabButton(for: group, isCompactHeight: isCompactHeight)
-                }
+        HStack(spacing: isCompactHeight ? VoceDesign.xs : VoceDesign.sm) {
+            ForEach(visibleGroups, id: \.self) { group in
+                topTabButton(for: group, isCompactHeight: isCompactHeight)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, isCompactHeight ? VoceDesign.xs : VoceDesign.sm)
         .padding(.vertical, isCompactHeight ? VoceDesign.xs : VoceDesign.sm)
@@ -137,6 +155,7 @@ struct SettingsView: View {
             )
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityLabel(group.title)
         .accessibilityValue(selectedGroup == group ? "Selected" : "")
     }
@@ -205,8 +224,14 @@ struct SettingsView: View {
             #if DEBUG
             VoceAccessSettingsSection(
                 preferences: $preferencesDraft,
+                verificationCode: $accessVerificationCode,
                 entitlementStatus: controller.voceProEntitlementStatus,
+                didSendVerificationCode: accessVerificationCodeWasSent,
+                isAuthWorking: accessAuthIsWorking,
+                authError: accessAuthError,
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
+                onRequestAccessCode: requestAccessCodeForSettingsEmail,
+                onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
                 onSubscribe: controller.openVoceProCheckout,
                 onManageSubscription: controller.openVoceProPortal,
                 onResetAccessSession: controller.resetVoceAccessSessionForTesting
@@ -214,8 +239,14 @@ struct SettingsView: View {
             #else
             VoceAccessSettingsSection(
                 preferences: $preferencesDraft,
+                verificationCode: $accessVerificationCode,
                 entitlementStatus: controller.voceProEntitlementStatus,
+                didSendVerificationCode: accessVerificationCodeWasSent,
+                isAuthWorking: accessAuthIsWorking,
+                authError: accessAuthError,
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
+                onRequestAccessCode: requestAccessCodeForSettingsEmail,
+                onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
                 onSubscribe: controller.openVoceProCheckout,
                 onManageSubscription: controller.openVoceProPortal
             )
@@ -232,7 +263,6 @@ struct SettingsView: View {
             )
         case .behavior:
             MediaSettingsSection(preferences: $preferencesDraft)
-            AnchorOverrideSettingsSection(preferences: $preferencesDraft)
         case .ai:
             AISettingsSection(
                 preferences: $preferencesDraft,
@@ -243,6 +273,29 @@ struct SettingsView: View {
                 preferences: $preferencesDraft,
                 launchAtLoginWarning: controller.launchAtLoginWarning
             )
+        case .help:
+            GuidedWalkthroughSettingsSection(
+                holdHotkeyLabel: settingsHoldToTalkLabel,
+                tapHotkeyLabel: settingsTapToTalkLabel,
+                dictionaryHotkeyLabel: keyboardShortcutDisplayName(for: preferencesDraft.hotkeys.dictionaryCorrectionHotkey),
+                dictionaryCorrectionHotkey: preferencesDraft.hotkeys.dictionaryCorrectionHotkey,
+                availableSteps: {
+                    var steps: [GuidedWalkthroughStep] = []
+                    if preferencesDraft.hotkeys.handsFreeGlobalHotkey != nil {
+                        steps.append(.tapToRecord)
+                    }
+                    if preferencesDraft.hotkeys.optionPressToTalkEnabled {
+                        steps.append(.holdToRecord)
+                    }
+                    steps.append(.dictionaryFix)
+                    return steps
+                }()
+            )
+            HelpFAQSection(
+                tapHotkeyLabel: settingsTapToTalkLabel,
+                holdHotkeyLabel: settingsHoldToTalkLabel,
+                dictionaryHotkeyLabel: keyboardShortcutDisplayName(for: preferencesDraft.hotkeys.dictionaryCorrectionHotkey)
+            )
         }
     }
 
@@ -250,6 +303,25 @@ struct SettingsView: View {
         var snapshot = preferences
         snapshot.normalize()
         return snapshot
+    }
+
+    private func requestAccessCodeForSettingsEmail() {
+        onRequestAccessCode(preferencesDraft.billing.subscriberEmail)
+    }
+
+    private func verifyAccessCodeForSettingsEmail() {
+        onVerifyAccessCode(preferencesDraft.billing.subscriberEmail)
+    }
+
+    private var settingsHoldToTalkLabel: String {
+        hotkeyDisplayName(for: preferencesDraft.hotkeys.pressToTalkHotkey)
+    }
+
+    private var settingsTapToTalkLabel: String {
+        if let hotkey = preferencesDraft.hotkeys.handsFreeGlobalHotkey {
+            return handsFreeToggleDisplayName(for: hotkey)
+        }
+        return "your key"
     }
 
     private func closeSettings() {
@@ -275,6 +347,7 @@ private enum SettingsGroup: String, CaseIterable {
     case behavior
     case ai
     case general
+    case help
 
     var title: String {
         switch self {
@@ -282,15 +355,17 @@ private enum SettingsGroup: String, CaseIterable {
         case .behavior: return "Behavior"
         case .ai: return "AI"
         case .general: return "General"
+        case .help: return "Help"
         }
     }
 
     var subtitle: String {
         switch self {
         case .setup: return "Access, keys, speech"
-        case .behavior: return "Text, media, overlay"
+        case .behavior: return "Text and media"
         case .ai: return "Workflows, triggers"
         case .general: return "Profile, launch, app"
+        case .help: return "Walkthrough, answers"
         }
     }
 
@@ -299,11 +374,13 @@ private enum SettingsGroup: String, CaseIterable {
         case .setup:
             return "Get Voce ready to listen: system permissions, recording controls, and the live transcription model."
         case .behavior:
-            return "Shape how transcripts are inserted, how media behaves during dictation, and overlay positioning."
+            return "Shape how transcripts are inserted and how media behaves during dictation."
         case .ai:
             return "Configure Apple Intelligence workflows, spoken AI triggers, and hands-free AI finish behavior."
         case .general:
             return "Manage app-level preferences like your display name, launch behavior, and Dock visibility."
+        case .help:
+            return "Replay the core teaching flow and get quick answers about dictation, shortcuts, and fixes."
         }
     }
 
@@ -313,6 +390,7 @@ private enum SettingsGroup: String, CaseIterable {
         case .behavior: return "slider.horizontal.3"
         case .ai: return "sparkles"
         case .general: return "wrench.and.screwdriver"
+        case .help: return "questionmark.circle"
         }
     }
 
@@ -320,8 +398,57 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup:
             return "Start here"
+        case .help:
+            return "Need a refresher?"
         case .behavior, .ai, .general:
             return nil
+        }
+    }
+}
+
+private struct HelpFAQSection: View {
+    let tapHotkeyLabel: String
+    let holdHotkeyLabel: String
+    let dictionaryHotkeyLabel: String
+
+    var body: some View {
+        settingsCardWithSubtitle(
+            "FAQ",
+            subtitle: "Short answers for the things people look for first."
+        ) {
+            VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                faqRow(
+                    question: "How do I start dictating?",
+                    answer: "Click into the app you want to type in, then use Tap to Talk or Hold to Talk. Tap uses \(tapHotkeyLabel). Hold uses \(holdHotkeyLabel)."
+                )
+                faqRow(
+                    question: "How do I fix a word Voce gets wrong?",
+                    answer: "Highlight the wrong word, press \(dictionaryHotkeyLabel), then enter the correct replacement in the Teach Voce popover."
+                )
+                faqRow(
+                    question: "Why did my transcript copy instead of pasting?",
+                    answer: "That happens when Voce cannot safely insert text into the target app. The transcript is copied to your clipboard so you can paste it manually."
+                )
+                faqRow(
+                    question: "Can I replay the teaching flow?",
+                    answer: "Yes. Use Open walkthrough in Help any time you want to run through the practice flow again."
+                )
+            }
+        }
+    }
+
+    private func faqRow(question: String, answer: String) -> some View {
+        settingsSubcard {
+            VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                Text(question)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(answer)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -342,9 +469,11 @@ private struct SettingsTopTabButtonLabel: View {
                 .font(VoceDesign.font(size: 13, weight: .semibold))
                 .foregroundStyle(VoceDesign.textPrimary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
         }
-        .padding(.horizontal, isCompactHeight ? VoceDesign.md : VoceDesign.lg)
-        .padding(.vertical, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
+        .padding(.vertical, isCompactHeight ? VoceDesign.xs : VoceDesign.sm)
         .background {
             Capsule(style: .continuous)
                 .fill(isSelected ? VoceDesign.accent.opacity(0.10) : Color.clear)

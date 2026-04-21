@@ -2119,15 +2119,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             return
         }
 
-        if #available(macOS 11.0, *) {
-            appearance.performAsCurrentDrawingAppearance(body)
-            return
-        }
-
-        let previousAppearance = NSAppearance.current
-        NSAppearance.current = appearance
-        defer { NSAppearance.current = previousAppearance }
-        body()
+        appearance.performAsCurrentDrawingAppearance(body)
     }
 
     private func endInteractiveRepositionMode(notify: Bool = true) {

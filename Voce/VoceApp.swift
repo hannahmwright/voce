@@ -1,4 +1,5 @@
 import AppKit
+import AppIntents
 import Sparkle
 import SwiftUI
 

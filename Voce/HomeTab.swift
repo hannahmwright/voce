@@ -9,9 +9,12 @@ struct HomeTab: View {
     let onOpenTapToTalkSettings: () -> Void
     @State private var expandedIDs: Set<UUID> = []
     @State private var hoveredID: UUID?
+    @State private var hoveredActivityCellID: String?
     @State private var currentTime = Date()
     @State private var showErrorBanner = false
     @State private var dismissedPermissionCallouts: Set<PermissionCalloutKind> = []
+    @State private var copyToastMessage: String?
+    @State private var copyToastToken = UUID()
 
     var body: some View {
         GeometryReader { proxy in
@@ -50,8 +53,24 @@ struct HomeTab: View {
         .onChange(of: controller.speechRecognitionPermissionStatus) { _, _ in animateErrorBannerUpdate() }
         .onChange(of: controller.accessibilityPermissionStatus) { _, _ in animateErrorBannerUpdate() }
         .onChange(of: controller.inputMonitoringPermissionStatus) { _, _ in animateErrorBannerUpdate() }
+        .onChange(of: controller.status) { _, newStatus in
+            handleStatusToast(newStatus)
+        }
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
             currentTime = now
+        }
+        .overlay(alignment: .topTrailing) {
+            if let copyToastMessage {
+                copyToast(message: copyToastMessage)
+                    .padding(.top, VoceDesign.xl)
+                    .padding(.trailing, VoceDesign.xl)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .move(edge: .top).combined(with: .opacity)
+                    )
+                    .zIndex(10)
+            }
         }
     }
 
@@ -338,6 +357,7 @@ struct HomeTab: View {
     private var activityHeatmapCard: some View {
         let cells = activityHeatmapGridCells
         let columns = Array(repeating: GridItem(.fixed(activityHeatmapColumnWidth), spacing: activityHeatmapSpacing), count: 7)
+        let hoveredCell = cells.first { $0.id == hoveredActivityCellID }
 
         return VStack(alignment: .leading, spacing: VoceDesign.sm) {
             HStack(alignment: .firstTextBaseline) {
@@ -380,18 +400,34 @@ struct HomeTab: View {
                     spacing: activityHeatmapSpacing
                 ) {
                     ForEach(cells) { cell in
+                        let isHovered = hoveredActivityCellID == cell.id
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(activityHeatmapColor(for: cell.level, isFuture: cell.isFuture))
                             .frame(width: activityHeatmapCellSize, height: activityHeatmapCellSize)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .stroke(VoceDesign.border.opacity(cell.level == 0 ? 0.55 : 0.18), lineWidth: VoceDesign.borderThin)
+                                    .stroke(
+                                        isHovered
+                                            ? VoceDesign.textPrimary.opacity(0.78)
+                                            : VoceDesign.border.opacity(cell.level == 0 ? 0.55 : 0.18),
+                                        lineWidth: isHovered ? 1.2 : VoceDesign.borderThin
+                                    )
                             )
+                            .contentShape(Rectangle())
+                            .onHover { isHovering in
+                                hoveredActivityCellID = isHovering ? cell.id : nil
+                            }
                             .help(activityTooltip(for: cell))
                             .accessibilityLabel(activityAccessibilityLabel(for: cell))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
+
+                Text(activityHoverSummary(for: hoveredCell))
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, minHeight: 16, alignment: .center)
             }
         }
         .padding(VoceDesign.md)
@@ -504,6 +540,20 @@ struct HomeTab: View {
         return "\(date): \(cell.wordCount) \(wordUnit) in \(cell.sessionCount) \(sessionUnit)"
     }
 
+    private func activityHoverSummary(for cell: HomeActivityCell?) -> String {
+        guard let cell else {
+            return "Hover a square to see that day's words."
+        }
+
+        let date = activityDateFormatter.string(from: cell.date)
+        if cell.isFuture || cell.wordCount == 0 {
+            return "\(date): no words dictated"
+        }
+
+        let wordUnit = cell.wordCount == 1 ? "word" : "words"
+        return "\(date): \(cell.wordCount.formatted(.number.grouping(.automatic))) \(wordUnit) dictated"
+    }
+
     private func activityAccessibilityLabel(for cell: HomeActivityCell) -> String {
         activityTooltip(for: cell)
     }
@@ -599,32 +649,11 @@ struct HomeTab: View {
         let showsAISections = (entry.sourceText?.isEmpty == false) && entry.aiWorkflowName != nil
 
         return HStack(alignment: .top, spacing: VoceDesign.lg) {
-            // Timestamp + app icon on hover
-            VStack(spacing: VoceDesign.xs) {
-                Text(absoluteTimestamp(for: entry.createdAt))
-                    .font(VoceDesign.font(size: 13).monospacedDigit())
-                    .foregroundStyle(VoceDesign.textSecondary)
-
-                if hoveredID == entry.id {
-                    Group {
-                        if let icon = appIcon(for: entry.appBundleID) {
-                            Image(nsImage: icon)
-                                .resizable()
-                                .frame(width: 18, height: 18)
-                                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                                .help(appName(for: entry.appBundleID))
-                        } else {
-                            Image(systemName: "app")
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(VoceDesign.textSecondary.opacity(0.5))
-                                .help(appName(for: entry.appBundleID))
-                        }
-                    }
-                    .transition(AnyTransition.opacity)
-                }
-            }
-            .frame(width: layout.timestampColumnWidth, alignment: .leading)
-            .animation(.easeInOut(duration: VoceDesign.animationFast), value: hoveredID == entry.id)
+            // Timestamp
+            Text(absoluteTimestamp(for: entry.createdAt))
+                .font(VoceDesign.font(size: 13).monospacedDigit())
+                .foregroundStyle(VoceDesign.textSecondary)
+                .frame(width: layout.timestampColumnWidth, alignment: .leading)
 
             // Transcript text
             VStack(alignment: .leading, spacing: VoceDesign.xs) {
@@ -646,6 +675,28 @@ struct HomeTab: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // App icon on hover, pinned to the row trailing edge
+            Group {
+                if let icon = appIcon(for: entry.appBundleID) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 18, height: 18)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .help(appName(for: entry.appBundleID))
+                } else {
+                    Image(systemName: "app")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(VoceDesign.textSecondary.opacity(0.5))
+                        .help(appName(for: entry.appBundleID))
+                }
+            }
+            .frame(width: 18, height: 18, alignment: .center)
+            .opacity(hoveredID == entry.id ? 1 : 0)
+            .allowsHitTesting(hoveredID == entry.id)
+            .animation(.easeInOut(duration: VoceDesign.animationFast), value: hoveredID == entry.id)
+            .padding(.top, 1)
 
             // Expand chevron
             if entryLikelyNeedsExpansion(entry) {
@@ -705,11 +756,12 @@ struct HomeTab: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(VoceDesign.font(size: 10, weight: .semibold))
-                    .foregroundStyle(VoceDesign.accent)
+                    .foregroundStyle(controller.canRunAIWorkflows ? VoceDesign.accent : VoceDesign.textSecondary.opacity(0.55))
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain)
-            .help("Re-run \(workflow.name)")
+            .disabled(!controller.canRunAIWorkflows)
+            .help(controller.canRunAIWorkflows ? "Re-run \(workflow.name)" : "Verify your email to use AI workflows")
             .accessibilityLabel("Re-run \(workflow.name)")
         }
     }
@@ -722,10 +774,13 @@ struct HomeTab: View {
             } label: {
                 Label("Re-run \(workflow.name)", systemImage: "arrow.clockwise")
             }
+            .disabled(!controller.canRunAIWorkflows)
         }
 
         if controller.enabledAIWorkflows.isEmpty {
             Text("No AI workflows enabled")
+        } else if !controller.canRunAIWorkflows {
+            Text("Verify your email to use AI workflows")
         } else {
             Menu("Run AI") {
                 ForEach(controller.enabledAIWorkflows) { workflow in
@@ -746,6 +801,64 @@ struct HomeTab: View {
         }
 
         return controller.enabledAIWorkflows.first { $0.name == aiWorkflowName }
+    }
+
+    private func handleStatusToast(_ status: String) {
+        let normalized = status.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        let toastMessage: String?
+        switch normalized {
+        case "Selected transcript copied.", "Transcribed text copied.":
+            toastMessage = "Transcript copied"
+        case "AI output copied.":
+            toastMessage = "AI output copied"
+        default:
+            toastMessage = nil
+        }
+
+        guard let toastMessage else { return }
+        copyToastToken = UUID()
+        let token = copyToastToken
+
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast)) {
+            copyToastMessage = toastMessage
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            guard token == copyToastToken else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast)) {
+                copyToastMessage = nil
+            }
+        }
+    }
+
+    private func copyToast(message: String) -> some View {
+        HStack(spacing: VoceDesign.sm) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VoceDesign.success)
+
+            Text(message)
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(VoceDesign.textPrimary)
+        }
+        .padding(.horizontal, VoceDesign.md)
+        .padding(.vertical, VoceDesign.sm)
+        .background {
+            Capsule(style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.92))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .fill(.ultraThinMaterial.opacity(0.42))
+                )
+        }
+        .overlay(
+            Capsule(style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: VoceDesign.borderThin)
+        )
+        .shadowStyle(.md)
     }
 
     // MARK: - Permission & Error Banners

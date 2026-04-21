@@ -290,6 +290,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var metricsRecordingSecondsLifetime: Double
     var metricsLifetimeTrackingStartedAt: Date?
     var metricsLastRecordingDate: String
+    var metricsBestTypingWordsPerMinute: Double
 
     init(
         general: General,
@@ -309,7 +310,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
         metricsRecordingSecondsToday: Double = 0,
         metricsRecordingSecondsLifetime: Double = 0,
         metricsLifetimeTrackingStartedAt: Date? = nil,
-        metricsLastRecordingDate: String = ""
+        metricsLastRecordingDate: String = "",
+        metricsBestTypingWordsPerMinute: Double = 0
     ) {
         self.general = general
         self.hotkeys = hotkeys
@@ -329,6 +331,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         self.metricsRecordingSecondsLifetime = metricsRecordingSecondsLifetime
         self.metricsLifetimeTrackingStartedAt = metricsLifetimeTrackingStartedAt
         self.metricsLastRecordingDate = metricsLastRecordingDate
+        self.metricsBestTypingWordsPerMinute = metricsBestTypingWordsPerMinute
     }
 
     init(from decoder: Decoder) throws {
@@ -351,6 +354,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         metricsRecordingSecondsLifetime = try container.decodeIfPresent(Double.self, forKey: .metricsRecordingSecondsLifetime) ?? 0
         metricsLifetimeTrackingStartedAt = try container.decodeIfPresent(Date.self, forKey: .metricsLifetimeTrackingStartedAt)
         metricsLastRecordingDate = try container.decodeIfPresent(String.self, forKey: .metricsLastRecordingDate) ?? ""
+        metricsBestTypingWordsPerMinute = try container.decodeIfPresent(Double.self, forKey: .metricsBestTypingWordsPerMinute) ?? 0
     }
 
     static var `default`: AppPreferences {
@@ -392,7 +396,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             metricsRecordingSecondsToday: 0,
             metricsRecordingSecondsLifetime: 0,
             metricsLifetimeTrackingStartedAt: nil,
-            metricsLastRecordingDate: ""
+            metricsLastRecordingDate: "",
+            metricsBestTypingWordsPerMinute: 0
         )
     }
 
@@ -475,6 +480,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         snapshot.metricsRecordingSecondsLifetime = 0
         snapshot.metricsLifetimeTrackingStartedAt = nil
         snapshot.metricsLastRecordingDate = ""
+        snapshot.metricsBestTypingWordsPerMinute = 0
         snapshot.general.userName = ""
         snapshot.general.appearancePreference = .currentSystemDefault
         snapshot.billing.subscriberEmail = ""

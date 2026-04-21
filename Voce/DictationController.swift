@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import AVFoundation
 import Foundation
 import OSLog
@@ -240,6 +241,35 @@ final class DictationController: ObservableObject {
     private var activeFreeUsageLimitSeconds: TimeInterval?
     private var suppressNextPressToTalkStop = false
 
+    private struct SelectionCapture {
+        var text: String
+        var appContext: AppContext
+    }
+
+    private struct PasteboardSnapshot {
+        private var items: [NSPasteboardItem] = []
+
+        init(pasteboard: NSPasteboard) {
+            items = pasteboard.pasteboardItems?.map { item in
+                let copy = NSPasteboardItem()
+                for type in item.types {
+                    if let data = item.data(forType: type) {
+                        copy.setData(data, forType: type)
+                    } else if let string = item.string(forType: type) {
+                        copy.setString(string, forType: type)
+                    }
+                }
+                return copy
+            } ?? []
+        }
+
+        func restore(to pasteboard: NSPasteboard) {
+            pasteboard.clearContents()
+            guard !items.isEmpty else { return }
+            pasteboard.writeObjects(items)
+        }
+    }
+
     init(
         hotkey: MacHotkeyMonitor = MacHotkeyMonitor(),
         overlay: MacOverlayPresenter = MacOverlayPresenter(),
@@ -277,6 +307,12 @@ final class DictationController: ObservableObject {
         }
         hotkey.onFinishActiveRecordingWithAI = { [weak self] hotkey in
             self?.finishActiveRecordingWithAI(triggeredBy: hotkey)
+        }
+        hotkey.onCaptureSelectionCorrection = { [weak self] in
+            self?.captureSelectionForCorrection()
+        }
+        hotkey.onCaptureSelectionSnippet = { [weak self] in
+            self?.captureSelectionForSnippet()
         }
         overlay.onUserDraggedToPosition = { [weak self] position in
             self?.saveOverlayDragPosition(position)
@@ -569,6 +605,8 @@ final class DictationController: ObservableObject {
             hotkey.isOptionPressToTalkEnabled = preferences.hotkeys.optionPressToTalkEnabled
             hotkey.pressToTalkHotkey = preferences.hotkeys.pressToTalkHotkey
             hotkey.globalToggleHotkey = preferences.hotkeys.handsFreeGlobalHotkey
+            hotkey.selectionCorrectionHotkey = preferences.hotkeys.dictionaryCorrectionHotkey
+            hotkey.selectionSnippetHotkey = preferences.hotkeys.snippetCreationHotkey
             hotkey.isSubmitActiveRecordingEnabled = false
             hotkey.aiFinishHotkey = preferences.ai.handsFreeFinishHotkey
             hotkey.aiWorkflowFinishHotkeys = preferences.ai.workflows.compactMap(\.handsFreeFinishHotkey)
@@ -652,6 +690,120 @@ final class DictationController: ObservableObject {
         case .pressToTalk:
             suppressNextPressToTalkStop = true
             apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
+        }
+    }
+
+    func captureSelectionForCorrection() {
+        guard !isRecording else {
+            status = "Finish recording before using dictionary quick fix."
+            lastError = status
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let capture = await captureFrontmostSelection() else {
+                status = "Select text first, then press the dictionary quick fix shortcut."
+                lastError = status
+                return
+            }
+
+            menuBar.showSelectionCorrection(
+                term: capture.text,
+                sourceAppName: capture.appContext.appName
+            ) { [weak self] replacement in
+                Task { @MainActor [weak self] in
+                    await self?.saveSelectionCorrection(capture: capture, replacement: replacement)
+                }
+            }
+        }
+    }
+
+    func captureSelectionForSnippet() {
+        guard !isRecording else {
+            status = "Finish recording before creating a shortcut."
+            lastError = status
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let capture = await captureFrontmostSelection() else {
+                status = "Select text first, then press the create shortcut shortcut."
+                lastError = status
+                return
+            }
+
+            menuBar.showSelectionSnippet(expansion: capture.text) { [weak self] trigger in
+                Task { @MainActor [weak self] in
+                    await self?.saveSelectionSnippet(capture: capture, trigger: trigger)
+                }
+            }
+        }
+    }
+
+    func createCorrectionFromCurrentTranscript() {
+        guard !isRecording else {
+            status = "Finish recording before creating a dictionary item."
+            lastError = status
+            return
+        }
+
+        let term = currentTranscriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else {
+            status = "No dictation available yet."
+            return
+        }
+
+        menuBar.showSelectionCorrection(term: term, sourceAppName: nil) { [weak self] replacement in
+            Task { @MainActor [weak self] in
+                await self?.saveTranscriptCorrection(term: term, replacement: replacement)
+            }
+        }
+    }
+
+    func createCorrectionForSuppliedTerm(
+        _ term: String,
+        sourceAppName: String? = nil,
+        onSave: ((String) -> Void)? = nil
+    ) {
+        guard !isRecording else {
+            status = "Finish recording before creating a dictionary item."
+            lastError = status
+            return
+        }
+
+        let trimmedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTerm.isEmpty else {
+            status = "No text available yet."
+            return
+        }
+
+        menuBar.showSelectionCorrection(term: trimmedTerm, sourceAppName: sourceAppName) { [weak self] replacement in
+            Task { @MainActor [weak self] in
+                await self?.saveTranscriptCorrection(term: trimmedTerm, replacement: replacement)
+                onSave?(replacement)
+            }
+        }
+    }
+
+    func createSnippetFromCurrentTranscript() {
+        guard !isRecording else {
+            status = "Finish recording before creating a shortcut."
+            lastError = status
+            return
+        }
+
+        let expansion = currentTranscriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expansion.isEmpty else {
+            status = "No dictation available yet."
+            return
+        }
+
+        menuBar.showSelectionSnippet(expansion: expansion) { [weak self] trigger in
+            Task { @MainActor [weak self] in
+                await self?.saveTranscriptSnippet(expansion: expansion, trigger: trigger)
+            }
         }
     }
 
@@ -837,9 +989,18 @@ final class DictationController: ObservableObject {
         preferences.ai.workflows.filter(\.isEnabled)
     }
 
+    var canRunAIWorkflows: Bool {
+        voceProEntitlementStatus.isEntitled && aiRuntimeEnabled
+    }
+
     func runAIWorkflow(_ workflow: AIWorkflow, on entry: TranscriptEntry) {
         guard !isRecording else {
             status = "Finish recording before running AI on history."
+            return
+        }
+        guard voceProEntitlementStatus.isEntitled else {
+            status = "Verify your email to use AI workflows."
+            lastError = voceProEntitlementStatus.message
             return
         }
         guard aiRuntimeEnabled else {
@@ -1191,9 +1352,10 @@ final class DictationController: ObservableObject {
                     }
                     scheduleLearningUpdate(for: finalizedTranscript)
                     let insertedSuccessfully = execution.insertResult.status == .inserted
+                    let insertedIntoVoce = finalizedTranscript.appContext.bundleIdentifier == Bundle.main.bundleIdentifier
                     dismissOverlaySoon(
-                        pop: insertedSuccessfully,
-                        delayNanoseconds: insertedSuccessfully ? 0 : 1_500_000_000
+                        pop: insertedSuccessfully || insertedIntoVoce,
+                        delayNanoseconds: (insertedSuccessfully || insertedIntoVoce) ? 0 : 1_500_000_000
                     )
                 } catch let aiError as AIWorkflowError {
                     lastTranscript = finalizedTranscript.cleanText
@@ -1303,11 +1465,226 @@ final class DictationController: ObservableObject {
         Task { await preferencesStore.save(preferences) }
     }
 
+    private func captureFrontmostSelection() async -> SelectionCapture? {
+        let appContext = AppContextProvider.current()
+        var selectedText = accessibilitySelectedText()
+        if selectedText == nil {
+            selectedText = await copySelectedTextWithTemporaryPasteboard()
+        }
+        let trimmed = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return SelectionCapture(text: trimmed, appContext: appContext)
+    }
+
+    private func saveSelectionCorrection(capture: SelectionCapture, replacement: String) async {
+        let trimmedReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReplacement.isEmpty else { return }
+
+        let entry = LexiconEntry(term: capture.text, preferred: trimmedReplacement, scope: .global)
+        if let existingIndex = preferences.lexiconEntries.firstIndex(where: {
+            $0.term.caseInsensitiveCompare(entry.term) == .orderedSame && $0.scope == entry.scope
+        }) {
+            preferences.lexiconEntries[existingIndex] = entry
+        } else {
+            preferences.lexiconEntries.append(entry)
+        }
+        await lexiconService.upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope)
+        savePreferences()
+
+        let result = await insertionService.insert(text: trimmedReplacement, target: capture.appContext)
+        switch result.status {
+        case .inserted:
+            status = "Dictionary quick fix saved and replaced."
+            lastError = ""
+        case .copiedOnly:
+            status = "Dictionary quick fix saved. Replacement copied to clipboard."
+            lastError = result.errorMessage ?? ""
+        case .failed:
+            status = "Dictionary quick fix saved, but replacement failed."
+            lastError = result.errorMessage ?? ""
+        }
+    }
+
+    private func saveSelectionSnippet(capture: SelectionCapture, trigger: String) async {
+        let trimmedTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTrigger.isEmpty else { return }
+
+        let snippet = Snippet(trigger: trimmedTrigger, expansion: capture.text, scope: .global)
+        if let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
+        }) {
+            preferences.snippets[existingIndex] = snippet
+        } else {
+            preferences.snippets.append(snippet)
+        }
+        await snippetService.upsert(snippet)
+        savePreferences()
+        status = "Shortcut saved for \"\(capture.text)\"."
+        lastError = ""
+    }
+
+    private func saveTranscriptCorrection(term: String, replacement: String) async {
+        let trimmedTerm = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTerm.isEmpty, !trimmedReplacement.isEmpty else { return }
+
+        let entry = LexiconEntry(term: trimmedTerm, preferred: trimmedReplacement, scope: .global)
+        if let existingIndex = preferences.lexiconEntries.firstIndex(where: {
+            $0.term.caseInsensitiveCompare(entry.term) == .orderedSame && $0.scope == entry.scope
+        }) {
+            preferences.lexiconEntries[existingIndex] = entry
+        } else {
+            preferences.lexiconEntries.append(entry)
+        }
+        await lexiconService.upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope)
+        savePreferences()
+        status = "Dictionary item saved for \"\(trimmedTerm)\"."
+        lastError = ""
+    }
+
+    private func saveTranscriptSnippet(expansion: String, trigger: String) async {
+        let trimmedExpansion = expansion.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedExpansion.isEmpty, !trimmedTrigger.isEmpty else { return }
+
+        let snippet = Snippet(trigger: trimmedTrigger, expansion: trimmedExpansion, scope: .global)
+        if let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
+        }) {
+            preferences.snippets[existingIndex] = snippet
+        } else {
+            preferences.snippets.append(snippet)
+        }
+        await snippetService.upsert(snippet)
+        savePreferences()
+        status = "Shortcut saved for \"\(trimmedExpansion)\"."
+        lastError = ""
+    }
+
+    private func accessibilitySelectedText() -> String? {
+        guard AXIsProcessTrusted() else { return nil }
+
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            systemWide,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRef
+        ) == .success,
+        let focusedRef,
+        CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
+            return nil
+        }
+
+        let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
+        if let selected = selectedTextAttribute(from: element) {
+            return selected
+        }
+        return selectedTextFromValueAndRange(element: element)
+    }
+
+    private func selectedTextAttribute(from element: AXUIElement) -> String? {
+        var selectedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            &selectedRef
+        ) == .success else {
+            return nil
+        }
+        return selectedRef as? String
+    }
+
+    private func selectedTextFromValueAndRange(element: AXUIElement) -> String? {
+        var valueRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &valueRef
+        ) == .success,
+        let value = valueRef as? String else {
+            return nil
+        }
+
+        var selectedRangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &selectedRangeRef
+        ) == .success,
+        let selectedRangeRef,
+        CFGetTypeID(selectedRangeRef) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        let selectedRangeValue = unsafeDowncast(selectedRangeRef as AnyObject, to: AXValue.self)
+        guard AXValueGetType(selectedRangeValue) == .cfRange else { return nil }
+
+        var selectedRange = CFRange()
+        guard AXValueGetValue(selectedRangeValue, .cfRange, &selectedRange),
+              selectedRange.length > 0,
+              let range = stringRange(from: selectedRange, in: value) else {
+            return nil
+        }
+        return String(value[range])
+    }
+
+    private func copySelectedTextWithTemporaryPasteboard() async -> String? {
+        let pasteboard = NSPasteboard.general
+        let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
+
+        pasteboard.clearContents()
+        guard simulateCommandC() else {
+            snapshot.restore(to: pasteboard)
+            return nil
+        }
+
+        try? await Task.sleep(nanoseconds: 160_000_000)
+        let copied = pasteboard.string(forType: .string)
+        snapshot.restore(to: pasteboard)
+        return copied
+    }
+
+    private func simulateCommandC() -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: false) else {
+            return false
+        }
+
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        return true
+    }
+
+    private func stringRange(from cfRange: CFRange, in text: String) -> Range<String.Index>? {
+        guard cfRange.location >= 0, cfRange.length >= 0 else { return nil }
+        guard let startUTF16 = text.utf16.index(
+            text.utf16.startIndex,
+            offsetBy: cfRange.location,
+            limitedBy: text.utf16.endIndex
+        ),
+        let endUTF16 = text.utf16.index(
+            startUTF16,
+            offsetBy: cfRange.length,
+            limitedBy: text.utf16.endIndex
+        ),
+        let start = String.Index(startUTF16, within: text),
+        let end = String.Index(endUTF16, within: text) else {
+            return nil
+        }
+        return start..<end
+    }
+
     private func applyPreferencesLocally(_ newValue: AppPreferences) {
         preferences = newValue
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
         hotkey.pressToTalkHotkey = newValue.hotkeys.pressToTalkHotkey
         hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
+        hotkey.selectionCorrectionHotkey = newValue.hotkeys.dictionaryCorrectionHotkey
+        hotkey.selectionSnippetHotkey = newValue.hotkeys.snippetCreationHotkey
         hotkey.aiFinishHotkey = newValue.ai.handsFreeFinishHotkey
         hotkey.aiWorkflowFinishHotkeys = newValue.ai.workflows.compactMap(\.handsFreeFinishHotkey)
         overlay.controlWorkflows = enabledAIWorkflows

@@ -2,8 +2,14 @@ import SwiftUI
 
 struct VoceAccessSettingsSection: View {
     @Binding var preferences: AppPreferences
+    @Binding var verificationCode: String
     let entitlementStatus: VoceProEntitlementStatus
+    let didSendVerificationCode: Bool
+    let isAuthWorking: Bool
+    let authError: String
     let onRefreshEntitlement: () -> Void
+    let onRequestAccessCode: () -> Void
+    let onVerifyAccessCode: () -> Void
     let onSubscribe: () -> Void
     let onManageSubscription: () -> Void
     #if DEBUG
@@ -28,11 +34,14 @@ struct VoceAccessSettingsSection: View {
                             .frame(maxWidth: 460)
 
                         accessButton(
-                            entitlementStatus.isChecking ? "Checking..." : "Check",
-                            systemImage: entitlementStatus.isChecking ? nil : "arrow.clockwise",
-                            isEnabled: !normalizedSubscriberEmail.isEmpty && !entitlementStatus.isChecking,
+                            primaryAccessButtonTitle,
+                            systemImage: primaryAccessButtonIcon,
+                            showsSpinner: entitlementStatus.isChecking || isAuthWorking,
+                            isEnabled: !normalizedSubscriberEmail.isEmpty
+                                && !entitlementStatus.isChecking
+                                && !isAuthWorking,
                             isProminent: false,
-                            action: onRefreshEntitlement
+                            action: primaryAccessButtonAction
                         )
 
                         if !isEntitled {
@@ -55,6 +64,10 @@ struct VoceAccessSettingsSection: View {
                             )
                         }
                     }
+                }
+
+                if showsVerificationCodeEntry {
+                    verificationCodeEntry
                 }
 
                 #if DEBUG
@@ -128,13 +141,14 @@ struct VoceAccessSettingsSection: View {
     private func accessButton(
         _ title: String,
         systemImage: String?,
+        showsSpinner: Bool = false,
         isEnabled: Bool,
         isProminent: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             HStack(spacing: VoceDesign.xs) {
-                if entitlementStatus.isChecking && title == "Checking..." {
+                if showsSpinner {
                     ProgressView()
                         .controlSize(.small)
                 } else if let systemImage {
@@ -161,6 +175,77 @@ struct VoceAccessSettingsSection: View {
         .buttonStyle(.plain)
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : VoceDesign.opacityDisabled)
+    }
+
+    private var verificationCodeEntry: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                Text(didSendVerificationCode ? "Enter your access code" : "Verify this email")
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(verificationCodeDetail)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(alignment: .center, spacing: VoceDesign.sm) {
+                TextField("6-digit code", text: $verificationCode)
+                    .textFieldStyle(.plain)
+                    .settingsInputChrome()
+                    .textContentType(.oneTimeCode)
+                    .frame(maxWidth: 180)
+                    .onChange(of: verificationCode) { _, newValue in
+                        let digits = newValue.filter(\.isNumber)
+                        verificationCode = String(digits.prefix(6))
+                    }
+                    .onSubmit {
+                        if canVerifyCode {
+                            onVerifyAccessCode()
+                        }
+                    }
+
+                accessButton(
+                    isAuthWorking ? "Verifying..." : "Verify",
+                    systemImage: nil,
+                    showsSpinner: isAuthWorking,
+                    isEnabled: canVerifyCode,
+                    isProminent: true,
+                    action: onVerifyAccessCode
+                )
+
+                Button {
+                    onRequestAccessCode()
+                } label: {
+                    Text(didSendVerificationCode ? "Send a new code" : "Send code")
+                        .font(VoceDesign.captionEmphasis())
+                        .foregroundStyle(isAuthWorking ? VoceDesign.textSecondary : VoceDesign.warmAccentText)
+                }
+                .buttonStyle(.plain)
+                .disabled(normalizedSubscriberEmail.isEmpty || isAuthWorking)
+            }
+
+            Text("Codes expire after 10 minutes.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            if !authError.isEmpty {
+                Label(authError, systemImage: "exclamationmark.triangle.fill")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(VoceDesign.md)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.58))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .stroke(VoceDesign.warmAccentText.opacity(0.16), lineWidth: VoceDesign.borderThin)
+                )
+        )
     }
 
     // MARK: - Debug
@@ -215,6 +300,63 @@ struct VoceAccessSettingsSection: View {
             return false
         }
         return entitlement.source == .stripe
+    }
+
+    private var primaryAccessButtonTitle: String {
+        if entitlementStatus.isChecking {
+            return "Checking..."
+        }
+        if isAuthWorking {
+            return didSendVerificationCode ? "Sending..." : "Working..."
+        }
+        return shouldSendCodeFromPrimaryButton ? "Send code" : "Check"
+    }
+
+    private var primaryAccessButtonIcon: String? {
+        if entitlementStatus.isChecking || isAuthWorking {
+            return nil
+        }
+        return shouldSendCodeFromPrimaryButton ? "envelope" : "arrow.clockwise"
+    }
+
+    private var shouldSendCodeFromPrimaryButton: Bool {
+        switch entitlementStatus {
+        case .entitled, .checking:
+            return false
+        case .missingEmail, .needsVerification, .notEntitled, .failed:
+            return true
+        }
+    }
+
+    private func primaryAccessButtonAction() {
+        if shouldSendCodeFromPrimaryButton {
+            onRequestAccessCode()
+        } else {
+            onRefreshEntitlement()
+        }
+    }
+
+    private var showsVerificationCodeEntry: Bool {
+        didSendVerificationCode || needsVerification
+    }
+
+    private var needsVerification: Bool {
+        if case .needsVerification = entitlementStatus {
+            return true
+        }
+        return false
+    }
+
+    private var canVerifyCode: Bool {
+        verificationCode.trimmingCharacters(in: .whitespacesAndNewlines).count == 6
+            && !isAuthWorking
+    }
+
+    private var verificationCodeDetail: String {
+        if didSendVerificationCode {
+            return "We sent a 6-digit code to \(normalizedSubscriberEmail). Enter it here to finish setup."
+        }
+        return "Send a code to \(normalizedSubscriberEmail), then enter it here to unlock Voce on this Mac."
     }
 
     private var statusPresentation: (title: String, detail: String, badge: String?, icon: String, tint: Color) {

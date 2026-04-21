@@ -3,6 +3,29 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.33</title>
+      <sparkle:version>36</sparkle:version>
+      <sparkle:shortVersionString>0.4.33</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.33</h2>
+        <ul>
+          <li>Adds a timed typing speed test with best-WPM tracking in onboarding and Settings</li>
+          <li>Reworks onboarding so shortcut setup, typing speed, and guided practice happen in a clearer order</li>
+          <li>Adds a Help tab with a replayable learn-the-basics walkthrough and common usage answers</li>
+          <li>Improves menu bar and Home copy actions with clearer quick actions and visible copy confirmation</li>
+          <li>Fixes access verification, shortcut practice, and several small-window layout issues across onboarding and Settings</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 21 Apr 2026 04:34:06 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.33/Voce-0.4.33.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="FIaL0BZAFcQVxWOswVlibtzSWuf+BY0ZJw4tnDGNnUj3064bzDH82haQFCapUOegh/sPWi3LOKjQAg5tGxXyCw=="
+        length="17939916"
+      />
+    </item>
+    <item>
       <title>Version 0.4.32</title>
       <sparkle:version>35</sparkle:version>
       <sparkle:shortVersionString>0.4.32</sparkle:shortVersionString>

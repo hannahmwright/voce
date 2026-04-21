@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import VoceKit
 
@@ -5,19 +6,34 @@ struct OnboardingView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var practicePadFocused: Bool
+    @FocusState private var typingTestFocused: Bool
 
     @State private var currentStep: OnboardingStep = .welcome
     @State private var navigationDirection: NavigationDirection = .forward
     @State private var onboardingPreferences: AppPreferences = .default
+    @State private var walkthroughPracticeStep: GuidedWalkthroughStep = .tapToRecord
+    @State private var typingTestText: String = ""
+    @State private var typingTestStartedAt: Date?
+    @State private var typingTestCompletedAt: Date?
+    @State private var typingTestMeasuredWPM: Double = 0
+    @State private var typingTestNow = Date()
     @State private var practiceText: String = ""
     @State private var practiceCompletedModes: Set<OnboardingPracticeMode> = []
     @State private var activePracticeMode: OnboardingPracticeMode?
     @State private var pendingPracticeMode: OnboardingPracticeMode?
     @State private var practiceStartCharacterCount: Int = 0
+    @State private var accessEmailDraft = ""
+    @State private var accessVerificationCodeDraft = ""
+    @State private var accessVerificationCodeWasSent = false
+    @State private var accessAuthIsWorking = false
+    @State private var accessAuthError = ""
+    @State private var lastPracticeTranscriptApplied = ""
+    @State private var walkthroughShortcutMonitor: Any?
 
     private let onboardingModeColumnWidth: CGFloat = 214
     private let onboardingRecorderColumnWidth: CGFloat = 236
     private let onboardingReadyCardWidth: CGFloat = 560
+    private static let typingSpeedPrompt = "Voce helps me write faster by turning clear speech into polished text anywhere on my Mac."
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,20 +46,30 @@ struct OnboardingView: View {
                     Spacer(minLength: 0)
 
                     VStack(spacing: VoceDesign.md) {
-                        Group {
+                        ScrollView(showsIndicators: false) {
+                            Group {
                             switch currentStep {
                             case .welcome:
                                 welcomeStep
-                            case .permissions:
-                                permissionsStep
-                            case .ready:
-                                readyStep
+                            case .typingSpeed:
+                                typingSpeedStep
+                                case .access:
+                                    accessStep
+                                case .permissions:
+                                    permissionsStep
+                                case .ready:
+                                    readyStep
+                            case .walkthrough:
+                                walkthroughStep
                             case .practice:
                                 practiceStep
                             }
+                            }
+                            .id(currentStep)
+                            .transition(stepTransition)
+                            .frame(maxWidth: .infinity)
+                            .padding(.bottom, VoceDesign.sm)
                         }
-                        .id(currentStep)
-                        .transition(stepTransition)
 
                         navigationBar
                     }
@@ -74,17 +100,23 @@ struct OnboardingView: View {
                 onboardingPreferences.hotkeys.handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
             }
             normalizeOnboardingHotkeys()
+            accessEmailDraft = onboardingPreferences.billing.subscriberEmail
             syncPracticeState()
         }
         .onChange(of: currentStep) { _, newStep in
-            if newStep == .practice {
+            if newStep == .walkthrough || newStep == .practice {
                 syncPracticeState()
                 controller.applySettingsDraft(preferences: onboardingPreferences, announceImmediateSave: false)
                 focusPracticePadSoon()
+            } else if newStep == .typingSpeed {
+                focusTypingTestSoon()
             }
         }
+        .onChange(of: typingTestText) { _, newValue in
+            handleTypingTestChange(newValue)
+        }
         .onChange(of: controller.isRecording) { _, isRecording in
-            guard currentStep == .practice else { return }
+            guard currentStep == .walkthrough || currentStep == .practice else { return }
 
             if isRecording {
                 pendingPracticeMode = nil
@@ -96,7 +128,7 @@ struct OnboardingView: View {
             }
         }
         .onChange(of: practiceText) { _, newValue in
-            guard currentStep == .practice else { return }
+            guard currentStep == .walkthrough || currentStep == .practice else { return }
             guard let pendingPracticeMode else { return }
             guard newValue.count > practiceStartCharacterCount else { return }
             guard enabledPracticeModes.contains(pendingPracticeMode) else { return }
@@ -104,13 +136,52 @@ struct OnboardingView: View {
             practiceCompletedModes.insert(pendingPracticeMode)
             self.pendingPracticeMode = nil
         }
+        .onChange(of: walkthroughPracticeStep) { _, step in
+            guard currentStep == .walkthrough else { return }
+            practiceText = walkthroughSeedText(for: step)
+            lastPracticeTranscriptApplied = ""
+            pendingPracticeMode = nil
+            practiceStartCharacterCount = 0
+            focusPracticePadSoon()
+        }
+        .onChange(of: controller.status) { _, newStatus in
+            guard currentStep == .walkthrough || currentStep == .practice else { return }
+            guard newStatus.localizedCaseInsensitiveContains("copied to clipboard")
+                || newStatus.localizedCaseInsensitiveContains("click the input again.") else { return }
+
+            let transcript = controller.lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcript.isEmpty, transcript != lastPracticeTranscriptApplied else { return }
+
+            appendTranscriptToPracticePad(transcript)
+        }
+        .onChange(of: controller.lastTranscript) { _, newTranscript in
+            guard currentStep == .walkthrough || currentStep == .practice else { return }
+            guard !controller.isRecording else { return }
+
+            let transcript = newTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !transcript.isEmpty, transcript != lastPracticeTranscriptApplied else { return }
+
+            appendTranscriptToPracticePad(transcript)
+        }
+        .onReceive(Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()) { now in
+            guard currentStep == .typingSpeed else { return }
+            typingTestNow = now
+        }
+        .onAppear {
+            installWalkthroughShortcutMonitorIfNeeded()
+        }
+        .onDisappear {
+            removeWalkthroughShortcutMonitor()
+        }
     }
 
     private var progressBar: some View {
-        HStack(spacing: VoceDesign.xs) {
-            ForEach(OnboardingStep.allCases, id: \.self) { step in
+        let currentVisibleIndex = OnboardingStep.visibleCases.firstIndex(of: currentStep) ?? 0
+
+        return HStack(spacing: VoceDesign.xs) {
+            ForEach(Array(OnboardingStep.visibleCases.enumerated()), id: \.element) { index, step in
                 RoundedRectangle(cornerRadius: VoceDesign.radiusTiny)
-                    .fill(step.rawValue <= currentStep.rawValue ? VoceDesign.warmAccentText : VoceDesign.border)
+                    .fill(index <= currentVisibleIndex ? VoceDesign.warmAccentText : VoceDesign.border)
                     .frame(height: VoceDesign.xs)
                     .animation(
                         reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
@@ -118,7 +189,7 @@ struct OnboardingView: View {
                     )
             }
         }
-        .accessibilityLabel("Step \(currentStep.rawValue + 1) of \(OnboardingStep.allCases.count)")
+        .accessibilityLabel("Step \(OnboardingStep.visibleCases.firstIndex(of: currentStep).map { $0 + 1 } ?? 1) of \(OnboardingStep.visibleCases.count)")
     }
 
     private var stepTransition: AnyTransition {
@@ -163,6 +234,221 @@ struct OnboardingView: View {
             .cardStyle()
             .frame(maxWidth: 860)
         }
+    }
+
+    private var typingSpeedStep: some View {
+        VStack(spacing: VoceDesign.xl) {
+            onboardingHero(
+                icon: "keyboard",
+                title: "Test your typing speed",
+                subtitle: "This gives Voce a baseline for time saved."
+            )
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                TypingSpeedTestView(
+                    bestWordsPerMinute: $onboardingPreferences.metricsBestTypingWordsPerMinute,
+                    measuredWordsPerMinute: $typingTestMeasuredWPM,
+                    autofocus: true
+                ) { _ in
+                    controller.savePreferencesQuietly(preferences: onboardingPreferences)
+                }
+            }
+            .frame(maxWidth: 640)
+            .cardStyle()
+        }
+    }
+
+    private var accessStep: some View {
+        VStack(spacing: VoceDesign.xl) {
+            onboardingHero(
+                icon: accessReady ? "checkmark.seal.fill" : "person.badge.key.fill",
+                title: accessReady ? "Access is ready" : (accessVerificationCodeWasSent ? "Check your email" : "Set up access"),
+                subtitle: accessReady
+                    ? "Voce is unlocked on this Mac."
+                    : (accessVerificationCodeWasSent
+                       ? "Enter the 6-digit code sent to \(normalizedAccessEmail)."
+                       : "Voce uses your email to find Pro access or start your free monthly time.")
+            )
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                accessStatusRow
+
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    Text("Email")
+                        .font(VoceDesign.captionEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+
+                    TextField("email@example.com", text: $accessEmailDraft)
+                        .textFieldStyle(.plain)
+                        .settingsInputChrome()
+                        .disabled(accessAuthIsWorking || accessReady)
+                        .onSubmit {
+                            if canSendAccessCode {
+                                requestAccessCode()
+                            }
+                        }
+                }
+
+                if accessVerificationCodeWasSent || needsAccessVerification {
+                    VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                        Text("Access code")
+                            .font(VoceDesign.captionEmphasis())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        TextField("6-digit code", text: $accessVerificationCodeDraft)
+                            .textFieldStyle(.plain)
+                            .settingsInputChrome()
+                            .textContentType(.oneTimeCode)
+                            .disabled(accessAuthIsWorking || accessReady)
+                            .onChange(of: accessVerificationCodeDraft) { _, newValue in
+                                let digits = newValue.filter(\.isNumber)
+                                accessVerificationCodeDraft = String(digits.prefix(6))
+                            }
+                            .onSubmit {
+                                if canVerifyAccessCode {
+                                    verifyAccessCode()
+                                }
+                            }
+
+                        Text("Codes expire after 10 minutes.")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                    }
+                }
+
+                if !accessAuthError.isEmpty {
+                    Label(accessAuthError, systemImage: "exclamationmark.triangle.fill")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: VoceDesign.sm) {
+                    if accessReady {
+                        Label("Verified", systemImage: "checkmark.circle.fill")
+                            .font(VoceDesign.captionEmphasis())
+                            .foregroundStyle(VoceDesign.success)
+                    } else if accessVerificationCodeWasSent || needsAccessVerification {
+                        onboardingAccessButton(
+                            accessAuthIsWorking ? "Verifying..." : "Verify",
+                            systemImage: nil,
+                            showsSpinner: accessAuthIsWorking,
+                            isEnabled: canVerifyAccessCode,
+                            isProminent: true,
+                            action: verifyAccessCode
+                        )
+
+                        onboardingAccessButton(
+                            accessAuthIsWorking ? "Sending..." : "Send a new code",
+                            systemImage: "envelope",
+                            showsSpinner: accessAuthIsWorking && !canVerifyAccessCode,
+                            isEnabled: canSendAccessCode,
+                            isProminent: false,
+                            action: requestAccessCode
+                        )
+                    } else {
+                        onboardingAccessButton(
+                            accessAuthIsWorking ? "Sending..." : "Send code",
+                            systemImage: "envelope",
+                            showsSpinner: accessAuthIsWorking,
+                            isEnabled: canSendAccessCode,
+                            isProminent: true,
+                            action: requestAccessCode
+                        )
+                    }
+
+                    if canSubscribeFromAccess {
+                        onboardingAccessButton(
+                            "Subscribe",
+                            systemImage: "sparkles",
+                            isEnabled: !normalizedAccessEmail.isEmpty,
+                            isProminent: false,
+                            action: controller.openVoceProCheckout
+                        )
+                    }
+                }
+            }
+            .frame(maxWidth: 560)
+            .cardStyle(padding: VoceDesign.lg)
+
+            if !accessReady {
+                Text("Verify your email to continue setup.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.warning)
+            }
+        }
+    }
+
+    private var accessStatusRow: some View {
+        HStack(alignment: .top, spacing: VoceDesign.sm) {
+            Image(systemName: accessStatusIcon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(accessStatusTint)
+                .frame(width: 24, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(accessStatusTint.opacity(0.14))
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(accessStatusTitle)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(controller.voceProEntitlementStatus.message)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(VoceDesign.sm)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                .fill(VoceDesign.surfaceSecondary.opacity(0.62))
+        )
+    }
+
+    private func onboardingAccessButton(
+        _ title: String,
+        systemImage: String?,
+        showsSpinner: Bool = false,
+        isEnabled: Bool,
+        isProminent: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: VoceDesign.xs) {
+                if showsSpinner {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+
+                Text(title)
+                    .font(VoceDesign.captionEmphasis())
+            }
+            .foregroundStyle(isProminent ? VoceDesign.warmAccentText : VoceDesign.textPrimary)
+            .padding(.horizontal, VoceDesign.md)
+            .padding(.vertical, VoceDesign.sm)
+            .background(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .fill(isProminent ? VoceDesign.warmAccentFill : VoceDesign.surfaceSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .stroke(
+                                isProminent ? VoceDesign.warmAccentText.opacity(0.12) : VoceDesign.border,
+                                lineWidth: VoceDesign.borderThin
+                            )
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : VoceDesign.opacityDisabled)
     }
 
     private func welcomeHighlight(icon: String, title: String, detail: String) -> some View {
@@ -345,11 +631,50 @@ struct OnboardingView: View {
             )
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
+                if !accessReady {
+                    practiceAccessCallout
+                }
                 practiceLeadCard
                 practiceProgressRow
                 practicePadCard
             }
             .frame(maxWidth: 620)
+            .cardStyle()
+        }
+    }
+
+    private var walkthroughStep: some View {
+        VStack(spacing: VoceDesign.xl) {
+            onboardingHero(
+                icon: "rectangle.and.hand.point.up.left.fill",
+                title: "Learn the basics",
+                subtitle: "Learn it and test it in the same place."
+            )
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                if !accessReady {
+                    practiceAccessCallout
+                }
+
+                GuidedWalkthroughView(
+                    holdHotkeyLabel: onboardingHoldToTalkLabel,
+                    tapHotkeyLabel: onboardingTapToTalkLabel,
+                    dictionaryHotkeyLabel: keyboardShortcutDisplayName(for: onboardingPreferences.hotkeys.dictionaryCorrectionHotkey),
+                    isRecording: controller.isRecording,
+                    activeRecordingStep: activePracticeMode.map {
+                        switch $0 {
+                        case .holdToTalk:
+                            return .holdToRecord
+                        case .tapToTalk:
+                            return .tapToRecord
+                        }
+                    },
+                    availableSteps: availableWalkthroughSteps,
+                    selectedStep: $walkthroughPracticeStep
+                )
+                practicePadCard
+            }
+            .frame(maxWidth: 760)
             .cardStyle()
         }
     }
@@ -424,6 +749,41 @@ struct OnboardingView: View {
         )
     }
 
+    private var practiceAccessCallout: some View {
+        HStack(alignment: .top, spacing: VoceDesign.md) {
+            Image(systemName: "person.badge.key.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(VoceDesign.warmAccentText)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(VoceDesign.warmAccentFill)
+                )
+
+            VStack(alignment: .leading, spacing: VoceDesign.xxs) {
+                Text("Finish access setup first")
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(controller.voceProEntitlementStatus.message)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(VoceDesign.md)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.warmAccentFill.opacity(0.34))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(VoceDesign.warmAccentText.opacity(0.14), lineWidth: VoceDesign.borderThin)
+        )
+    }
+
     private var practiceProgressRow: some View {
         HStack(spacing: VoceDesign.sm) {
             ForEach(enabledPracticeModes, id: \.self) { mode in
@@ -475,11 +835,11 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-                    Text("Scratch pad")
+                    Text(currentStep == .walkthrough ? walkthroughScratchPadTitle : "Scratch pad")
                         .font(VoceDesign.bodyEmphasis())
                         .foregroundStyle(VoceDesign.textPrimary)
 
-                    Text("Your words land here.")
+                    Text(currentStep == .walkthrough ? walkthroughScratchPadSubtitle : "Your words land here.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                 }
@@ -539,7 +899,7 @@ struct OnboardingView: View {
             )
             .overlay(alignment: .topLeading) {
                 if practiceText.isEmpty {
-                    Text("Click here, then try speaking...")
+                    Text(currentStep == .walkthrough ? walkthroughScratchPadPlaceholder : "Click here, then try speaking...")
                         .font(VoceDesign.body())
                         .foregroundStyle(VoceDesign.textSecondary.opacity(0.7))
                         .padding(.horizontal, VoceDesign.lg)
@@ -598,18 +958,22 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if currentStep == .practice {
+            if currentStep == .typingSpeed || currentStep == .practice {
                 Button {
-                    completeOnboarding()
+                    if currentStep == .typingSpeed {
+                        goForward()
+                    } else {
+                        completeOnboarding()
+                    }
                 } label: {
-                    Text("Skip test")
+                    Text(currentStep == .typingSpeed ? "Skip" : "Skip test")
                         .font(VoceDesign.callout())
                         .foregroundStyle(VoceDesign.textSecondary)
                         .padding(.horizontal, VoceDesign.md)
                         .padding(.vertical, VoceDesign.sm)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Skip the practice test and finish onboarding")
+                .accessibilityLabel(currentStep == .typingSpeed ? "Skip the typing speed test" : "Skip the practice test and finish onboarding")
             }
 
             Button {
@@ -640,17 +1004,216 @@ struct OnboardingView: View {
         switch currentStep {
         case .welcome:
             return true
+        case .typingSpeed:
+            return typingTestHasResult
+        case .access:
+            return accessReady
         case .permissions:
             return permissionsReady
         case .ready:
             return true
+        case .walkthrough:
+            return currentWalkthroughLessonComplete
         case .practice:
             return practiceReady
         }
     }
 
+    private var currentWalkthroughLessonComplete: Bool {
+        switch walkthroughPracticeStep {
+        case .tapToRecord:
+            return practiceCompletedModes.contains(.tapToTalk)
+        case .holdToRecord:
+            return practiceCompletedModes.contains(.holdToTalk)
+        case .dictionaryFix:
+            return practiceText.localizedCaseInsensitiveContains("codex")
+                && !practiceText.localizedCaseInsensitiveContains("kodex")
+        }
+    }
+
     private var practiceReady: Bool {
-        Set(enabledPracticeModes).isSubset(of: practiceCompletedModes)
+        accessReady && Set(enabledPracticeModes).isSubset(of: practiceCompletedModes)
+    }
+
+    private var typingTestHasResult: Bool {
+        typingTestMeasuredWPM > 0
+    }
+
+    private var typingTestElapsedSeconds: Double {
+        guard let startedAt = typingTestStartedAt else { return 0 }
+        let end = typingTestCompletedAt ?? typingTestNow
+        return max(0, end.timeIntervalSince(startedAt))
+    }
+
+    private var typingTestLiveWPM: Double {
+        typingWordsPerMinute(characterCount: typingTestText.count, elapsedSeconds: typingTestElapsedSeconds)
+    }
+
+    private var typingTestProgress: Double {
+        guard !Self.typingSpeedPrompt.isEmpty else { return 0 }
+        return min(1, Double(typingTestText.count) / Double(Self.typingSpeedPrompt.count))
+    }
+
+    private var typingTestAccuracy: Double {
+        guard !typingTestText.isEmpty else { return 1 }
+        let typed = Array(typingTestText)
+        let prompt = Array(Self.typingSpeedPrompt)
+        let matching = typed.enumerated().reduce(0) { total, pair in
+            let (index, character) = pair
+            guard index < prompt.count, prompt[index] == character else { return total }
+            return total + 1
+        }
+        return Double(matching) / Double(typed.count)
+    }
+
+    private var typingTestStatusText: String {
+        if typingTestHasResult {
+            return "\(formattedTypingWPM(typingTestMeasuredWPM)) WPM saved"
+        }
+        if typingTestStartedAt != nil {
+            return "\(formattedTypingWPM(typingTestLiveWPM)) WPM"
+        }
+        return "Starts on first key"
+    }
+
+    private var typingTestStatusColor: Color {
+        if typingTestHasResult {
+            return VoceDesign.success
+        }
+        if typingTestStartedAt != nil {
+            return VoceDesign.warmAccentText
+        }
+        return VoceDesign.textSecondary
+    }
+
+    private var typingSpeedStatsRow: some View {
+        HStack(spacing: VoceDesign.sm) {
+            typingSpeedStat(
+                title: "Speed",
+                value: formattedTypingWPM(typingTestHasResult ? typingTestMeasuredWPM : typingTestLiveWPM),
+                unit: "WPM"
+            )
+
+            typingSpeedStat(
+                title: "Accuracy",
+                value: "\(Int((typingTestAccuracy * 100).rounded()))",
+                unit: "%"
+            )
+
+            typingSpeedStat(
+                title: "Progress",
+                value: "\(Int((typingTestProgress * 100).rounded()))",
+                unit: "%"
+            )
+        }
+    }
+
+    private func typingSpeedStat(title: String, value: String, unit: String) -> some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xxs) {
+            Text(title)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(VoceDesign.heading3())
+                    .foregroundStyle(VoceDesign.textPrimary)
+                    .monospacedDigit()
+                Text(unit)
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(VoceDesign.md)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.44))
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+        )
+    }
+
+    private var accessReady: Bool {
+        controller.voceProEntitlementStatus.isEntitled
+    }
+
+    private var normalizedAccessEmail: String {
+        accessEmailDraft
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private var normalizedAccessCode: String {
+        accessVerificationCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSendAccessCode: Bool {
+        !normalizedAccessEmail.isEmpty
+            && !accessAuthIsWorking
+            && !controller.voceProEntitlementStatus.isChecking
+    }
+
+    private var canVerifyAccessCode: Bool {
+        normalizedAccessCode.count == 6
+            && !normalizedAccessEmail.isEmpty
+            && !accessAuthIsWorking
+    }
+
+    private var needsAccessVerification: Bool {
+        if case .needsVerification = controller.voceProEntitlementStatus {
+            return true
+        }
+        return false
+    }
+
+    private var canSubscribeFromAccess: Bool {
+        if case .notEntitled = controller.voceProEntitlementStatus {
+            return true
+        }
+        return false
+    }
+
+    private var accessStatusTitle: String {
+        switch controller.voceProEntitlementStatus {
+        case .entitled:
+            return "Access verified"
+        case .checking:
+            return "Checking access"
+        case .needsVerification:
+            return "Verify your email"
+        case .notEntitled:
+            return "Free time is used"
+        case .failed:
+            return "Access check failed"
+        case .missingEmail:
+            return "Email required"
+        }
+    }
+
+    private var accessStatusIcon: String {
+        switch controller.voceProEntitlementStatus {
+        case .entitled:
+            return "checkmark.circle.fill"
+        case .checking:
+            return "arrow.triangle.2.circlepath"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        case .missingEmail, .needsVerification, .notEntitled:
+            return "person.badge.key.fill"
+        }
+    }
+
+    private var accessStatusTint: Color {
+        switch controller.voceProEntitlementStatus {
+        case .entitled:
+            return VoceDesign.success
+        case .failed:
+            return VoceDesign.error
+        case .missingEmail, .needsVerification, .checking, .notEntitled:
+            return VoceDesign.warmAccentText
+        }
     }
 
     private var enabledPracticeModes: [OnboardingPracticeMode] {
@@ -675,6 +1238,9 @@ struct OnboardingView: View {
         case .transcribing:
             return "Transcribing"
         case .idle:
+            if !accessReady {
+                return "Access required"
+            }
             return practiceReady ? "Done" : "Ready"
         }
     }
@@ -686,6 +1252,9 @@ struct OnboardingView: View {
         case .transcribing:
             return VoceDesign.surfaceSecondary
         case .idle:
+            if !accessReady {
+                return VoceDesign.warmAccentFill.opacity(0.34)
+            }
             return practiceReady ? VoceDesign.success.opacity(0.12) : VoceDesign.surfaceSecondary
         }
     }
@@ -697,6 +1266,9 @@ struct OnboardingView: View {
         case .transcribing:
             return VoceDesign.textSecondary
         case .idle:
+            if !accessReady {
+                return VoceDesign.warmAccentText
+            }
             return practiceReady ? VoceDesign.success : VoceDesign.textSecondary
         }
     }
@@ -704,13 +1276,75 @@ struct OnboardingView: View {
     private func practiceHotkeyLabel(for mode: OnboardingPracticeMode) -> String {
         switch mode {
         case .holdToTalk:
-            return hotkeyDisplayName(for: onboardingPreferences.hotkeys.pressToTalkHotkey)
+            return onboardingHoldToTalkLabel
         case .tapToTalk:
-            if let hotkey = onboardingPreferences.hotkeys.handsFreeGlobalHotkey {
-                return handsFreeToggleDisplayName(for: hotkey)
-            }
-            return "your key"
+            return onboardingTapToTalkLabel
         }
+    }
+
+    private var onboardingHoldToTalkLabel: String {
+        hotkeyDisplayName(for: onboardingPreferences.hotkeys.pressToTalkHotkey)
+    }
+
+    private var availableWalkthroughSteps: [GuidedWalkthroughStep] {
+        var steps: [GuidedWalkthroughStep] = []
+        if onboardingTapToTalkEnabled {
+            steps.append(.tapToRecord)
+        }
+        if onboardingPreferences.hotkeys.optionPressToTalkEnabled {
+            steps.append(.holdToRecord)
+        }
+        steps.append(.dictionaryFix)
+        return steps
+    }
+
+    private var walkthroughScratchPadTitle: String {
+        switch walkthroughPracticeStep {
+        case .tapToRecord:
+            return "Tap to talk"
+        case .holdToRecord:
+            return "Hold to talk"
+        case .dictionaryFix:
+            return "Dictionary quick fix"
+        }
+    }
+
+    private var walkthroughScratchPadSubtitle: String {
+        switch walkthroughPracticeStep {
+        case .tapToRecord:
+            return "Click here, then tap \(onboardingTapToTalkLabel) and say the line above."
+        case .holdToRecord:
+            return "Click here, then hold \(onboardingHoldToTalkLabel) while you say the line above."
+        case .dictionaryFix:
+            return "Highlight the wrong word here, then press \(keyboardShortcutDisplayName(for: onboardingPreferences.hotkeys.dictionaryCorrectionHotkey))."
+        }
+    }
+
+    private var walkthroughScratchPadPlaceholder: String {
+        switch walkthroughPracticeStep {
+        case .tapToRecord:
+            return "Click here, then tap \(onboardingTapToTalkLabel)..."
+        case .holdToRecord:
+            return "Click here, then hold \(onboardingHoldToTalkLabel)..."
+        case .dictionaryFix:
+            return "Highlight Kodex, then press the quick fix shortcut..."
+        }
+    }
+
+    private func walkthroughSeedText(for step: GuidedWalkthroughStep) -> String {
+        switch step {
+        case .tapToRecord, .holdToRecord:
+            return ""
+        case .dictionaryFix:
+            return "Please email Kodex the revised invoice today."
+        }
+    }
+
+    private var onboardingTapToTalkLabel: String {
+        if let hotkey = onboardingPreferences.hotkeys.handsFreeGlobalHotkey {
+            return handsFreeToggleDisplayName(for: hotkey)
+        }
+        return "your key"
     }
 
     private func syncPracticeState() {
@@ -725,12 +1359,160 @@ struct OnboardingView: View {
         }
     }
 
+    private func handleTypingTestChange(_ newValue: String) {
+        if newValue.isEmpty {
+            typingTestStartedAt = nil
+            typingTestCompletedAt = nil
+            typingTestMeasuredWPM = 0
+            return
+        }
+
+        if typingTestStartedAt == nil {
+            let now = Date()
+            typingTestStartedAt = now
+            typingTestNow = now
+        }
+
+        let normalizedValue = normalizedTypingTestText(newValue)
+        let normalizedPrompt = normalizedTypingTestText(Self.typingSpeedPrompt)
+
+        if typingTestCompletedAt != nil, normalizedValue != normalizedPrompt {
+            typingTestCompletedAt = nil
+            typingTestMeasuredWPM = 0
+        }
+
+        guard normalizedValue == normalizedPrompt,
+              typingTestCompletedAt == nil else {
+            return
+        }
+
+        let completedAt = Date()
+        typingTestCompletedAt = completedAt
+        typingTestNow = completedAt
+
+        let elapsedSeconds = typingTestElapsedSeconds
+        let measuredWPM = typingWordsPerMinute(
+            characterCount: Self.typingSpeedPrompt.count,
+            elapsedSeconds: elapsedSeconds
+        )
+        typingTestMeasuredWPM = measuredWPM
+
+        guard measuredWPM > onboardingPreferences.metricsBestTypingWordsPerMinute else { return }
+        onboardingPreferences.metricsBestTypingWordsPerMinute = measuredWPM
+        controller.savePreferencesQuietly(preferences: onboardingPreferences)
+    }
+
+    private func resetTypingTest() {
+        typingTestText = ""
+        typingTestStartedAt = nil
+        typingTestCompletedAt = nil
+        typingTestMeasuredWPM = 0
+        focusTypingTestSoon()
+    }
+
+    private func typingWordsPerMinute(characterCount: Int, elapsedSeconds: Double) -> Double {
+        guard characterCount > 0, elapsedSeconds > 0.5 else { return 0 }
+        let standardizedWords = Double(characterCount) / 5.0
+        return standardizedWords / (elapsedSeconds / 60.0)
+    }
+
+    private func normalizedTypingTestText(_ text: String) -> String {
+        text
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func formattedTypingWPM(_ value: Double) -> String {
+        guard value.isFinite, value > 0 else { return "0" }
+        return "\(Int(value.rounded()))"
+    }
+
     private func focusPracticePadSoon() {
         Task { @MainActor in
+            practicePadFocused = false
             try? await Task.sleep(nanoseconds: 120_000_000)
-            guard currentStep == .practice else { return }
+            guard currentStep == .walkthrough || currentStep == .practice else { return }
+            practicePadFocused = true
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard currentStep == .walkthrough || currentStep == .practice else { return }
             practicePadFocused = true
         }
+    }
+
+    private func appendTranscriptToPracticePad(_ transcript: String) {
+        if !practiceText.isEmpty, !practiceText.hasSuffix(" "), !practiceText.hasSuffix("\n") {
+            practiceText += " "
+        }
+        practiceText += transcript
+        lastPracticeTranscriptApplied = transcript
+        practicePadFocused = true
+    }
+
+    private func focusTypingTestSoon() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard currentStep == .typingSpeed else { return }
+            typingTestFocused = true
+        }
+    }
+
+    private func installWalkthroughShortcutMonitorIfNeeded() {
+        guard walkthroughShortcutMonitor == nil else { return }
+        walkthroughShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handleWalkthroughShortcut(event)
+        }
+    }
+
+    private func removeWalkthroughShortcutMonitor() {
+        if let walkthroughShortcutMonitor {
+            NSEvent.removeMonitor(walkthroughShortcutMonitor)
+            self.walkthroughShortcutMonitor = nil
+        }
+    }
+
+    private func handleWalkthroughShortcut(_ event: NSEvent) -> NSEvent? {
+        guard currentStep == .walkthrough else { return event }
+        guard practicePadFocused else { return event }
+        guard walkthroughPracticeStep == .dictionaryFix else { return event }
+        guard matches(shortcut: onboardingPreferences.hotkeys.dictionaryCorrectionHotkey, event: event) else {
+            return event
+        }
+
+        let term = "Kodex"
+        controller.createCorrectionForSuppliedTerm(term) { replacement in
+            let trimmedReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedReplacement.isEmpty else { return }
+            practiceText = practiceText.replacingOccurrences(
+                of: term,
+                with: trimmedReplacement,
+                options: [.caseInsensitive]
+            )
+            practicePadFocused = true
+        }
+        return nil
+    }
+
+    private func matches(shortcut: VoceKeyboardShortcut, event: NSEvent) -> Bool {
+        guard event.keyCode == shortcut.keyCode else { return false }
+
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let requiredFlags: [VoceKeyboardShortcut.Modifier: NSEvent.ModifierFlags] = [
+            .control: .control,
+            .option: .option,
+            .command: .command,
+            .shift: .shift
+        ]
+
+        for modifier in VoceKeyboardShortcut.Modifier.allCases {
+            let isRequired = shortcut.modifiers.contains(modifier)
+            let hasFlag = flags.contains(requiredFlags[modifier] ?? [])
+            if isRequired != hasFlag {
+                return false
+            }
+        }
+        return true
     }
 
     private var permissionsReady: Bool {
@@ -739,20 +1521,80 @@ struct OnboardingView: View {
     }
 
     private func goForward() {
-        guard let nextIndex = OnboardingStep(rawValue: currentStep.rawValue + 1) else { return }
+        if currentStep == .walkthrough,
+           let currentIndex = availableWalkthroughSteps.firstIndex(of: walkthroughPracticeStep),
+           availableWalkthroughSteps.indices.contains(currentIndex + 1) {
+            walkthroughPracticeStep = availableWalkthroughSteps[currentIndex + 1]
+            return
+        }
+
+        guard let currentIndex = OnboardingStep.visibleCases.firstIndex(of: currentStep) else {
+            completeOnboarding()
+            return
+        }
+        guard OnboardingStep.visibleCases.indices.contains(currentIndex + 1) else {
+            completeOnboarding()
+            return
+        }
         navigationDirection = .forward
-        animateStepChange(to: nextIndex)
+        animateStepChange(to: OnboardingStep.visibleCases[currentIndex + 1])
     }
 
     private func goBack() {
-        guard let previousIndex = OnboardingStep(rawValue: currentStep.rawValue - 1) else { return }
+        guard let currentIndex = OnboardingStep.visibleCases.firstIndex(of: currentStep),
+              currentIndex > 0 else { return }
         navigationDirection = .backward
-        animateStepChange(to: previousIndex)
+        animateStepChange(to: OnboardingStep.visibleCases[currentIndex - 1])
     }
 
     private func completeOnboarding() {
         controller.savePreferencesQuietly(preferences: onboardingPreferences)
         controller.completeOnboarding()
+    }
+
+    private func requestAccessCode() {
+        let email = normalizedAccessEmail
+        guard !email.isEmpty else { return }
+
+        accessAuthError = ""
+        accessAuthIsWorking = true
+        accessEmailDraft = email
+        onboardingPreferences.billing.subscriberEmail = email
+        onboardingPreferences.normalize()
+        controller.applySettingsDraft(preferences: onboardingPreferences, announceImmediateSave: false)
+
+        Task {
+            do {
+                try await controller.requestVoceAccessCode(email: email)
+                accessVerificationCodeWasSent = true
+                accessVerificationCodeDraft = ""
+            } catch {
+                accessAuthError = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not send an access code."
+            }
+            accessAuthIsWorking = false
+        }
+    }
+
+    private func verifyAccessCode() {
+        let email = normalizedAccessEmail
+        let code = normalizedAccessCode
+        guard !email.isEmpty, !code.isEmpty else { return }
+
+        accessAuthError = ""
+        accessAuthIsWorking = true
+
+        Task {
+            do {
+                try await controller.verifyVoceAccessCode(email: email, code: code)
+                accessVerificationCodeWasSent = false
+                accessVerificationCodeDraft = ""
+            } catch {
+                accessAuthError = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not verify that code."
+            }
+            accessAuthIsWorking = false
+        }
     }
 
     private var onboardingPressToTalkBinding: Binding<PressToTalkHotkey> {
@@ -830,9 +1672,21 @@ struct OnboardingView: View {
 
 private enum OnboardingStep: Int, CaseIterable {
     case welcome = 0
-    case permissions = 1
-    case ready = 2
-    case practice = 3
+    case typingSpeed = 1
+    case access = 2
+    case permissions = 3
+    case ready = 4
+    case walkthrough = 5
+    case practice = 6
+
+    static let visibleCases: [OnboardingStep] = [
+        .welcome,
+        .access,
+        .permissions,
+        .ready,
+        .typingSpeed,
+        .walkthrough
+    ]
 }
 
 private enum NavigationDirection {

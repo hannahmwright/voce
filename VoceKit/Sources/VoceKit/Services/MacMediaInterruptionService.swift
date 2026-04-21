@@ -525,9 +525,14 @@ final class MediaRemoteBridge: MediaRemoteBridging {
         }
         // Defer dlclose to after the serial callbackQueue drains, avoiding
         // a sync-on-self deadlock if deinit runs on the callbackQueue thread.
-        let handle = self.handle
+        let handleAddress = UInt(bitPattern: self.handle)
         callbackQueue.async {
-            if let handle { dlclose(handle) }
+            guard handleAddress != 0,
+                  let handle = UnsafeMutableRawPointer(bitPattern: handleAddress)
+            else {
+                return
+            }
+            dlclose(handle)
         }
     }
 

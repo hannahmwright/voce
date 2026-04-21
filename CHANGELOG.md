@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.33] - 2026-04-21
+
+### Added
+- Added a timed typing speed test that captures best WPM, live accuracy, and per-character feedback during onboarding and from Settings.
+- Added a Help tab in Settings with a replayable practice walkthrough and common usage answers.
+
+### Changed
+- Reworked the onboarding flow so email verification, shortcut setup, typing speed, and hands-on shortcut practice happen in a clearer order.
+- Rebuilt the learn-the-basics practice flow into a more guided scratch-pad lesson that teaches tap-to-talk, hold-to-talk, and dictionary fixes step by step.
+- Updated the menu bar popover and Home history rows so copy actions and quick actions are clearer and provide immediate visual feedback.
+
+### Fixed
+- Fixed settings access verification so users can complete the email code flow from Settings without needing to return to Home.
+- Fixed unsigned and first-run states so onboarding captures email verification earlier and blocked actions behave more predictably before access is verified.
+- Fixed production shortcut actions, history heat map hover details, and several onboarding/settings layout issues on smaller windows.
+
 ## [0.4.32] - 2026-04-14
 
 ### Added

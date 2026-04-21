@@ -6,6 +6,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private weak var controller: DictationController?
     private let popover = NSPopover()
+    private lazy var statusContextMenu = makeStatusContextMenu()
     private let statusSymbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
@@ -48,7 +49,38 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func statusBarButtonClicked(_ sender: NSStatusBarButton) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showStatusContextMenu(relativeTo: sender)
+            return
+        }
+
         togglePopover(relativeTo: sender)
+    }
+
+    private func makeStatusContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let openItem = NSMenuItem(title: "Open Voce", action: #selector(showWindowAction), keyEquivalent: "")
+        openItem.target = self
+        menu.addItem(openItem)
+
+        let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesAction), keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Force Quit Voce", action: #selector(forceQuitAction), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        return menu
+    }
+
+    private func showStatusContextMenu(relativeTo button: NSStatusBarButton) {
+        closePopover()
+        statusContextMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
     }
 
     private func showWindow() {
@@ -71,14 +103,15 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         popover.delegate = self
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: 320, height: 260)
+        popover.contentSize = NSSize(width: 320, height: 310)
         popover.contentViewController = NSHostingController(
             rootView: MenuBarPopoverView(
                 controller: controller,
                 onOpenVoce: { [weak self] in self?.handleOpenVoce() },
                 onCopyLastDictation: { [weak self] in self?.handleCopyLastDictation() },
-                onToggleTranscription: { [weak self] in self?.handleToggleTranscription() },
-                onCheckForUpdates: { [weak self] in self?.handleCheckForUpdates() }
+                onCreateSnippet: { [weak self] in self?.handleCreateSnippet() },
+                onCreateDictionaryItem: { [weak self] in self?.handleCreateDictionaryItem() },
+                onToggleTranscription: { [weak self] in self?.handleToggleTranscription() }
             )
         )
     }
@@ -232,9 +265,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         controller?.toggleMenuBarTranscription()
     }
 
-    private func handleCheckForUpdates() {
+    private func handleCreateSnippet() {
         closePopover()
-        checkForUpdatesAction()
+        controller?.createSnippetFromCurrentTranscript()
+    }
+
+    private func handleCreateDictionaryItem() {
+        closePopover()
+        controller?.createCorrectionFromCurrentTranscript()
     }
 
     @objc private func showWindowAction() {
@@ -251,6 +289,12 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc private func checkForUpdatesAction() {
         NotificationCenter.default.post(name: .voceCheckForUpdatesRequested, object: nil)
+    }
+
+    @objc private func forceQuitAction() {
+        closePopover()
+        controller?.teardown()
+        NSApp.terminate(nil)
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -318,7 +362,7 @@ private struct SelectionCorrectionPopoverView: View {
                         Text("Teach Voce")
                             .font(VoceDesign.bodyEmphasis())
                             .foregroundStyle(VoceDesign.textPrimary)
-                        Text(sourceAppName.map { "Fix selected text in \($0)" } ?? "Fix selected text")
+                        Text(sourceAppName.map { "Fix selected text in \($0)" } ?? "Create a dictionary quick fix")
                             .font(VoceDesign.caption())
                             .foregroundStyle(VoceDesign.textSecondary)
                     }
@@ -559,8 +603,13 @@ private struct MenuBarPopoverView: View {
     @ObservedObject var controller: DictationController
     let onOpenVoce: () -> Void
     let onCopyLastDictation: () -> Void
+    let onCreateSnippet: () -> Void
+    let onCreateDictionaryItem: () -> Void
     let onToggleTranscription: () -> Void
-    let onCheckForUpdates: () -> Void
+
+    @State private var isHoveringLastDictation = false
+    @State private var copyToastMessage: String?
+    @State private var copyToastToken = UUID()
 
     private var previewText: String {
         if !controller.lastTranscript.isEmpty {
@@ -573,6 +622,9 @@ private struct MenuBarPopoverView: View {
     }
 
     private var statusLabel: String {
+        if accessIsBlocked {
+            return "Access required"
+        }
         if controller.isRecording {
             return "Listening"
         }
@@ -580,6 +632,32 @@ private struct MenuBarPopoverView: View {
             return "Hands-free on"
         }
         return "Ready"
+    }
+
+    private var accessIsBlocked: Bool {
+        switch controller.voceProEntitlementStatus {
+        case .entitled:
+            return false
+        case .missingEmail, .needsVerification, .checking, .notEntitled, .failed:
+            return true
+        }
+    }
+
+    private var accessDetail: String {
+        switch controller.voceProEntitlementStatus {
+        case .missingEmail:
+            return "Enter your email to start dictating."
+        case .needsVerification:
+            return "Verify your email to start dictating."
+        case .checking:
+            return "Voce is checking your access."
+        case .notEntitled:
+            return "Monthly free time is used. Subscribe to keep dictating."
+        case .failed:
+            return controller.voceProEntitlementStatus.message
+        case .entitled:
+            return ""
+        }
     }
 
     private var preferredColorScheme: ColorScheme? {
@@ -615,18 +693,18 @@ private struct MenuBarPopoverView: View {
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
                 HStack(alignment: .center, spacing: VoceDesign.sm) {
-                    Button(action: onToggleTranscription) {
+                    Button(action: accessIsBlocked ? onOpenVoce : onToggleTranscription) {
                         Image(systemName: controller.isRecording ? "waveform" : (controller.handsFreeOn ? "mic.fill" : "mic"))
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(VoceDesign.warmAccentText)
+                            .foregroundStyle(accessIsBlocked ? VoceDesign.textSecondary : VoceDesign.warmAccentText)
                             .frame(width: 28, height: 28)
                             .background(
                                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(VoceDesign.warmAccentFill)
+                                    .fill(accessIsBlocked ? VoceDesign.surfaceSecondary : VoceDesign.warmAccentFill)
                             )
                     }
                     .buttonStyle(.plain)
-                    .help(controller.isRecording ? "Stop transcription" : "Start transcription")
+                    .help(accessIsBlocked ? "Open Voce to verify access" : (controller.isRecording ? "Stop transcription" : "Start transcription"))
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Voce")
@@ -648,26 +726,73 @@ private struct MenuBarPopoverView: View {
                     .help("Open Voce")
                 }
 
+                if accessIsBlocked {
+                    HStack(alignment: .top, spacing: VoceDesign.sm) {
+                        Image(systemName: "person.badge.key.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(VoceDesign.warmAccentText)
+                            .frame(width: 24, height: 24)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(VoceDesign.warmAccentFill)
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Finish access setup")
+                                .font(VoceDesign.captionEmphasis())
+                                .foregroundStyle(VoceDesign.textPrimary)
+
+                            Text(accessDetail)
+                                .font(VoceDesign.caption())
+                                .foregroundStyle(VoceDesign.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(VoceDesign.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(VoceDesign.surfaceSecondary.opacity(0.88))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                    .stroke(VoceDesign.warmAccentText.opacity(0.14), lineWidth: 1)
+                            )
+                    )
+                }
+
                 VStack(alignment: .leading, spacing: VoceDesign.sm) {
                     Text("Last dictation")
                         .font(VoceDesign.labelEmphasis())
                         .foregroundStyle(VoceDesign.textSecondary)
 
-                    Group {
-                        if previewText.isEmpty {
-                            Text("Nothing yet")
-                                .font(VoceDesign.body())
-                                .foregroundStyle(VoceDesign.textSecondary)
-                        } else {
-                            Text(previewText)
-                                .font(VoceDesign.body())
-                                .foregroundStyle(VoceDesign.textPrimary)
-                                .lineLimit(4)
-                                .multilineTextAlignment(.leading)
-                                .textSelection(.enabled)
+                    ZStack(alignment: .topTrailing) {
+                        Group {
+                            if previewText.isEmpty {
+                                Text("Nothing yet")
+                                    .font(VoceDesign.body())
+                                    .foregroundStyle(VoceDesign.textSecondary)
+                            } else {
+                                Text(previewText)
+                                    .font(VoceDesign.body())
+                                    .foregroundStyle(VoceDesign.textPrimary)
+                                    .lineLimit(4)
+                                    .multilineTextAlignment(.leading)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if !previewText.isEmpty && isHoveringLastDictation {
+                            Button(action: handleCopyLastDictation) {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .frame(width: 28, height: 28)
+                            }
+                            .buttonStyle(MenuBarIconButtonStyle())
+                            .help("Copy last dictation")
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(VoceDesign.md)
                 .background(
@@ -678,6 +803,9 @@ private struct MenuBarPopoverView: View {
                                 .stroke(VoceDesign.border, lineWidth: 1)
                         )
                 )
+                .onHover { hovering in
+                    isHoveringLastDictation = hovering
+                }
 
                 if controller.isRecording || controller.handsFreeOn {
                     Button(action: onToggleTranscription) {
@@ -687,24 +815,77 @@ private struct MenuBarPopoverView: View {
                 }
 
                 HStack(spacing: VoceDesign.sm) {
-                    Button(action: onCopyLastDictation) {
-                        Label("Copy", systemImage: "doc.on.doc")
+                    Button(action: onCreateSnippet) {
+                        Label("New snippet", systemImage: "text.quote")
                     }
                     .buttonStyle(MenuBarActionButtonStyle())
                     .disabled(previewText.isEmpty)
 
-                    Button(action: onCheckForUpdates) {
-                        Label("Updates", systemImage: "arrow.triangle.2.circlepath")
+                    Button(action: onCreateDictionaryItem) {
+                        Label("Dictionary", systemImage: "text.badge.checkmark")
                     }
                     .buttonStyle(MenuBarActionButtonStyle())
+                    .disabled(previewText.isEmpty)
                 }
 
             }
             .padding(VoceDesign.lg)
             .padding(10)
+
+            if let message = copyToastMessage {
+                VStack {
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .bold))
+                            Text(message)
+                                .font(VoceDesign.captionEmphasis())
+                        }
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(VoceDesign.surface.opacity(0.96))
+                                .overlay(
+                                    Capsule(style: .continuous)
+                                        .stroke(VoceDesign.border, lineWidth: 1)
+                                )
+                        )
+                    }
+                    Spacer()
+                }
+                .padding(.top, 16)
+                .padding(.trailing, 18)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .allowsHitTesting(false)
+                .zIndex(2)
+            }
         }
         .frame(width: 320)
         .preferredColorScheme(preferredColorScheme)
+    }
+
+    private func handleCopyLastDictation() {
+        onCopyLastDictation()
+        showCopyToast(message: "Copied")
+    }
+
+    private func showCopyToast(message: String) {
+        let token = UUID()
+        copyToastToken = token
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
+            copyToastMessage = message
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.8))
+            guard copyToastToken == token else { return }
+            withAnimation(.easeOut(duration: 0.18)) {
+                copyToastMessage = nil
+            }
+        }
     }
 }
 

@@ -234,6 +234,12 @@ struct ContentView: View {
 
                 SettingsView(
                     initialLaunchTarget: settingsLaunchTarget,
+                    accessVerificationCode: $accessVerificationCodeDraft,
+                    accessVerificationCodeWasSent: accessVerificationCodeWasSent,
+                    accessAuthIsWorking: accessAuthIsWorking,
+                    accessAuthError: accessAuthError,
+                    onRequestAccessCode: requestAccessCode(for:),
+                    onVerifyAccessCode: verifyAccessCode(for:),
                     onClose: closeSettings
                 )
                 .environmentObject(controller)
@@ -307,14 +313,18 @@ struct ContentView: View {
     }
 
     private func requestAccessCode() {
-        guard saveAccessEmail() else { return }
+        requestAccessCode(for: accessEmailDraft)
+    }
+
+    private func requestAccessCode(for rawEmail: String) {
+        guard let email = saveAccessEmail(rawEmail) else { return }
         accessAuthError = ""
         accessAuthIsWorking = true
         accessPromptCompleted = false
 
         Task {
             do {
-                try await controller.requestVoceAccessCode(email: normalizedAccessEmail)
+                try await controller.requestVoceAccessCode(email: email)
                 accessVerificationCodeWasSent = true
                 accessVerificationCodeDraft = ""
             } catch {
@@ -326,7 +336,13 @@ struct ContentView: View {
     }
 
     private func verifyAccessCode() {
-        let email = normalizedAccessEmail
+        verifyAccessCode(for: accessEmailDraft)
+    }
+
+    private func verifyAccessCode(for rawEmail: String) {
+        let email = rawEmail
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         let code = accessVerificationCodeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !email.isEmpty, !code.isEmpty else { return }
 
@@ -356,7 +372,7 @@ struct ContentView: View {
     }
 
     private func subscribeToPro() {
-        guard saveAccessEmail() else { return }
+        guard saveAccessEmail() != nil else { return }
         accessPromptCompleted = false
         controller.openVoceProCheckout()
     }
@@ -374,17 +390,19 @@ struct ContentView: View {
         accessPromptCompleted = false
     }
 
-    @discardableResult
-    private func saveAccessEmail() -> Bool {
-        let email = normalizedAccessEmail
-        guard !email.isEmpty else { return false }
+    private func saveAccessEmail(_ rawEmail: String? = nil) -> String? {
+        let email = (rawEmail ?? accessEmailDraft)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !email.isEmpty else { return nil }
 
+        accessEmailDraft = email
         var snapshot = preferencesDraft
         snapshot.billing.subscriberEmail = email
         snapshot.normalize()
         preferencesDraft = snapshot
         controller.applySettingsDraft(preferences: snapshot, announceImmediateSave: false)
-        return true
+        return email
     }
 
     private func sidebarButton(_ tab: VoceTab, isCompact: Bool = false) -> some View {
@@ -422,6 +440,9 @@ struct ContentView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(showsAccessPrompt)
+        .opacity(showsAccessPrompt ? VoceDesign.opacityDisabled : 1)
+        .help(showsAccessPrompt ? "Finish access setup to use Voce" : tab.rawValue)
         .accessibilityLabel(tab.rawValue)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
