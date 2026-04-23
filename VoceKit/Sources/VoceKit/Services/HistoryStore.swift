@@ -155,19 +155,6 @@ public actor HistoryStore: HistoryStoreProtocol {
     }
 
     private static func defaultStorageURL() -> URL {
-        let appSupport: URL
-        if let resolved = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            appSupport = resolved
-        } else {
-            appSupport = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support", isDirectory: true)
-            VoceKitDiagnostics.logger.fault(
-                "Application Support directory lookup failed. Falling back to \(appSupport.path, privacy: .private)."
-            )
-        }
-
-        return appSupport
-            .appendingPathComponent("Voce", isDirectory: true)
-            .appendingPathComponent("transcript-history.json")
+        VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "transcript-history.json")
     }
 }

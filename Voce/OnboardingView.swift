@@ -267,7 +267,7 @@ struct OnboardingView: View {
                     ? "Voce is unlocked on this Mac."
                     : (accessVerificationCodeWasSent
                        ? "Enter the 6-digit code sent to \(normalizedAccessEmail)."
-                       : "Voce uses your email to find Pro access or start your free monthly time.")
+                       : "Voce uses your email to find Base or Pro access, or start your free monthly time.")
             )
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
@@ -359,11 +359,23 @@ struct OnboardingView: View {
 
                     if canSubscribeFromAccess {
                         onboardingAccessButton(
-                            "Subscribe",
-                            systemImage: "sparkles",
+                            "Choose Base",
+                            systemImage: "mic.fill",
                             isEnabled: !normalizedAccessEmail.isEmpty,
                             isProminent: false,
-                            action: controller.openVoceProCheckout
+                            action: {
+                                controller.openVoceCheckout(plan: .base, billingCycle: .monthly)
+                            }
+                        )
+
+                        onboardingAccessButton(
+                            "Choose Pro",
+                            systemImage: "sparkles",
+                            isEnabled: !normalizedAccessEmail.isEmpty,
+                            isProminent: true,
+                            action: {
+                                controller.openVoceCheckout(plan: .pro, billingCycle: .monthly)
+                            }
                         )
                     }
                 }

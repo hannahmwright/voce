@@ -306,7 +306,7 @@ struct ContentView: View {
             onVerifyCode: verifyAccessCode,
             onResendCode: requestAccessCode,
             onChooseFree: continueWithFreeAccess,
-            onSubscribe: subscribeToPro,
+            onSubscribe: subscribe,
             onContinue: completeAccessPrompt,
             onBackToEmail: resetAccessEmailStep
         )
@@ -371,10 +371,10 @@ struct ContentView: View {
         accessPromptCompleted = true
     }
 
-    private func subscribeToPro() {
+    private func subscribe(to plan: VoceCheckoutPlan, billingCycle: VoceCheckoutBillingCycle) {
         guard saveAccessEmail() != nil else { return }
         accessPromptCompleted = false
-        controller.openVoceProCheckout()
+        controller.openVoceCheckout(plan: plan, billingCycle: billingCycle)
     }
 
     private func completeAccessPrompt() {
@@ -481,12 +481,13 @@ private struct AccessPromptView: View {
     let onVerifyCode: () -> Void
     let onResendCode: () -> Void
     let onChooseFree: () -> Void
-    let onSubscribe: () -> Void
+    let onSubscribe: (VoceCheckoutPlan, VoceCheckoutBillingCycle) -> Void
     let onContinue: () -> Void
     let onBackToEmail: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var heartGlowPulse = false
+    @State private var selectedBillingCycle: VoceCheckoutBillingCycle = .monthly
 
     private var normalizedEmail: String {
         email.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -595,7 +596,7 @@ private struct AccessPromptView: View {
             accessHero(
                 icon: "person.crop.circle.fill",
                 title: "Let's set up access",
-                subtitle: "Voce uses your email to find Pro access or start your free monthly time."
+                subtitle: "Voce uses your email to find Base or Pro access, or start your free monthly time."
             )
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
@@ -685,8 +686,8 @@ private struct AccessPromptView: View {
 
     private var accessStep: some View {
         VStack(spacing: VoceDesign.xl) {
-            if showsProActiveCard {
-                proActiveCard
+            if showsPaidActiveCard {
+                paidActiveCard
             } else {
                 accessHero(
                     icon: accessHeroIcon,
@@ -744,10 +745,10 @@ private struct AccessPromptView: View {
             : .white
     }
 
-    private var proActiveCard: some View {
+    private var paidActiveCard: some View {
         VStack(spacing: VoceDesign.lg) {
             HStack(spacing: VoceDesign.sm) {
-                Text("Pro")
+                Text(activePlanBadgeTitle)
                     .font(VoceDesign.labelEmphasis())
                     .foregroundStyle(warmBadgeText)
                     .padding(.horizontal, VoceDesign.md)
@@ -797,18 +798,18 @@ private struct AccessPromptView: View {
                             .stroke(warmText.opacity(0.16), lineWidth: VoceDesign.borderThin)
                     )
 
-                Image(systemName: proActiveIconName)
+                Image(systemName: activePlanIconName)
                     .font(.system(size: 26, weight: .semibold))
                     .foregroundStyle(warmText)
             }
             .accessibilityHidden(true)
 
             VStack(spacing: VoceDesign.xs) {
-                Text(proActiveTitle)
+                Text(activePlanTitle)
                     .font(VoceDesign.heading1())
                     .foregroundStyle(VoceDesign.textPrimary)
 
-                Text(proActiveDetail)
+                Text(activePlanDetail)
                     .font(VoceDesign.bodyEmphasis())
                     .foregroundStyle(warmText)
             }
@@ -872,41 +873,76 @@ private struct AccessPromptView: View {
     }
 
     private var planChoiceCards: some View {
-        HStack(alignment: .top, spacing: VoceDesign.md) {
-            freePlanCard
-            proPlanCard
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            Picker("Billing", selection: $selectedBillingCycle) {
+                ForEach(VoceCheckoutBillingCycle.allCases, id: \.self) { cycle in
+                    Text(cycle.title).tag(cycle)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                basePlanCard
+                proPlanCard
+            }
+
+            if canChooseFree {
+                Button {
+                    onChooseFree()
+                } label: {
+                    Text("Keep using free monthly time")
+                        .font(VoceDesign.callout())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .padding(.horizontal, VoceDesign.lg)
+                        .padding(.vertical, VoceDesign.sm)
+                        .background(
+                            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                .fill(VoceDesign.surfaceSecondary)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                                        .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+            }
         }
         .frame(maxWidth: 680)
     }
 
-    // MARK: - Free plan card
+    // MARK: - Base plan card
 
-    private var freePlanCard: some View {
+    private var basePlanCard: some View {
         VStack(alignment: .leading, spacing: VoceDesign.lg) {
             VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                Text("Free")
+                Text("Base")
                     .font(VoceDesign.heading3())
                     .foregroundStyle(VoceDesign.textPrimary)
 
-                Text(freePlanDetail)
+                Text(basePlanDetail)
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                planFeatureRow(icon: "clock", text: "30 minutes per month", muted: true)
-                planFeatureRow(icon: "mic.fill", text: "Standard dictation", muted: true)
+                Text(basePriceText)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                planFeatureRow(icon: "mic.fill", text: "Unlimited local dictation", muted: false)
+                planFeatureRow(icon: "sparkles", text: "Apple Intelligence actions", muted: false)
+                planFeatureRow(icon: "textformat", text: "Style controls and dictionary", muted: false)
             }
 
             Spacer(minLength: 0)
 
             Button {
-                onChooseFree()
+                onSubscribe(.base, selectedBillingCycle)
             } label: {
-                Text(freePlanActionTitle)
+                Text(basePlanActionTitle)
                     .font(VoceDesign.callout())
-                    .foregroundStyle(canChooseFree ? VoceDesign.textPrimary : VoceDesign.textSecondary)
+                    .foregroundStyle(VoceDesign.textPrimary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, VoceDesign.sm + 2)
                     .background(
@@ -919,8 +955,8 @@ private struct AccessPromptView: View {
                     )
             }
             .buttonStyle(.plain)
-            .disabled(!canChooseFree)
-            .opacity(canChooseFree ? 1 : VoceDesign.opacityDisabled)
+            .disabled(normalizedEmail.isEmpty)
+            .opacity(normalizedEmail.isEmpty ? VoceDesign.opacityDisabled : 1)
         }
         .padding(VoceDesign.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -957,23 +993,27 @@ private struct AccessPromptView: View {
                         )
                 }
 
-                Text("Everything you need, no limits.")
+                Text("Best accuracy with optional cloud dictation.")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
 
             VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                planFeatureRow(icon: "infinity", text: "Unlimited dictation", muted: false)
-                planFeatureRow(icon: "sparkles", text: "AI polish and cleanup", muted: false)
-                planFeatureRow(icon: "star.fill", text: "Full Pro access", muted: false)
+                Text(proPriceText)
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                planFeatureRow(icon: "star.fill", text: "Everything in Base", muted: false)
+                planFeatureRow(icon: "cloud.fill", text: "Cloud dictation", muted: false)
+                planFeatureRow(icon: "list.bullet", text: "Smarter cleanup and formatting", muted: false)
             }
 
             Spacer(minLength: 0)
 
             Button {
-                onSubscribe()
+                onSubscribe(.pro, selectedBillingCycle)
             } label: {
-                Text("Subscribe to Pro")
+                Text(proPlanActionTitle)
                     .font(VoceDesign.callout())
                     .fontWeight(.semibold)
                     .foregroundStyle(warmText)
@@ -1181,31 +1221,57 @@ private struct AccessPromptView: View {
         "heart.fill"
     }
 
-    private var proActiveTitle: String {
+    private var activePlanBadgeTitle: String {
         guard case .entitled(let entitlement) = entitlementStatus else {
-            return "Voce Pro is active"
+            return "Plan"
         }
-        return entitlement.source == .manual ? "Voce loves you" : "Voce Pro is active"
+        return entitlement.planTier?.title ?? "Plan"
     }
 
-    private var proActiveDetail: String {
+    private var activePlanIconName: String {
+        guard case .entitled(let entitlement) = entitlementStatus else {
+            return proActiveIconName
+        }
+        return entitlement.planTier == .base ? "checkmark.seal.fill" : proActiveIconName
+    }
+
+    private var activePlanTitle: String {
+        guard case .entitled(let entitlement) = entitlementStatus else {
+            return "Voce is active"
+        }
+        let planTitle = entitlement.planTier?.title ?? "Voce"
+        if entitlement.source == .manual {
+            return "\(planTitle) is on us"
+        }
+        return "Voce \(planTitle) is active"
+    }
+
+    private var activePlanDetail: String {
         guard case .entitled(let entitlement) = entitlementStatus else {
             return "You're all set."
         }
-        return entitlement.source == .manual ? "Pro is on us." : "You're all set."
+        switch entitlement.planTier {
+        case .base:
+            return "Local dictation and AI actions are ready to go."
+        case .pro:
+            return "Local and cloud dictation are ready to go."
+        case .free, nil:
+            return "You're all set."
+        }
     }
 
-    private var showsProActiveCard: Bool {
+    private var showsPaidActiveCard: Bool {
         guard case .entitled(let entitlement) = entitlementStatus else { return false }
-        return entitlement.source == .manual || entitlement.source == .stripe
+        return (entitlement.source == .manual || entitlement.source == .stripe)
+            && entitlement.planTier != .free
     }
 
     private var accessTitle: String {
         switch entitlementStatus {
         case .entitled(let entitlement):
-            switch entitlement.source {
-            case .manual, .stripe:
-                return "Pro is ready"
+            switch entitlement.planTier {
+            case .base, .pro:
+                return "\(entitlement.planTier?.title ?? "Voce") is ready"
             case .free:
                 return "Choose your plan"
             case nil:
@@ -1225,22 +1291,24 @@ private struct AccessPromptView: View {
     private var accessSubtitle: String {
         switch entitlementStatus {
         case .entitled(let entitlement):
-            switch entitlement.source {
-            case .manual, .stripe:
+            switch entitlement.planTier {
+            case .base:
+                return "We found Base for \(normalizedEmail)."
+            case .pro:
                 return "We found Pro for \(normalizedEmail)."
             case .free:
-                return "Select the plan that works best for you."
+                return "Select Base or Pro, or keep using your free monthly time."
             case nil:
                 return "Access is active for \(normalizedEmail)."
             }
         case .checking:
-            return "Looking for an active subscription or granted Pro access."
+            return "Looking for an active subscription or free monthly time."
         case .notEntitled:
-            return "Upgrade to unlock unlimited dictation and Pro features."
+            return "Choose Base for local-only access or Pro for cloud dictation."
         case .failed:
             return "Try the email you used for checkout."
         case .missingEmail, .needsVerification:
-            return "Voce uses your email to find Pro access or start your free monthly time."
+            return "Voce uses your email to find Base or Pro access, or start your free monthly time."
         }
     }
 
@@ -1251,23 +1319,29 @@ private struct AccessPromptView: View {
 
     private var canContinueToApp: Bool {
         guard case .entitled(let entitlement) = entitlementStatus else { return false }
-        return entitlement.source == .manual || entitlement.source == .stripe || entitlement.source == nil
+        return entitlement.planTier == .base
+            || entitlement.planTier == .pro
+            || entitlement.source == nil
     }
 
-    private var freePlanDetail: String {
-        guard case .entitled(let entitlement) = entitlementStatus,
-              entitlement.source == .free
-        else {
-            return "Free monthly time is used for this email."
-        }
-        if let remaining = entitlement.freeRemainingMinutesText {
-            return "\(remaining) included this month."
-        }
-        return "Monthly free dictation time is available."
+    private var basePlanDetail: String {
+        "Fast, private, and fully on-device."
     }
 
-    private var freePlanActionTitle: String {
-        canChooseFree ? "Continue free" : "Free used"
+    private var basePlanActionTitle: String {
+        selectedBillingCycle == .monthly ? "Choose Base monthly" : "Choose Base yearly"
+    }
+
+    private var proPlanActionTitle: String {
+        selectedBillingCycle == .monthly ? "Choose Pro monthly" : "Choose Pro yearly"
+    }
+
+    private var basePriceText: String {
+        selectedBillingCycle == .monthly ? "$7 / month" : "$70 / year"
+    }
+
+    private var proPriceText: String {
+        selectedBillingCycle == .monthly ? "$10 / month" : "$108 / year"
     }
 
     private var currentStepIndex: Int {

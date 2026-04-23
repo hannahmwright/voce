@@ -1,18 +1,28 @@
 # Voce Entitlements
 
-Convex is the source of truth for Voce premium access.
+Convex is the source of truth for Voce plan access.
 
 - Stripe subscriptions sync into `stripeSubscriptions` through `/stripe/webhook`.
 - Free users are granted manually in `manualEntitlements`.
 - The Mac app checks `/entitlements/check` before starting dictation.
 - Non-subscribed users get 30 free dictation minutes per calendar month. Usage is tracked with `/entitlements/record-usage`.
 
+Feature flags:
+
+- `voce_app_access`: Base access and the default feature checked by the Mac app.
+- `voce_cloud_dictation`: Pro-only cloud dictation.
+
 Manual grant examples:
 
 ```sh
-npx convex run entitlements:grantManual '{"email":"friend@example.com","note":"Free access"}'
-npx convex run entitlements:revokeManual '{"email":"friend@example.com"}'
+npx convex run entitlements:grantManual '{"email":"friend@example.com","feature":"voce_app_access","note":"Base access"}'
+npx convex run entitlements:grantManual '{"email":"friend@example.com","feature":"voce_cloud_dictation","note":"Pro access"}'
+npx convex run entitlements:revokeManual '{"email":"friend@example.com","feature":"voce_app_access"}'
+npx convex run entitlements:revokeManual '{"email":"friend@example.com","feature":"voce_cloud_dictation"}'
 ```
+
+Granting `voce_app_access` gives Base access.
+Granting `voce_cloud_dictation` promotes the user to Pro and implicitly includes Base access.
 
 Environment variables to set in Convex:
 
@@ -25,7 +35,25 @@ npx convex env set VOCE_SUPPORT_EMAIL_TO "h.wright@vervetechgroup.com"
 npx convex env set STRIPE_SECRET_KEY sk_test_...
 npx convex env set STRIPE_WEBHOOK_SECRET whsec_...
 npx convex env set STRIPE_PORTAL_CONFIGURATION_ID bpc_...
+npx convex env set STRIPE_BASE_PRODUCT_ID prod_...
+npx convex env set STRIPE_PRO_PRODUCT_ID prod_...
+npx convex env set STRIPE_BASE_MONTHLY_PRICE_ID price_...
+npx convex env set STRIPE_BASE_ANNUAL_PRICE_ID price_...
+npx convex env set STRIPE_PRO_MONTHLY_PRICE_ID price_...
+npx convex env set STRIPE_PRO_ANNUAL_PRICE_ID price_...
+npx convex env set STRIPE_CHECKOUT_SUCCESS_URL https://voceapp.io/account/success
+npx convex env set STRIPE_CHECKOUT_CANCEL_URL https://voceapp.io/pricing
+npx convex env set VOCE_OPENAI_API_KEY sk-...
+npx convex env set VOCE_OPENAI_TRANSCRIPTION_MODEL gpt-4o-mini-transcribe
+npx convex env set VOCE_OPENAI_REFINEMENT_MODEL gpt-4o-mini
 ```
+
+Recommended Stripe price mapping:
+
+- `STRIPE_BASE_MONTHLY_PRICE_ID`: Base `$7/month`
+- `STRIPE_BASE_ANNUAL_PRICE_ID`: Base `$70/year`
+- `STRIPE_PRO_MONTHLY_PRICE_ID`: Pro `$10/month`
+- `STRIPE_PRO_ANNUAL_PRICE_ID`: Pro `$108/year`
 
 `VOCE_AUTH_SECRET` is required for hashing one-time email codes and app session tokens.
 `RESEND_API_KEY` and `VOCE_AUTH_EMAIL_FROM` are required for sending access codes.
@@ -56,4 +84,25 @@ The app usage endpoint is:
 
 ```txt
 https://<convex-deployment>.convex.site/entitlements/record-usage
+```
+
+Cloud dictation proxy endpoints are:
+
+```txt
+https://<convex-deployment>.convex.site/cloud-dictation/preflight
+https://<convex-deployment>.convex.site/cloud-dictation/transcribe
+https://<convex-deployment>.convex.site/cloud-dictation/refine
+```
+
+These endpoints require:
+
+- `x-voce-email`
+- `x-voce-session-token`
+
+The server verifies the saved Voce email session and enforces `voce_cloud_dictation` before proxying any audio or transcript content to OpenAI. Audio and transcript bodies are processed transiently and are not stored in Convex tables by default.
+
+The app checkout endpoint is:
+
+```txt
+https://<convex-deployment>.convex.site/stripe/checkout
 ```

@@ -229,7 +229,12 @@ struct SettingsView: View {
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
                 onRequestAccessCode: requestAccessCodeForSettingsEmail,
                 onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
-                onSubscribe: controller.openVoceProCheckout,
+                onSubscribeBase: { cycle in
+                    controller.openVoceCheckout(plan: .base, billingCycle: cycle)
+                },
+                onSubscribePro: { cycle in
+                    controller.openVoceCheckout(plan: .pro, billingCycle: cycle)
+                },
                 onManageSubscription: controller.openVoceProPortal,
                 onResetAccessSession: controller.resetVoceAccessSessionForTesting
             )
@@ -244,7 +249,12 @@ struct SettingsView: View {
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
                 onRequestAccessCode: requestAccessCodeForSettingsEmail,
                 onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
-                onSubscribe: controller.openVoceProCheckout,
+                onSubscribeBase: { cycle in
+                    controller.openVoceCheckout(plan: .base, billingCycle: cycle)
+                },
+                onSubscribePro: { cycle in
+                    controller.openVoceCheckout(plan: .pro, billingCycle: cycle)
+                },
                 onManageSubscription: controller.openVoceProPortal
             )
             #endif

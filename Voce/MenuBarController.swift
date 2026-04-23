@@ -122,7 +122,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         onSave: @escaping (String) -> Void
     ) {
         guard let controller else { return }
-        guard let button = statusItem?.button else { return }
 
         if #available(macOS 14.0, *) {
             NSApp.activate()
@@ -153,7 +152,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             )
         )
 
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        showPopoverUsingBestAnchor()
         installOutsideClickMonitors()
     }
 
@@ -162,7 +161,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         onSave: @escaping (String) -> Void
     ) {
         guard let controller else { return }
-        guard let button = statusItem?.button else { return }
 
         if #available(macOS 14.0, *) {
             NSApp.activate()
@@ -192,7 +190,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             )
         )
 
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        showPopoverUsingBestAnchor()
         installOutsideClickMonitors()
     }
 
@@ -206,6 +204,41 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             installOutsideClickMonitors()
         }
+    }
+
+    private func showPopoverUsingBestAnchor() {
+        if let contentView = preferredAnchorContentView() {
+            let anchorRect = NSRect(
+                x: max(0, contentView.bounds.midX - 1),
+                y: max(0, min(contentView.bounds.maxY - 40, contentView.bounds.midY + 120)),
+                width: 2,
+                height: 2
+            )
+            popover.show(relativeTo: anchorRect, of: contentView, preferredEdge: .minY)
+            return
+        }
+
+        if let button = statusItem?.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+    }
+
+    private func preferredAnchorContentView() -> NSView? {
+        let popoverWindow = popover.contentViewController?.view.window
+        let preferredWindow = NSApp.keyWindow
+            ?? NSApp.mainWindow
+            ?? NSApp.orderedWindows.first {
+                $0.isVisible &&
+                !($0 is NSPanel) &&
+                $0 !== popoverWindow
+            }
+
+        guard let preferredWindow,
+              preferredWindow !== statusItem?.button?.window else {
+            return nil
+        }
+
+        return preferredWindow.contentView
     }
 
     private func closePopover() {

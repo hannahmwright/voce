@@ -198,7 +198,15 @@ final class DictationController: ObservableObject {
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var recordingElapsed: TimeInterval = 0
     @Published var hasBootstrapped = false
-    @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail
+    @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail {
+        didSet {
+            guard hasBootstrapped else { return }
+            guard cloudAccessEnabled(for: oldValue) != cloudAccessEnabled(for: voceProEntitlementStatus) else { return }
+            Task { @MainActor [weak self] in
+                await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
+            }
+        }
+    }
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService = MacClipboardService()
@@ -215,9 +223,14 @@ final class DictationController: ObservableObject {
     private var styleProfileService: StyleProfileService
     private var snippetService: SnippetService
     private var voiceCommandService: VoiceCommandService
+    private var dictationEngineModeResolver = DictationEngineModeResolver(
+        globalMode: AppPreferences.default.dictation.engineMode,
+        appPreferences: AppPreferences.default.appDictationEnginePreferences,
+        cloudModeAvailable: VoceRuntimeConfiguration.isDevApp
+    )
     private var insertionService: any InsertionServiceProtocol = InsertionService(transports: [])
     private var coordinator: SessionCoordinator?
-    private var transcriptionEngine: AppleSpeechTranscriptionEngine?
+    private let cloudDictationAvailabilityService = CloudDictationAvailabilityService()
     private let learningEngine = LearningEngine()
     private let completionRoutingService = CompletionRoutingService()
     private let aiGenerationService = AppleFoundationModelsService()
@@ -240,6 +253,10 @@ final class DictationController: ObservableObject {
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
     private var suppressNextPressToTalkStop = false
+    private var cloudValidationTask: Task<Void, Never>?
+    private var cloudValidationCredentialVersion = UUID()
+    private var lastCloudValidationToken: String?
+    private var lastCloudValidationFailureMessage: String?
 
     private struct SelectionCapture {
         var text: String
@@ -484,8 +501,35 @@ final class DictationController: ObservableObject {
     }
     #endif
 
-    func openVoceProCheckout() {
-        NSWorkspace.shared.open(VoceProEntitlementService.checkoutURL)
+    func openVoceCheckout(plan: VoceCheckoutPlan, billingCycle: VoceCheckoutBillingCycle) {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else {
+            status = "Enter your email to choose a Voce plan."
+            lastError = status
+            return
+        }
+
+        status = "Opening \(plan.title) checkout..."
+        Task { [weak self, entitlementService] in
+            do {
+                let checkoutURL = try await entitlementService.checkoutURL(
+                    email: email,
+                    plan: plan,
+                    billingCycle: billingCycle
+                )
+                await MainActor.run {
+                    NSWorkspace.shared.open(checkoutURL)
+                    self?.status = "\(plan.title) checkout opened."
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription
+                    ?? "Could not open checkout."
+                await MainActor.run {
+                    self?.status = message
+                    self?.lastError = message
+                }
+            }
+        }
     }
 
     func openVoceProPortal() {
@@ -993,6 +1037,156 @@ final class DictationController: ObservableObject {
         voceProEntitlementStatus.isEntitled && aiRuntimeEnabled
     }
 
+    var currentPlanTier: VocePlanTier? {
+        guard case .entitled(let entitlement) = voceProEntitlementStatus else {
+            return nil
+        }
+        return entitlement.planTier
+    }
+
+    var hasCloudDictationEntitlement: Bool {
+        guard case .entitled(let entitlement) = voceProEntitlementStatus else {
+            return false
+        }
+        return entitlement.hasFeature(.cloudDictation)
+    }
+
+    var canUseCloudDictation: Bool {
+        isDevBuildWithCloudOptions || hasCloudDictationEntitlement
+    }
+
+    private func cloudAccessEnabled(for status: VoceProEntitlementStatus) -> Bool {
+        if isDevBuildWithCloudOptions {
+            return true
+        }
+
+        guard case .entitled(let entitlement) = status else {
+            return false
+        }
+        return entitlement.hasFeature(.cloudDictation)
+    }
+
+    var cloudDictationStatus: CloudDictationAvailabilityStatus {
+        let baseStatus = baseCloudDictationStatus()
+        guard !baseStatus.isError else {
+            return baseStatus
+        }
+
+        let token = cloudValidationToken(for: preferences)
+        guard lastCloudValidationToken == token else {
+            return baseStatus
+        }
+
+        if let lastCloudValidationFailureMessage {
+            return CloudDictationAvailabilityStatus(message: lastCloudValidationFailureMessage, isError: true)
+        }
+
+        return baseStatus
+    }
+
+    var hasStoredCloudAPIKey: Bool {
+        CloudProviderCredentialStore.shared.hasStoredOpenAIAPIKey()
+    }
+
+    var isDevBuildWithCloudOptions: Bool {
+        VoceRuntimeConfiguration.isDevApp
+    }
+
+    var usesDirectCloudCredentials: Bool {
+        isDevBuildWithCloudOptions
+    }
+
+    var cloudCredentialEnvironmentVariableName: String {
+        CloudProviderCredentialStore.shared.environmentVariableDisplayName()
+    }
+
+    private func baseCloudDictationStatus() -> CloudDictationAvailabilityStatus {
+        if usesDirectCloudCredentials {
+            return cloudDictationAvailabilityService.directCredentialStatus(for: preferences.dictation)
+        }
+
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else {
+            return CloudDictationAvailabilityStatus(
+                message: "Enter your email in Access to use cloud dictation.",
+                isError: true
+            )
+        }
+
+        switch voceProEntitlementStatus {
+        case .missingEmail:
+            return CloudDictationAvailabilityStatus(
+                message: "Enter your email in Access to use cloud dictation.",
+                isError: true
+            )
+        case .needsVerification:
+            return CloudDictationAvailabilityStatus(
+                message: "Verify your email to use cloud dictation.",
+                isError: true
+            )
+        case .checking:
+            return CloudDictationAvailabilityStatus(
+                message: "Checking Voce Pro cloud access...",
+                isError: false
+            )
+        case .notEntitled:
+            return CloudDictationAvailabilityStatus(
+                message: "Cloud dictation is part of Voce Pro.",
+                isError: true
+            )
+        case .failed(_, let message):
+            return CloudDictationAvailabilityStatus(message: message, isError: true)
+        case .entitled(let entitlement):
+            guard entitlement.hasFeature(.cloudDictation) else {
+                return CloudDictationAvailabilityStatus(
+                    message: "Cloud dictation is part of Voce Pro.",
+                    isError: true
+                )
+            }
+            return CloudDictationAvailabilityStatus(
+                message: "Ready through your Voce Pro account.",
+                isError: false
+            )
+        }
+    }
+
+    private func makeCloudSpeechProviderClient(
+        for dictation: AppPreferences.Dictation
+    ) -> any CloudSpeechProviderClient {
+        let subscriberEmail = normalizedSubscriberEmail
+        return CloudSpeechProviderFactory.makeProvider(
+            dictation: dictation,
+            transcriptionHints: preferences.visibleLexiconEntries,
+            subscriberEmailProvider: { subscriberEmail },
+            useDirectCredentials: usesDirectCloudCredentials
+        )
+    }
+
+    func saveCloudAPIKey(_ apiKey: String) throws {
+        try CloudProviderCredentialStore.shared.saveOpenAIAPIKey(apiKey)
+        cloudValidationCredentialVersion = UUID()
+        lastCloudValidationToken = nil
+        lastCloudValidationFailureMessage = nil
+        refreshCloudValidationIfNeeded(force: true)
+    }
+
+    func clearCloudAPIKey() throws {
+        try CloudProviderCredentialStore.shared.clearOpenAIAPIKey()
+        cloudValidationTask?.cancel()
+        cloudValidationTask = nil
+        cloudValidationCredentialVersion = UUID()
+        lastCloudValidationToken = nil
+        lastCloudValidationFailureMessage = nil
+    }
+
+    func runCloudDictationTest() async throws -> String {
+        guard canUseCloudDictation else {
+            throw CloudDictationError.providerError("Cloud dictation is part of Voce Pro.")
+        }
+        try await runCloudValidation(dictation: preferences.dictation)
+        return "Cloud dictation is ready."
+    }
+
     func runAIWorkflow(_ workflow: AIWorkflow, on entry: TranscriptEntry) {
         guard !isRecording else {
             status = "Finish recording before running AI on history."
@@ -1110,6 +1304,7 @@ final class DictationController: ObservableObject {
         activeStartTask = Task { @MainActor in
             do {
                 try await ensureMicrophonePermission()
+                try await validateEngineReadinessForRecording(appContext: capturedContext)
 
                 status = "Arming microphone..."
                 let session = AppleSpeechPreviewSession(
@@ -1392,6 +1587,12 @@ final class DictationController: ObservableObject {
                     await applyDeferredRebuildIfNeeded()
                     return
                 }
+                if preferences.usesCloudDictationConfiguration {
+                    refreshCloudValidationIfNeeded(force: true)
+                }
+                Self.logger.error(
+                    "Streaming transcription failed after \(captureDurationMS, privacy: .public)ms capture: \(error.localizedDescription, privacy: .public)"
+                )
                 status = "Transcription failed"
                 lastError = error.localizedDescription
                 overlay.hide()
@@ -1679,6 +1880,7 @@ final class DictationController: ObservableObject {
     }
 
     private func applyPreferencesLocally(_ newValue: AppPreferences) {
+        let previousCloudToken = cloudValidationToken(for: preferences)
         preferences = newValue
         hotkey.isOptionPressToTalkEnabled = newValue.hotkeys.optionPressToTalkEnabled
         hotkey.pressToTalkHotkey = newValue.hotkeys.pressToTalkHotkey
@@ -1698,6 +1900,12 @@ final class DictationController: ObservableObject {
             overlay.prefersDarkAppearance = false
         case .system:
             overlay.prefersDarkAppearance = nil
+        }
+
+        let newCloudToken = cloudValidationToken(for: newValue)
+        if previousCloudToken != newCloudToken {
+            lastCloudValidationToken = nil
+            lastCloudValidationFailureMessage = nil
         }
     }
 
@@ -1730,28 +1938,27 @@ final class DictationController: ObservableObject {
         let runtimeFactory = DictationRuntimeFactory(
             snapshot: snapshot,
             clipboardService: clipboardService,
-            wordFrequencies: wordFreqs
+            wordFrequencies: wordFreqs,
+            cloudRuntimeAllowed: canUseCloudDictation,
+            subscriberEmail: normalizedSubscriberEmail,
+            useDirectCloudCredentials: usesDirectCloudCredentials
         )
         lexiconService = runtimeFactory.makeLexiconService()
         styleProfileService = runtimeFactory.makeStyleProfileService()
         snippetService = runtimeFactory.makeSnippetService()
         voiceCommandService = runtimeFactory.makeVoiceCommandService()
+        dictationEngineModeResolver = runtimeFactory.makeEngineModeResolver()
 
-        let transcription = runtimeFactory.makeTranscriptionEngine()
-        transcriptionEngine = transcription
-        let cleanupEngine: any CleanupEngine = runtimeFactory.makeCleanupEngine()
         let insertion = InsertionService(transports: runtimeFactory.makeInsertionTransports())
         insertionService = insertion
 
         coordinator = SessionCoordinator(
             captureService: captureService,
-            transcriptionEngine: transcription,
-            cleanupEngine: cleanupEngine,
+            engineResolver: runtimeFactory.makeSessionEngineResolver(),
             lexiconService: lexiconService,
             styleProfileService: styleProfileService,
             snippetService: snippetService,
             voiceCommandService: voiceCommandService,
-            fallbackCleanupEngine: RuleBasedCleanupEngine(),
             learningEngine: learningEngine
         )
 
@@ -1762,7 +1969,8 @@ final class DictationController: ObservableObject {
             launchAtLoginWarning = error.localizedDescription
         }
 
-        status = "Running Apple preview + Apple Speech final transcription + local cleanup."
+        status = runtimeFactory.runtimeStatusText()
+        refreshCloudValidationIfNeeded(force: false)
     }
 
     private func fallbackWarningText(from outcome: CleanupOutcome?) -> String? {
@@ -1923,6 +2131,13 @@ final class DictationController: ObservableObject {
             status = "Apple Speech locale is missing. Check Settings \u{2192} Engine."
             return
         }
+
+        if preferences.usesCloudDictationConfiguration {
+            let cloudStatus = cloudDictationStatus
+            if cloudStatus.isError {
+                status = cloudStatus.message
+            }
+        }
     }
 
     private func ensureMicrophonePermission() async throws {
@@ -1938,6 +2153,21 @@ final class DictationController: ObservableObject {
             refreshPermissionStatuses()
             guard granted else {
                 throw RecordingStartError.microphonePermissionDenied
+            }
+        }
+    }
+
+    private func validateEngineReadinessForRecording(appContext: AppContext) async throws {
+        switch dictationEngineModeResolver.resolve(for: appContext) {
+        case .local:
+            return
+        case .cloud:
+            guard canUseCloudDictation else {
+                throw CloudDictationError.providerError("Cloud dictation is part of Voce Pro.")
+            }
+            let cloudStatus = baseCloudDictationStatus()
+            guard !cloudStatus.isError else {
+                throw CloudDictationError.providerError(cloudStatus.message)
             }
         }
     }
@@ -2450,12 +2680,101 @@ final class DictationController: ObservableObject {
 
         await preferencesStore.save(preferences)
     }
+
+    private func cloudValidationToken(for preferences: AppPreferences) -> String {
+        let overrideSignature = preferences.appDictationEnginePreferences
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value.rawValue)" }
+            .joined(separator: ",")
+        let subscriberEmail = preferences.billing.subscriberEmail
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        return [
+            usesDirectCloudCredentials ? "direct-cloud" : "voce-cloud",
+            subscriberEmail,
+            preferences.dictation.localeIdentifier,
+            preferences.dictation.engineMode.rawValue,
+            preferences.dictation.cloud.provider.rawValue,
+            preferences.dictation.cloud.refinementEnabled ? "refine-on" : "refine-off",
+            preferences.dictation.cloud.formattingStyle.rawValue,
+            preferences.dictation.cloud.apiKeySource.rawValue,
+            overrideSignature,
+            cloudValidationCredentialVersion.uuidString,
+        ].joined(separator: "|")
+    }
+
+    private func refreshCloudValidationIfNeeded(force: Bool) {
+        guard canUseCloudDictation,
+              preferences.usesCloudDictationConfiguration
+        else {
+            cloudValidationTask?.cancel()
+            cloudValidationTask = nil
+            return
+        }
+
+        let baseStatus = baseCloudDictationStatus()
+        guard !baseStatus.isError else {
+            cloudValidationTask?.cancel()
+            cloudValidationTask = nil
+            lastCloudValidationToken = nil
+            lastCloudValidationFailureMessage = nil
+            return
+        }
+
+        let dictation = preferences.dictation
+        let token = cloudValidationToken(for: preferences)
+        guard force || lastCloudValidationToken != token else {
+            return
+        }
+
+        cloudValidationTask?.cancel()
+        cloudValidationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.runCloudValidation(dictation: dictation, token: token)
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func runCloudValidation(
+        dictation: AppPreferences.Dictation,
+        token: String? = nil
+    ) async throws {
+        let effectiveToken = token ?? cloudValidationToken(for: preferences)
+
+        do {
+            let provider = makeCloudSpeechProviderClient(for: dictation)
+            try await provider.preflightCheck(localeIdentifier: dictation.localeIdentifier)
+            guard !Task.isCancelled else { return }
+            if cloudValidationToken(for: preferences) == effectiveToken {
+                lastCloudValidationToken = effectiveToken
+                lastCloudValidationFailureMessage = nil
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard !Task.isCancelled else { throw CancellationError() }
+            if cloudValidationToken(for: preferences) == effectiveToken {
+                lastCloudValidationToken = effectiveToken
+                lastCloudValidationFailureMessage = error.localizedDescription
+            }
+            throw error
+        }
+    }
 }
 
 private struct DictationRuntimeFactory {
     let snapshot: AppPreferences
     let clipboardService: any ClipboardService
     let wordFrequencies: [String: Int]
+    let cloudRuntimeAllowed: Bool
+    let subscriberEmail: String
+    let useDirectCloudCredentials: Bool
 
     func makeLexiconService() -> PersonalLexiconService {
         PersonalLexiconService(entries: snapshot.lexiconEntries)
@@ -2476,16 +2795,72 @@ private struct DictationRuntimeFactory {
         VoiceCommandService(commands: snapshot.voiceCommands)
     }
 
-    func makeTranscriptionEngine() -> AppleSpeechTranscriptionEngine {
-        AppleSpeechTranscriptionEngine(
+    func makeEngineModeResolver() -> DictationEngineModeResolver {
+        DictationEngineModeResolver(
+            globalMode: snapshot.dictation.engineMode,
+            appPreferences: snapshot.appDictationEnginePreferences,
+            cloudModeAvailable: cloudRuntimeAllowed
+        )
+    }
+
+    func makeSessionEngineResolver() -> @Sendable (AppContext) async -> SessionProcessingEngines {
+        let modeResolver = makeEngineModeResolver()
+        let localTranscription = AppleSpeechTranscriptionEngine(
             config: .init(
                 localeIdentifier: snapshot.dictation.localeIdentifier
             )
         )
+        let cloudTranscription = CloudStreamingTranscriptionEngine(
+            provider: makeCloudSpeechProviderClient(),
+            localeIdentifier: snapshot.dictation.localeIdentifier
+        )
+        let localCleanup = RuleBasedCleanupEngine(wordFrequencies: wordFrequencies)
+        let localFallback = RuleBasedCleanupEngine()
+        let cloudRefinementEngine: any TranscriptRefinementEngine
+        if snapshot.dictation.cloud.refinementEnabled {
+            cloudRefinementEngine = OpenAITranscriptRefinementEngine(
+                provider: makeCloudSpeechProviderClient(),
+                localeIdentifier: snapshot.dictation.localeIdentifier
+            )
+        } else {
+            cloudRefinementEngine = NoOpTranscriptRefinementEngine()
+        }
+
+        return { appContext in
+            switch modeResolver.resolve(for: appContext) {
+            case .local:
+                return SessionProcessingEngines(
+                    transcriptionEngine: localTranscription,
+                    cleanupEngine: localCleanup,
+                    fallbackCleanupEngine: localFallback
+                )
+            case .cloud:
+                return SessionProcessingEngines(
+                    transcriptionEngine: cloudTranscription,
+                    cleanupEngine: CloudCleanupEngineAdapter(
+                        refinementEngine: cloudRefinementEngine,
+                        currentAppContextProvider: { appContext }
+                    ),
+                    fallbackCleanupEngine: FailingCleanupEngine()
+                )
+            }
+        }
     }
 
-    func makeCleanupEngine() -> any CleanupEngine {
-        RuleBasedCleanupEngine(wordFrequencies: wordFrequencies)
+    func runtimeStatusText() -> String {
+        let modeResolver = makeEngineModeResolver()
+        guard snapshot.usesCloudDictationConfiguration, modeResolver.cloudModeAvailable else {
+            return "Running Apple preview + Apple Speech final transcription + local cleanup."
+        }
+
+        if snapshot.dictation.engineMode == .cloud,
+           !snapshot.appDictationEnginePreferences.values.contains(.local) {
+            return useDirectCloudCredentials
+                ? "Running Apple preview + OpenAI cloud transcription + structured cloud refinement."
+                : "Running Apple preview + Voce cloud transcription + structured cloud refinement."
+        }
+
+        return "Running Apple preview with per-app local/cloud transcription and cleanup overrides."
     }
 
     func makeInsertionTransports() -> [any InsertionTransport] {
@@ -2513,5 +2888,14 @@ private struct DictationRuntimeFactory {
         }
 
         return transports
+    }
+
+    private func makeCloudSpeechProviderClient() -> any CloudSpeechProviderClient {
+        CloudSpeechProviderFactory.makeProvider(
+            dictation: snapshot.dictation,
+            transcriptionHints: snapshot.visibleLexiconEntries,
+            subscriberEmailProvider: { subscriberEmail },
+            useDirectCredentials: useDirectCloudCredentials
+        )
     }
 }

@@ -1,5 +1,6 @@
 import Sparkle
 import SwiftUI
+import VoceKit
 
 extension Notification.Name {
     static let voceCheckForUpdatesRequested = Notification.Name("voceCheckForUpdatesRequested")
@@ -7,8 +8,6 @@ extension Notification.Name {
 
 @MainActor
 final class UpdaterController: NSObject, ObservableObject {
-    private static let fallbackFeedURLString = "https://raw.githubusercontent.com/hannahmwright/voce/main/appcast.xml"
-
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var automaticallyChecksForUpdates = false
 
@@ -90,6 +89,6 @@ extension UpdaterController: SPUUpdaterDelegate {
             return bundleFeedURL
         }
 
-        return Self.fallbackFeedURLString
+        return VoceRuntimeConfiguration.updaterFallbackFeedURLString
     }
 }

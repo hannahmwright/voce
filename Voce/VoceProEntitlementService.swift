@@ -1,11 +1,63 @@
 import Foundation
 import Security
 
+enum VoceEntitlementFeature: String, CaseIterable, Codable, Sendable {
+    case appAccess = "voce_app_access"
+    case cloudDictation = "voce_cloud_dictation"
+}
+
+enum VocePlanTier: String, Codable, Sendable {
+    case free
+    case base
+    case pro
+
+    var title: String {
+        switch self {
+        case .free:
+            return "Free"
+        case .base:
+            return "Base"
+        case .pro:
+            return "Pro"
+        }
+    }
+}
+
+enum VoceCheckoutPlan: String, CaseIterable, Codable, Sendable {
+    case base
+    case pro
+
+    var title: String {
+        switch self {
+        case .base:
+            return "Base"
+        case .pro:
+            return "Pro"
+        }
+    }
+}
+
+enum VoceCheckoutBillingCycle: String, CaseIterable, Codable, Sendable {
+    case monthly
+    case annual
+
+    var title: String {
+        switch self {
+        case .monthly:
+            return "Monthly"
+        case .annual:
+            return "Yearly"
+        }
+    }
+}
+
 struct VoceProEntitlement: Decodable, Equatable, Sendable {
     var email: String
     var entitled: Bool
     var expiresAt: Double?
     var feature: String
+    var grantedFeatures: [String]
+    var planTier: VocePlanTier?
     var source: Source?
     var freeLimitSeconds: Int?
     var freeUsedSeconds: Int?
@@ -19,6 +71,37 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
         case stripe
     }
 
+    enum CodingKeys: String, CodingKey {
+        case email
+        case entitled
+        case expiresAt
+        case feature
+        case grantedFeatures
+        case planTier
+        case source
+        case freeLimitSeconds
+        case freeUsedSeconds
+        case freeRemainingSeconds
+        case periodStartsAt
+        case periodEndsAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        email = try container.decode(String.self, forKey: .email)
+        entitled = try container.decode(Bool.self, forKey: .entitled)
+        expiresAt = try container.decodeIfPresent(Double.self, forKey: .expiresAt)
+        feature = try container.decode(String.self, forKey: .feature)
+        grantedFeatures = try container.decodeIfPresent([String].self, forKey: .grantedFeatures) ?? []
+        planTier = try container.decodeIfPresent(VocePlanTier.self, forKey: .planTier)
+        source = try container.decodeIfPresent(Source.self, forKey: .source)
+        freeLimitSeconds = try container.decodeIfPresent(Int.self, forKey: .freeLimitSeconds)
+        freeUsedSeconds = try container.decodeIfPresent(Int.self, forKey: .freeUsedSeconds)
+        freeRemainingSeconds = try container.decodeIfPresent(Int.self, forKey: .freeRemainingSeconds)
+        periodStartsAt = try container.decodeIfPresent(Double.self, forKey: .periodStartsAt)
+        periodEndsAt = try container.decodeIfPresent(Double.self, forKey: .periodEndsAt)
+    }
+
     var freeRemainingMinutesText: String? {
         guard let freeRemainingSeconds else { return nil }
         let minutes = max(0, Int(ceil(Double(freeRemainingSeconds) / 60)))
@@ -28,6 +111,19 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
     var freeRecordingRemainingSeconds: TimeInterval? {
         guard source == .free, entitled, let freeRemainingSeconds else { return nil }
         return TimeInterval(freeRemainingSeconds)
+    }
+
+    func hasFeature(_ feature: VoceEntitlementFeature) -> Bool {
+        grantedFeatures.contains(feature.rawValue)
+    }
+
+    var isPaidPlan: Bool {
+        switch planTier {
+        case .base, .pro:
+            return true
+        case .free, nil:
+            return false
+        }
     }
 }
 
@@ -67,21 +163,25 @@ enum VoceProEntitlementStatus: Equatable {
         case .checking:
             return "Checking Voce access..."
         case .entitled(let entitlement):
-            switch entitlement.source {
+            switch entitlement.planTier {
             case .free:
                 if let remaining = entitlement.freeRemainingMinutesText {
                     return "Free access active. \(remaining) left this month."
                 }
                 return "Free access is active."
-            case .manual:
-                return "Voce Pro is active.\nVoce loves you. Pro is on us!"
-            case .stripe:
-                return "Voce Pro is active."
+            case .base:
+                return entitlement.source == .manual
+                    ? "Voce Base is active.\nVoce loves you. Base is on us!"
+                    : "Voce Base is active."
+            case .pro:
+                return entitlement.source == .manual
+                    ? "Voce Pro is active.\nVoce loves you. Pro is on us!"
+                    : "Voce Pro is active."
             case nil:
                 return "Voce access is active."
             }
         case .notEntitled:
-            return "Monthly free time is used. Subscribe to keep using Voce."
+            return "Monthly free time is used. Choose Base or Pro to keep using Voce."
         case .failed(_, let message):
             return message
         }
@@ -94,6 +194,7 @@ enum VoceProEntitlementError: LocalizedError {
     case accessCodeUnavailable
     case invalidResponse
     case server(status: Int)
+    case checkoutUnavailable
     case portalUnavailable
     case verificationFailed
 
@@ -109,6 +210,8 @@ enum VoceProEntitlementError: LocalizedError {
             return "Could not read Voce access."
         case .server:
             return "Could not check Voce access."
+        case .checkoutUnavailable:
+            return "Could not open checkout."
         case .portalUnavailable:
             return "Could not open subscription settings."
         case .verificationFailed:
@@ -124,8 +227,7 @@ struct VoceAccessVerificationSession: Decodable, Equatable, Sendable {
 }
 
 actor VoceProEntitlementService {
-    static let defaultFeature = "voce_app_access"
-    static let checkoutURL = URL(string: "https://buy.stripe.com/00w00j2TP7ae5cL7nta3u00")!
+    static let defaultFeature = VoceEntitlementFeature.appAccess.rawValue
     #if DEBUG
     private static let siteBaseURL = URL(string: "https://cheerful-raven-194.convex.site")!
     #else
@@ -136,6 +238,7 @@ actor VoceProEntitlementService {
     private let authVerifyURL: URL
     private let endpointURL: URL
     private let usageEndpointURL: URL
+    private let checkoutEndpointURL: URL
     private let portalEndpointURL: URL
     private let feature: String
     private let apiSecret: String?
@@ -147,6 +250,7 @@ actor VoceProEntitlementService {
         authVerifyURL: URL = siteBaseURL.appendingPathComponent("auth/verify"),
         endpointURL: URL = siteBaseURL.appendingPathComponent("entitlements/check"),
         usageEndpointURL: URL = siteBaseURL.appendingPathComponent("entitlements/record-usage"),
+        checkoutEndpointURL: URL = siteBaseURL.appendingPathComponent("stripe/checkout"),
         portalEndpointURL: URL = siteBaseURL.appendingPathComponent("stripe/portal"),
         feature: String = VoceProEntitlementService.defaultFeature,
         apiSecret: String? = nil,
@@ -157,6 +261,7 @@ actor VoceProEntitlementService {
         self.authVerifyURL = authVerifyURL
         self.endpointURL = endpointURL
         self.usageEndpointURL = usageEndpointURL
+        self.checkoutEndpointURL = checkoutEndpointURL
         self.portalEndpointURL = portalEndpointURL
         self.feature = feature
         self.apiSecret = apiSecret
@@ -252,6 +357,43 @@ actor VoceProEntitlementService {
             throw VoceProEntitlementError.server(status: httpResponse.statusCode)
         }
         return try JSONDecoder().decode(VoceProEntitlement.self, from: data)
+    }
+
+    func checkoutURL(
+        email: String,
+        plan: VoceCheckoutPlan,
+        billingCycle: VoceCheckoutBillingCycle
+    ) async throws -> URL {
+        var request = URLRequest(url: checkoutEndpointURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        addSessionToken(for: email, to: &request)
+        if let apiSecret, !apiSecret.isEmpty {
+            request.setValue("Bearer \(apiSecret)", forHTTPHeaderField: "authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(
+            CheckoutSessionRequest(
+                email: email,
+                plan: plan.rawValue,
+                billing: billingCycle.rawValue
+            )
+        )
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw VoceProEntitlementError.invalidResponse
+        }
+        if httpResponse.statusCode == 401 {
+            throw VoceProEntitlementError.authenticationRequired
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw VoceProEntitlementError.checkoutUnavailable
+        }
+        let checkoutSession = try JSONDecoder().decode(CheckoutSessionResponse.self, from: data)
+        guard let url = URL(string: checkoutSession.url) else {
+            throw VoceProEntitlementError.invalidResponse
+        }
+        return url
     }
 
     func portalURL(email: String) async throws -> URL {
@@ -433,11 +575,14 @@ actor VoceSupportRequestService {
 final class VoceAccessSessionStore: @unchecked Sendable {
     static let shared = VoceAccessSessionStore()
 
+    private let service: String = {
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "io.voceapp.voce"
 #if DEBUG
-    private let service = "io.voceapp.voce.debug.access-session.v2"
+        return "\(bundleIdentifier).debug.access-session.v2"
 #else
-    private let service = "io.voceapp.voce.access-session.v2"
+        return "\(bundleIdentifier).access-session.v2"
 #endif
+    }()
 
     func save(sessionToken: String, email: String) throws {
         let account = normalizedEmail(email)
@@ -544,6 +689,16 @@ private struct RecordUsageRequest: Encodable {
 
 private struct PortalSessionRequest: Encodable {
     var email: String
+}
+
+private struct CheckoutSessionRequest: Encodable {
+    var email: String
+    var plan: String
+    var billing: String
+}
+
+private struct CheckoutSessionResponse: Decodable {
+    var url: String
 }
 
 private struct PortalSessionResponse: Decodable {

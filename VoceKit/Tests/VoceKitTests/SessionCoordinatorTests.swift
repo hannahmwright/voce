@@ -127,3 +127,56 @@ func sessionCoordinatorExplicitHandsFreeSetter() async throws {
     await coordinator.setHandsFreeEnabled(false)
     #expect(await coordinator.isHandsFreeEnabled == false)
 }
+
+@Test("SessionCoordinator resolves engines per app context")
+func sessionCoordinatorResolvesEnginesPerSessionApp() async throws {
+    let firstAudioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
+    let secondAudioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
+    try Data().write(to: firstAudioURL)
+    try Data().write(to: secondAudioURL)
+
+    let capture = StubAudioCaptureService(queuedAudioURLs: [firstAudioURL, secondAudioURL])
+    let localTranscription = StaticTranscriptionEngine { _, _ in
+        RawTranscript(text: "local transcript")
+    }
+    let cloudTranscription = StaticTranscriptionEngine { _, _ in
+        RawTranscript(text: "cloud transcript")
+    }
+    let cleanup = CountingCleanupEngine(counter: CleanupCounter())
+
+    let coordinator = SessionCoordinator(
+        captureService: capture,
+        engineResolver: { appContext in
+            if appContext.bundleIdentifier == "com.apple.Notes" {
+                return SessionProcessingEngines(
+                    transcriptionEngine: cloudTranscription,
+                    cleanupEngine: cleanup,
+                    fallbackCleanupEngine: RuleBasedCleanupEngine()
+                )
+            }
+
+            return SessionProcessingEngines(
+                transcriptionEngine: localTranscription,
+                cleanupEngine: cleanup,
+                fallbackCleanupEngine: RuleBasedCleanupEngine()
+            )
+        },
+        lexiconService: PersonalLexiconService(),
+        styleProfileService: StyleProfileService()
+    )
+
+    let notesSession = try await coordinator.startPressToTalk(
+        appContext: AppContext(bundleIdentifier: "com.apple.Notes", appName: "Notes")
+    )
+    let notesResult = try await coordinator.stopPressToTalk(sessionID: notesSession)
+
+    let xcodeSession = try await coordinator.startPressToTalk(
+        appContext: AppContext(bundleIdentifier: "com.apple.dt.Xcode", appName: "Xcode", isIDE: true)
+    )
+    let xcodeResult = try await coordinator.stopPressToTalk(sessionID: xcodeSession)
+
+    #expect(notesResult.rawText == "cloud transcript")
+    #expect(notesResult.cleanText == "cloud transcript cleaned")
+    #expect(xcodeResult.rawText == "local transcript")
+    #expect(xcodeResult.cleanText == "local transcript cleaned")
+}

@@ -4,12 +4,14 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Voce Dev</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
+	<string>AppIconDev</string>
 	<key>CFBundleIconName</key>
-	<string>AppIcon</string>
+	<string>AppIconDev</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -35,12 +37,12 @@
 	<key>SUScheduledCheckInterval</key>
 	<integer>14400</integer>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/hannahmwright/voce/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/hannahmwright/voce/main/appcast-dev.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>K4AyNtpNz8GmLk6dsAWKGHBqs3bpSLUnrInDL6pJN4c=</string>
 	<key>VoceFallbackFeedURL</key>
-	<string>https://raw.githubusercontent.com/hannahmwright/voce/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/hannahmwright/voce/main/appcast-dev.xml</string>
 	<key>VoceSupportDirectoryName</key>
-	<string>Voce</string>
+	<string>Voce Dev</string>
 </dict>
 </plist>

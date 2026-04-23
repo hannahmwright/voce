@@ -35,6 +35,17 @@ public protocol CleanupEngine: Sendable {
     ) async throws -> CleanTranscript
 }
 
+/// Performs a higher-level refinement pass over a transcript, optionally using
+/// app context and user lexicon metadata to preserve terminology and structure.
+public protocol TranscriptRefinementEngine: Sendable {
+    func refine(
+        raw: RawTranscript,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        appContext: AppContext?
+    ) async throws -> CleanTranscript
+}
+
 /// Provides system clipboard write access for text insertion fallback.
 public protocol ClipboardService: Sendable {
     /// Copies the given text to the system clipboard.

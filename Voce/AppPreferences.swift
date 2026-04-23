@@ -53,6 +53,111 @@ enum AppAppearancePreference: String, Codable, Sendable, Equatable, CaseIterable
     }
 }
 
+enum DictationEngineMode: String, Codable, Sendable, Equatable, CaseIterable {
+    case local
+    case cloud
+
+    var title: String {
+        switch self {
+        case .local:
+            return "Local"
+        case .cloud:
+            return "Cloud"
+        }
+    }
+}
+
+enum AppDictationEnginePreference: String, Codable, Sendable, Equatable, CaseIterable {
+    case followGlobal
+    case local
+    case cloud
+
+    var title: String {
+        switch self {
+        case .followGlobal:
+            return "Follow Global"
+        case .local:
+            return "Local"
+        case .cloud:
+            return "Cloud"
+        }
+    }
+
+    func resolvedMode(globalMode: DictationEngineMode) -> DictationEngineMode {
+        switch self {
+        case .followGlobal:
+            return globalMode
+        case .local:
+            return .local
+        case .cloud:
+            return .cloud
+        }
+    }
+}
+
+enum CloudDictationProvider: String, Codable, Sendable, Equatable, CaseIterable {
+    case openAI
+
+    var title: String {
+        switch self {
+        case .openAI:
+            return "OpenAI"
+        }
+    }
+}
+
+enum CloudFormattingStyle: String, Codable, Sendable, Equatable, CaseIterable {
+    case structured
+
+    var title: String {
+        switch self {
+        case .structured:
+            return "Structured"
+        }
+    }
+}
+
+enum CloudAPIKeySource: String, Codable, Sendable, Equatable, CaseIterable {
+    case keychain
+    case environment
+
+    var title: String {
+        switch self {
+        case .keychain:
+            return "Keychain"
+        case .environment:
+            return "Environment"
+        }
+    }
+}
+
+struct CloudDictationPreferences: Codable, Sendable, Equatable {
+    var provider: CloudDictationProvider
+    var refinementEnabled: Bool
+    var formattingStyle: CloudFormattingStyle
+    var apiKeySource: CloudAPIKeySource
+
+    init(
+        provider: CloudDictationProvider = .openAI,
+        refinementEnabled: Bool = true,
+        formattingStyle: CloudFormattingStyle = .structured,
+        apiKeySource: CloudAPIKeySource = .keychain
+    ) {
+        self.provider = provider
+        self.refinementEnabled = refinementEnabled
+        self.formattingStyle = formattingStyle
+        self.apiKeySource = apiKeySource
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decodeIfPresent(CloudDictationProvider.self, forKey: .provider) ?? .openAI
+        refinementEnabled = try container.decodeIfPresent(Bool.self, forKey: .refinementEnabled) ?? true
+        formattingStyle = try container.decodeIfPresent(CloudFormattingStyle.self, forKey: .formattingStyle) ?? .structured
+        apiKeySource = try container.decodeIfPresent(CloudAPIKeySource.self, forKey: .apiKeySource) ?? .keychain
+    }
+}
+
 struct AppPreferences: Codable, Sendable, Equatable {
     static let seededHiddenLexiconEntries: [LexiconEntry] = [
         LexiconEntry(term: "voceh", preferred: "Voce", scope: .global),
@@ -168,13 +273,23 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
     struct Dictation: Codable, Sendable, Equatable {
         var localeIdentifier: String
+        var engineMode: DictationEngineMode
+        var cloud: CloudDictationPreferences
 
-        init(localeIdentifier: String = "en-US") {
+        init(
+            localeIdentifier: String = "en-US",
+            engineMode: DictationEngineMode = .local,
+            cloud: CloudDictationPreferences = .init()
+        ) {
             self.localeIdentifier = localeIdentifier
+            self.engineMode = engineMode
+            self.cloud = cloud
         }
 
         enum CodingKeys: String, CodingKey {
             case localeIdentifier
+            case engineMode
+            case cloud
             case modelDirectoryPath
             case modelArch
             case keepModelWarm
@@ -186,11 +301,15 @@ struct AppPreferences: Codable, Sendable, Equatable {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             localeIdentifier = try container.decodeIfPresent(String.self, forKey: .localeIdentifier) ?? "en-US"
+            engineMode = try container.decodeIfPresent(DictationEngineMode.self, forKey: .engineMode) ?? .local
+            cloud = try container.decodeIfPresent(CloudDictationPreferences.self, forKey: .cloud) ?? .init()
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(localeIdentifier, forKey: .localeIdentifier)
+            try container.encode(engineMode, forKey: .engineMode)
+            try container.encode(cloud, forKey: .cloud)
         }
     }
 
@@ -282,6 +401,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
     var lexiconEntries: [LexiconEntry]
     var globalStyleProfile: StyleProfile
     var appStyleProfiles: [String: StyleProfile]
+    var appDictationEnginePreferences: [String: AppDictationEnginePreference]
     var appAnchorOverrides: [String: AppAnchorOverride]
     var snippets: [Snippet]
     var voiceCommands: [VoiceCommand]
@@ -303,6 +423,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         lexiconEntries: [LexiconEntry],
         globalStyleProfile: StyleProfile,
         appStyleProfiles: [String: StyleProfile],
+        appDictationEnginePreferences: [String: AppDictationEnginePreference],
         appAnchorOverrides: [String: AppAnchorOverride],
         snippets: [Snippet],
         voiceCommands: [VoiceCommand],
@@ -323,6 +444,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         self.lexiconEntries = lexiconEntries
         self.globalStyleProfile = globalStyleProfile
         self.appStyleProfiles = appStyleProfiles
+        self.appDictationEnginePreferences = appDictationEnginePreferences
         self.appAnchorOverrides = appAnchorOverrides
         self.snippets = snippets
         self.voiceCommands = voiceCommands
@@ -346,6 +468,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         lexiconEntries = try container.decodeIfPresent([LexiconEntry].self, forKey: .lexiconEntries) ?? []
         globalStyleProfile = try container.decodeIfPresent(StyleProfile.self, forKey: .globalStyleProfile) ?? AppPreferences.default.globalStyleProfile
         appStyleProfiles = try container.decodeIfPresent([String: StyleProfile].self, forKey: .appStyleProfiles) ?? [:]
+        appDictationEnginePreferences = try container.decodeIfPresent([String: AppDictationEnginePreference].self, forKey: .appDictationEnginePreferences) ?? [:]
         appAnchorOverrides = try container.decodeIfPresent([String: AppAnchorOverride].self, forKey: .appAnchorOverrides) ?? [:]
         snippets = try container.decodeIfPresent([Snippet].self, forKey: .snippets) ?? []
         voiceCommands = try container.decodeIfPresent([VoiceCommand].self, forKey: .voiceCommands) ?? VoiceCommand.builtIns
@@ -374,7 +497,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 snippetCreationHotkey: .snippetCreationDefault
             ),
             dictation: .init(
-                localeIdentifier: "en-US"
+                localeIdentifier: "en-US",
+                engineMode: .local,
+                cloud: .init(
+                    provider: .openAI,
+                    refinementEnabled: true,
+                    formattingStyle: .structured,
+                    apiKeySource: .keychain
+                )
             ),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
@@ -389,6 +519,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 commandPolicy: .transform
             ),
             appStyleProfiles: [:],
+            appDictationEnginePreferences: [:],
             appAnchorOverrides: [:],
             snippets: [],
             voiceCommands: VoiceCommand.builtIns,
@@ -466,6 +597,13 @@ struct AppPreferences: Codable, Sendable, Equatable {
         if dictation.localeIdentifier.isEmpty {
             dictation.localeIdentifier = "en-US"
         }
+        appDictationEnginePreferences = appDictationEnginePreferences.reduce(into: [:]) { partialResult, entry in
+            let bundleID = entry.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !bundleID.isEmpty, entry.value != .followGlobal else {
+                return
+            }
+            partialResult[bundleID] = entry.value
+        }
 
         billing.subscriberEmail = billing.subscriberEmail
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -493,6 +631,10 @@ struct AppPreferences: Codable, Sendable, Equatable {
 }
 
 extension AppPreferences {
+    var usesCloudDictationConfiguration: Bool {
+        dictation.engineMode == .cloud || appDictationEnginePreferences.values.contains(.cloud)
+    }
+
     var visibleLexiconEntries: [LexiconEntry] {
         lexiconEntries.filter { entry in
             !Self.seededHiddenLexiconEntries.contains(entry)
@@ -531,5 +673,27 @@ extension AppPreferences {
                 return false
             }()
         }
+    }
+}
+
+struct DictationEngineModeResolver: Sendable, Equatable {
+    var globalMode: DictationEngineMode
+    var appPreferences: [String: AppDictationEnginePreference]
+    var cloudModeAvailable: Bool
+
+    func resolve(for appContext: AppContext?) -> DictationEngineMode {
+        let configuredMode: DictationEngineMode
+        if let bundleID = appContext?.bundleIdentifier,
+           let preference = appPreferences[bundleID] {
+            configuredMode = preference.resolvedMode(globalMode: globalMode)
+        } else {
+            configuredMode = globalMode
+        }
+
+        if configuredMode == .cloud && !cloudModeAvailable {
+            return .local
+        }
+
+        return configuredMode
     }
 }

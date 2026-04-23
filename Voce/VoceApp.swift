@@ -2,6 +2,7 @@ import AppKit
 import AppIntents
 import Sparkle
 import SwiftUI
+import VoceKit
 
 @main
 struct VoceApp: App {
@@ -14,7 +15,7 @@ struct VoceApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("Voce") {
+        WindowGroup(VoceRuntimeConfiguration.windowTitle) {
             Group {
                 if !controller.hasBootstrapped {
                     VoceWindowBackdrop()
@@ -124,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
 
-        return window.title == "Voce"
+        return window.title == VoceRuntimeConfiguration.windowTitle
     }
 
     @MainActor
@@ -157,14 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func loadLaunchPreferences() -> AppPreferences {
-        let storageURL = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first?
-            .appendingPathComponent("Voce", isDirectory: true)
-            .appendingPathComponent("preferences.json")
+        let storageURL = VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "preferences.json")
 
         guard
-            let storageURL,
             let data = try? Data(contentsOf: storageURL),
             let preferences = try? JSONDecoder().decode(AppPreferences.self, from: data)
         else {

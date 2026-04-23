@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import VoceKit
 
 actor AppPreferencesStore {
     private let storageURL: URL
@@ -57,26 +58,14 @@ actor AppPreferencesStore {
     }
 
     private static func defaultStorageURL() -> URL {
-        let appSupport: URL
-        if let resolved = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            appSupport = resolved
-        } else {
-            appSupport = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support", isDirectory: true)
-            logger.fault(
-                "Application Support directory lookup failed. Falling back to \(appSupport.path, privacy: .private)."
-            )
-        }
-        return appSupport
-            .appendingPathComponent("Voce", isDirectory: true)
-            .appendingPathComponent("preferences.json")
+        VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "preferences.json")
     }
 
     private static func migrateIfNeeded() {
         let fm = FileManager.default
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
         let oldDir = appSupport.appendingPathComponent("WhisperClone", isDirectory: true)
-        let newDir = appSupport.appendingPathComponent("Voce", isDirectory: true)
+        let newDir = appSupport.appendingPathComponent(VoceRuntimeConfiguration.supportDirectoryName, isDirectory: true)
 
         if fm.fileExists(atPath: oldDir.path) && !fm.fileExists(atPath: newDir.path) {
             do {
@@ -93,7 +82,7 @@ actor AppPreferencesStore {
         let fm = FileManager.default
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
 
-        let voceDir = appSupport.appendingPathComponent("Voce", isDirectory: true)
+        let voceDir = appSupport.appendingPathComponent(VoceRuntimeConfiguration.supportDirectoryName, isDirectory: true)
         let markerURL = voceDir.appendingPathComponent(legacyModelCleanupMarkerName)
         guard !fm.fileExists(atPath: markerURL.path) else { return }
 

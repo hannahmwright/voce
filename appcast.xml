@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.38</title>
+      <sparkle:version>41</sparkle:version>
+      <sparkle:shortVersionString>0.4.38</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.38</h2>
+        <ul>
+          <li>Adds Voce Base and Voce Pro plans with in-app checkout and subscription management</li>
+          <li>Adds optional Pro cloud dictation with smarter cleanup, structured refinement, and per-app local or cloud overrides</li>
+          <li>Fixes cloud dictation startup, audio preparation, key storage UI, and replacement popover placement</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 23 Apr 2026 22:30:03 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.38/Voce-0.4.38.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="fr8+PRslLxiGhvhHAT8epinEa8llNW71jiM4aBJ/glopN4KmX+3dpp7m/tTCAxAFLoGq1/aLQkQZdE7mC18RCA=="
+        length="18419871"
+      />
+    </item>
+    <item>
       <title>Version 0.4.37</title>
       <sparkle:version>40</sparkle:version>
       <sparkle:shortVersionString>0.4.37</sparkle:shortVersionString>

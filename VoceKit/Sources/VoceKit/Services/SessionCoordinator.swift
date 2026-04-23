@@ -12,6 +12,22 @@ public enum SessionCoordinatorError: Error, LocalizedError {
     }
 }
 
+public struct SessionProcessingEngines: Sendable {
+    public let transcriptionEngine: any TranscriptionEngine
+    public let cleanupEngine: any CleanupEngine
+    public let fallbackCleanupEngine: any CleanupEngine
+
+    public init(
+        transcriptionEngine: any TranscriptionEngine,
+        cleanupEngine: any CleanupEngine,
+        fallbackCleanupEngine: any CleanupEngine
+    ) {
+        self.transcriptionEngine = transcriptionEngine
+        self.cleanupEngine = cleanupEngine
+        self.fallbackCleanupEngine = fallbackCleanupEngine
+    }
+}
+
 public actor SessionCoordinator {
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "SessionCoordinator")
     private struct ActiveSession: Sendable {
@@ -25,9 +41,7 @@ public actor SessionCoordinator {
     }
 
     private let captureService: AudioCaptureService
-    private let transcriptionEngine: TranscriptionEngine
-    private let cleanupEngine: CleanupEngine
-    private let fallbackCleanupEngine: CleanupEngine
+    private let engineResolver: @Sendable (AppContext) async -> SessionProcessingEngines
     private let lexiconService: PersonalLexiconService
     private let styleProfileService: StyleProfileService
     private let snippetService: SnippetService
@@ -49,13 +63,35 @@ public actor SessionCoordinator {
         learningEngine: LearningEngine? = nil
     ) {
         self.captureService = captureService
-        self.transcriptionEngine = transcriptionEngine
-        self.cleanupEngine = cleanupEngine
+        self.engineResolver = { _ in
+            SessionProcessingEngines(
+                transcriptionEngine: transcriptionEngine,
+                cleanupEngine: cleanupEngine,
+                fallbackCleanupEngine: fallbackCleanupEngine
+            )
+        }
         self.lexiconService = lexiconService
         self.styleProfileService = styleProfileService
         self.snippetService = snippetService
         self.voiceCommandService = voiceCommandService
-        self.fallbackCleanupEngine = fallbackCleanupEngine
+        self.learningEngine = learningEngine
+    }
+
+    public init(
+        captureService: AudioCaptureService,
+        engineResolver: @escaping @Sendable (AppContext) async -> SessionProcessingEngines,
+        lexiconService: PersonalLexiconService,
+        styleProfileService: StyleProfileService,
+        snippetService: SnippetService = SnippetService(),
+        voiceCommandService: VoiceCommandService = VoiceCommandService(),
+        learningEngine: LearningEngine? = nil
+    ) {
+        self.captureService = captureService
+        self.engineResolver = engineResolver
+        self.lexiconService = lexiconService
+        self.styleProfileService = styleProfileService
+        self.snippetService = snippetService
+        self.voiceCommandService = voiceCommandService
         self.learningEngine = learningEngine
     }
 
@@ -83,9 +119,10 @@ public actor SessionCoordinator {
 
         let audioURL = try await captureService.endCapture(sessionID: sessionID)
         defer { try? FileManager.default.removeItem(at: audioURL) }
-        let rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
+        let engines = await engineResolver(active.appContext)
+        let rawTranscript = try await engines.transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
 
-        return try await finaliseTranscript(rawTranscript, active: active, sourceSessionID: sessionID)
+        return try await finaliseTranscript(rawTranscript, active: active, engines: engines, sourceSessionID: sessionID)
     }
 
     /// Accepts a pre-built transcript (e.g. from streaming) and runs cleanup.
@@ -98,9 +135,11 @@ public actor SessionCoordinator {
             throw SessionCoordinatorError.sessionNotFound
         }
 
+        let engines = await engineResolver(active.appContext)
         return try await finaliseTranscript(
             rawTranscript,
             active: active,
+            engines: engines,
             processingNote: processingNote,
             sourceSessionID: sessionID
         )
@@ -119,10 +158,12 @@ public actor SessionCoordinator {
         }
 
         defer { try? FileManager.default.removeItem(at: audioURL) }
-        let rawTranscript = try await transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
+        let engines = await engineResolver(active.appContext)
+        let rawTranscript = try await engines.transcriptionEngine.transcribe(audioURL: audioURL, languageHints: languageHints)
         return try await finaliseTranscript(
             rawTranscript,
             active: active,
+            engines: engines,
             processingNote: processingNote,
             sourceSessionID: sessionID
         )
@@ -131,6 +172,7 @@ public actor SessionCoordinator {
     private func finaliseTranscript(
         _ raw: RawTranscript,
         active: ActiveSession,
+        engines: SessionProcessingEngines,
         processingNote: String? = nil,
         sourceSessionID: SessionID
     ) async throws -> FinalizedTranscript {
@@ -156,7 +198,8 @@ public actor SessionCoordinator {
             raw: rawTranscript,
             profile: profile,
             lexicon: lexicon,
-            appContext: active.appContext
+            appContext: active.appContext,
+            engines: engines
         )
         Self.logger.notice(
             "Cleanup finished in \(self.secondsSince(cleanupStartedAt, clock: clock), format: .fixed(precision: 2))s"
@@ -204,7 +247,8 @@ public actor SessionCoordinator {
         raw: RawTranscript,
         profile: StyleProfile,
         lexicon: PersonalLexicon,
-        appContext: AppContext
+        appContext: AppContext,
+        engines: SessionProcessingEngines
     ) async throws -> CleanupExecutionResult {
         if profile.commandPolicy == .passthrough,
            appContext.isIDE,
@@ -216,13 +260,13 @@ public actor SessionCoordinator {
         }
 
         do {
-            let cleaned = try await cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            let cleaned = try await engines.cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
             return CleanupExecutionResult(
                 transcript: cleaned,
                 outcome: CleanupOutcome(source: .localSuccess)
             )
         } catch {
-            var fallback = try await fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            var fallback = try await engines.fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
             let warning = "Primary cleanup unavailable, used local fallback."
             fallback.uncertaintyFlags.append(warning)
             return CleanupExecutionResult(

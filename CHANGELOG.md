@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.38] - 2026-04-23
+
+### Added
+- Added Voce Base and Voce Pro plans, with in-app plan selection, checkout, and subscription management.
+- Added optional cloud dictation for Pro, including cloud transcription, smarter cleanup, and structured refinement.
+- Added per-app dictation engine overrides so Pro users can keep local dictation in some apps and use cloud dictation in others.
+
+### Changed
+- Cloud dictation startup no longer blocks on a full network preflight before recording begins, so the recording bubble appears as soon as recording is actually live.
+- Base users now get an inline Upgrade to Pro path directly from Settings instead of needing to rely only on the billing portal.
+
+### Fixed
+- Fixed cloud dictation audio preparation so captured recordings are converted into an uploadable format reliably before transcription.
+- Fixed replacement workflow popover anchoring so it stays attached to the active Voce window more reliably on multi-display setups.
+- Fixed the cloud API key UI so stored keys show a clear saved state instead of leaving an empty input visible after saving.
+
 ## [0.4.37] - 2026-04-21
 
 ### Fixed

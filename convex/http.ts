@@ -2,10 +2,19 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import Stripe from "stripe";
+import { APP_ACCESS_FEATURE, CLOUD_DICTATION_FEATURE } from "./entitlements";
+import {
+  CloudDictationProviderError,
+  refineWithCloudProvider,
+  runCloudDictationPreflight,
+  transcribeWithCloudProvider,
+} from "./cloudDictation";
 
 const http = httpRouter();
 
-const DEFAULT_FEATURE = "voce_app_access";
+const DEFAULT_FEATURE = APP_ACCESS_FEATURE;
+const CHECKOUT_PLAN_VALUES = new Set(["base", "pro"]);
+const CHECKOUT_BILLING_VALUES = new Set(["monthly", "annual"]);
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
@@ -115,6 +124,29 @@ function supportCategoryTitle(category: string) {
   }
 }
 
+function configuredPriceID(plan: string, billing: string) {
+  switch (`${plan}:${billing}`) {
+    case "base:monthly":
+      return process.env.STRIPE_BASE_MONTHLY_PRICE_ID;
+    case "base:annual":
+      return process.env.STRIPE_BASE_ANNUAL_PRICE_ID;
+    case "pro:monthly":
+      return process.env.STRIPE_PRO_MONTHLY_PRICE_ID;
+    case "pro:annual":
+      return process.env.STRIPE_PRO_ANNUAL_PRICE_ID;
+    default:
+      return undefined;
+  }
+}
+
+function checkoutSuccessURL() {
+  return process.env.STRIPE_CHECKOUT_SUCCESS_URL ?? process.env.STRIPE_PORTAL_RETURN_URL;
+}
+
+function checkoutCancelURL() {
+  return process.env.STRIPE_CHECKOUT_CANCEL_URL ?? process.env.STRIPE_PORTAL_RETURN_URL;
+}
+
 async function sendSupportEmail(payload: {
   category: string;
   email: string;
@@ -189,6 +221,46 @@ async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: 
 
   await ctx.runMutation(internal.auth.touchSession, { tokenHash: hash });
   return email;
+}
+
+function cloudEmailHeader(request: Request) {
+  const value = request.headers.get("x-voce-email") ?? "";
+  return normalizeEmail(value);
+}
+
+async function verifiedFeatureEmail(
+  ctx: any,
+  request: Request,
+  feature: string,
+): Promise<{ email: string } | { response: Response }> {
+  const requestedEmail = cloudEmailHeader(request);
+  if (!requestedEmail || !isValidEmail(requestedEmail)) {
+    return { response: jsonResponse({ error: "Missing verified email" }, 400) };
+  }
+
+  const email = await verifiedSessionEmail(ctx, request, requestedEmail);
+  if (!email) {
+    return { response: jsonResponse({ error: "Email verification required" }, 401) };
+  }
+
+  const entitlement = await ctx.runQuery(api.entitlements.check, {
+    email,
+    feature,
+  });
+  if (!entitlement.entitled) {
+    return { response: jsonResponse({ error: "Voce Pro cloud dictation is required." }, 403) };
+  }
+
+  return { email };
+}
+
+function cloudErrorResponse(error: unknown) {
+  if (error instanceof CloudDictationProviderError) {
+    return jsonResponse({ error: error.message }, error.status);
+  }
+
+  const message = error instanceof Error ? error.message : "Cloud dictation is unavailable.";
+  return jsonResponse({ error: message }, 500);
 }
 
 function productIdFromPrice(price: Stripe.Price | string | null | undefined) {
@@ -351,6 +423,57 @@ async function createPortalSession(ctx: any, email: string) {
   return jsonResponse({ url: portalSession.url });
 }
 
+async function createCheckoutSession(
+  ctx: any,
+  email: string,
+  plan: string,
+  billing: string,
+) {
+  const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+  if (!stripeSecretKey) {
+    return jsonResponse({ error: "Stripe checkout is not configured" }, 500);
+  }
+
+  if (!CHECKOUT_PLAN_VALUES.has(plan) || !CHECKOUT_BILLING_VALUES.has(billing)) {
+    return jsonResponse({ error: "Invalid plan selection" }, 400);
+  }
+
+  const priceId = configuredPriceID(plan, billing);
+  if (!priceId) {
+    return jsonResponse({ error: "That plan is not configured yet" }, 500);
+  }
+
+  const successUrl = checkoutSuccessURL();
+  const cancelUrl = checkoutCancelURL();
+  if (!successUrl || !cancelUrl) {
+    return jsonResponse({ error: "Checkout return URLs are not configured" }, 500);
+  }
+
+  const stripe = new Stripe(stripeSecretKey);
+  const customer = await ctx.runQuery(internal.stripe.customerForEmail, { email });
+
+  const session = await stripe.checkout.sessions.create({
+    mode: "subscription",
+    customer: customer?.stripeCustomerId,
+    customer_email: customer ? undefined : email,
+    line_items: [
+      {
+        price: priceId,
+        quantity: 1,
+      },
+    ],
+    allow_promotion_codes: true,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    metadata: {
+      vocePlan: plan,
+      voceBilling: billing,
+    },
+  });
+
+  return jsonResponse({ url: session.url });
+}
+
 
 http.route({
   path: "/auth/start",
@@ -479,6 +602,201 @@ http.route({
       seconds: body.seconds,
     });
     return jsonResponse(entitlement);
+  }),
+});
+
+http.route({
+  path: "/cloud-dictation/preflight",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const verification = await verifiedFeatureEmail(ctx, request, CLOUD_DICTATION_FEATURE);
+    if ("response" in verification) {
+      return verification.response;
+    }
+
+    try {
+      const body = (await request.json()) as { localeIdentifier?: string };
+      const localeIdentifier = (body.localeIdentifier ?? "").trim() || "en-US";
+      await runCloudDictationPreflight(localeIdentifier);
+      return jsonResponse({ ready: true });
+    } catch (error) {
+      console.error("cloud dictation preflight failed", {
+        emailDomain: verification.email.split("@")[1] ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return cloudErrorResponse(error);
+    }
+  }),
+});
+
+http.route({
+  path: "/cloud-dictation/transcribe",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const verification = await verifiedFeatureEmail(ctx, request, CLOUD_DICTATION_FEATURE);
+    if ("response" in verification) {
+      return verification.response;
+    }
+
+    try {
+      const form = await request.formData();
+      const localeIdentifier = String(form.get("localeIdentifier") ?? "").trim() || "en-US";
+      const hintsField = String(form.get("hints") ?? "[]");
+      const rawHints = JSON.parse(hintsField);
+      const hints = Array.isArray(rawHints)
+        ? rawHints.filter((value): value is string => typeof value === "string")
+        : [];
+
+      const fileValue = form.get("file");
+      if (!fileValue || typeof (fileValue as Blob).arrayBuffer !== "function") {
+        return jsonResponse({ error: "Missing audio file" }, 400);
+      }
+
+      const blob = fileValue as Blob & { name?: string };
+      const filename = (blob.name ?? "voce-audio.wav").trim() || "voce-audio.wav";
+      const result = await transcribeWithCloudProvider({
+        localeIdentifier,
+        hints,
+        audioBlob: blob,
+        filename,
+      });
+
+      return jsonResponse(result);
+    } catch (error) {
+      console.error("cloud dictation transcription failed", {
+        emailDomain: verification.email.split("@")[1] ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return cloudErrorResponse(error);
+    }
+  }),
+});
+
+http.route({
+  path: "/cloud-dictation/refine",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const verification = await verifiedFeatureEmail(ctx, request, CLOUD_DICTATION_FEATURE);
+    if ("response" in verification) {
+      return verification.response;
+    }
+
+    try {
+      const body = (await request.json()) as {
+        transcript?: string;
+        localeIdentifier?: string;
+        dictionary?: Array<{
+          term?: string;
+          preferred?: string;
+          scope?: "global" | "app";
+          bundleIdentifier?: string;
+        }>;
+        profile?: {
+          tone?: string;
+          structureMode?: string;
+          fillerPolicy?: string;
+          commandPolicy?: string;
+        };
+        appContext?: {
+          bundleIdentifier?: string;
+          appName?: string;
+          inputFieldDescription?: string | null;
+          isRemoteDesktop?: boolean;
+          isIDE?: boolean;
+        } | null;
+      };
+
+      const transcript = (body.transcript ?? "").trim();
+      if (!transcript) {
+        return jsonResponse({ error: "Missing transcript" }, 400);
+      }
+
+      const localeIdentifier = (body.localeIdentifier ?? "").trim() || "en-US";
+      const dictionary = Array.isArray(body.dictionary)
+        ? body.dictionary
+            .filter(
+              (entry): entry is {
+                term: string;
+                preferred: string;
+                scope: "global" | "app";
+                bundleIdentifier?: string;
+              } =>
+                typeof entry?.term === "string" &&
+                typeof entry?.preferred === "string" &&
+                (entry.scope === "global" || entry.scope === "app"),
+            )
+            .map((entry) => ({
+              term: entry.term.trim(),
+              preferred: entry.preferred.trim(),
+              scope: entry.scope,
+              bundleIdentifier: entry.bundleIdentifier?.trim() || undefined,
+            }))
+            .filter((entry) => entry.term.length > 0 && entry.preferred.length > 0)
+        : [];
+
+      const profile = {
+        tone: body.profile?.tone ?? "natural",
+        structureMode: body.profile?.structureMode ?? "natural",
+        fillerPolicy: body.profile?.fillerPolicy ?? "balanced",
+        commandPolicy: body.profile?.commandPolicy ?? "passthrough",
+      };
+
+      const appContext =
+        body.appContext &&
+        typeof body.appContext.bundleIdentifier === "string" &&
+        typeof body.appContext.appName === "string"
+          ? {
+              bundleIdentifier: body.appContext.bundleIdentifier,
+              appName: body.appContext.appName,
+              inputFieldDescription: body.appContext.inputFieldDescription ?? null,
+              isRemoteDesktop: body.appContext.isRemoteDesktop === true,
+              isIDE: body.appContext.isIDE === true,
+            }
+          : null;
+
+      const result = await refineWithCloudProvider({
+        transcript,
+        localeIdentifier,
+        dictionary,
+        profile,
+        appContext,
+      });
+
+      return jsonResponse(result);
+    } catch (error) {
+      console.error("cloud dictation refinement failed", {
+        emailDomain: verification.email.split("@")[1] ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return cloudErrorResponse(error);
+    }
+  }),
+});
+
+http.route({
+  path: "/stripe/checkout",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const expectedSecret = process.env.VOCE_ENTITLEMENT_API_SECRET;
+    if (expectedSecret && bearerToken(request) !== expectedSecret) {
+      return jsonResponse({ error: "Unauthorized" }, 401);
+    }
+
+    const body = (await request.json()) as {
+      email?: string;
+      plan?: string;
+      billing?: string;
+    };
+    if (!body.email || !body.plan || !body.billing) {
+      return jsonResponse({ error: "Missing checkout parameters" }, 400);
+    }
+
+    const email = await verifiedSessionEmail(ctx, request, body.email);
+    if (!email) {
+      return jsonResponse({ error: "Email verification required" }, 401);
+    }
+
+    return await createCheckoutSession(ctx, email, body.plan, body.billing);
   }),
 });
 

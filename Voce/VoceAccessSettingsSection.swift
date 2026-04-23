@@ -10,11 +10,13 @@ struct VoceAccessSettingsSection: View {
     let onRefreshEntitlement: () -> Void
     let onRequestAccessCode: () -> Void
     let onVerifyAccessCode: () -> Void
-    let onSubscribe: () -> Void
+    let onSubscribeBase: (VoceCheckoutBillingCycle) -> Void
+    let onSubscribePro: (VoceCheckoutBillingCycle) -> Void
     let onManageSubscription: () -> Void
     #if DEBUG
     let onResetAccessSession: () -> Void
     #endif
+    @State private var selectedBillingCycle: VoceCheckoutBillingCycle = .monthly
 
     var body: some View {
         settingsCard("Access") {
@@ -44,16 +46,6 @@ struct VoceAccessSettingsSection: View {
                             action: primaryAccessButtonAction
                         )
 
-                        if !isEntitled {
-                            accessButton(
-                                "Subscribe",
-                                systemImage: "sparkles",
-                                isEnabled: !normalizedSubscriberEmail.isEmpty,
-                                isProminent: true,
-                                action: onSubscribe
-                            )
-                        }
-
                         if isStripeSubscriber {
                             accessButton(
                                 "Manage",
@@ -64,6 +56,10 @@ struct VoceAccessSettingsSection: View {
                             )
                         }
                     }
+                }
+
+                if showsPlanSelectionCard {
+                    planSelectionCard
                 }
 
                 if showsVerificationCodeEntry {
@@ -136,6 +132,67 @@ struct VoceAccessSettingsSection: View {
                         .stroke(presentation.tint.opacity(0.16), lineWidth: VoceDesign.borderThin)
                 )
         }
+    }
+
+    private var planSelectionCard: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.md) {
+            settingInlineLabel(
+                planSelectionTitle,
+                help: planSelectionHelp
+            )
+
+            Picker("Billing", selection: $selectedBillingCycle) {
+                ForEach(VoceCheckoutBillingCycle.allCases, id: \.self) { cycle in
+                    Text(cycle.title).tag(cycle)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 260)
+
+            if showsUpgradeToProCard {
+                VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    Text("Keep local dictation and add cloud dictation, smarter cleanup, and structured refinement.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    accessButton(
+                        proButtonTitle,
+                        systemImage: "cloud.fill",
+                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isProminent: true,
+                        action: { onSubscribePro(selectedBillingCycle) }
+                    )
+                }
+            } else {
+                HStack(spacing: VoceDesign.sm) {
+                    accessButton(
+                        baseButtonTitle,
+                        systemImage: "mic.fill",
+                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isProminent: false,
+                        action: { onSubscribeBase(selectedBillingCycle) }
+                    )
+
+                    accessButton(
+                        proButtonTitle,
+                        systemImage: "cloud.fill",
+                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isProminent: true,
+                        action: { onSubscribePro(selectedBillingCycle) }
+                    )
+                }
+            }
+        }
+        .padding(VoceDesign.md)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.42))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                )
+        )
     }
 
     private func accessButton(
@@ -302,6 +359,39 @@ struct VoceAccessSettingsSection: View {
         return entitlement.source == .stripe
     }
 
+    private var currentPlanTier: VocePlanTier? {
+        guard case .entitled(let entitlement) = entitlementStatus else {
+            return nil
+        }
+        return entitlement.planTier
+    }
+
+    private var showsUpgradeToProCard: Bool {
+        currentPlanTier == .base
+    }
+
+    private var showsPlanSelectionCard: Bool {
+        switch currentPlanTier {
+        case .pro:
+            return false
+        case .base, .free:
+            return true
+        case nil:
+            return true
+        }
+    }
+
+    private var planSelectionTitle: String {
+        showsUpgradeToProCard ? "Upgrade to Pro" : "Plans"
+    }
+
+    private var planSelectionHelp: String {
+        if showsUpgradeToProCard {
+            return "Pro adds cloud dictation and smarter cleanup while keeping local dictation available any time."
+        }
+        return "Choose Base for unlimited local dictation, or Pro for cloud dictation and smarter cleanup."
+    }
+
     private var primaryAccessButtonTitle: String {
         if entitlementStatus.isChecking {
             return "Checking..."
@@ -364,7 +454,7 @@ struct VoceAccessSettingsSection: View {
         case .missingEmail:
             return (
                 "Start with your email",
-                "We will find Pro access or start your free monthly dictation time.",
+                "We will find Base or Pro access, or start your free monthly dictation time.",
                 nil,
                 "person.crop.circle",
                 VoceDesign.warmAccentText
@@ -380,28 +470,30 @@ struct VoceAccessSettingsSection: View {
         case .checking:
             return (
                 "Checking access",
-                "Looking for Pro or free monthly time.",
+                "Looking for Base, Pro, or free monthly time.",
                 nil,
                 "arrow.triangle.2.circlepath",
                 VoceDesign.textSecondary
             )
         case .entitled(let entitlement):
-            switch entitlement.source {
-            case .manual:
+            switch entitlement.planTier {
+            case .pro:
                 return (
-                    "Voce Pro is on us",
-                    "Unlimited dictation and AI polish are ready for you.",
-                    "Pro",
-                    "heart.fill",
-                    VoceDesign.warmAccentText
-                )
-            case .stripe:
-                return (
-                    "Voce Pro is active",
-                    "Unlimited dictation and AI polish are ready to go.",
-                    "Subscribed",
+                    entitlement.source == .manual ? "Voce Pro is on us" : "Voce Pro is active",
+                    entitlement.source == .manual
+                        ? "Cloud dictation, local dictation, and AI actions are ready for you."
+                        : "Cloud dictation, local dictation, and AI actions are ready to go.",
+                    entitlement.source == .manual ? "Pro" : "Subscribed",
                     "sparkles",
                     VoceDesign.warmAccentText
+                )
+            case .base:
+                return (
+                    entitlement.source == .manual ? "Voce Base is on us" : "Voce Base is active",
+                    "Unlimited local dictation and AI actions are ready to go.",
+                    "Base",
+                    "checkmark.seal",
+                    VoceDesign.success
                 )
             case .free:
                 let remaining = entitlement.freeRemainingMinutesText ?? "Free time"
@@ -424,7 +516,7 @@ struct VoceAccessSettingsSection: View {
         case .notEntitled:
             return (
                 "Your free time is used",
-                "Upgrade to keep dictating with unlimited time and AI polish.",
+                "Choose Base for unlimited local dictation or Pro for cloud dictation.",
                 nil,
                 "sparkles",
                 VoceDesign.warmAccentText
@@ -438,5 +530,13 @@ struct VoceAccessSettingsSection: View {
                 VoceDesign.error
             )
         }
+    }
+
+    private var baseButtonTitle: String {
+        selectedBillingCycle == .monthly ? "Base • $7/mo" : "Base • $70/yr"
+    }
+
+    private var proButtonTitle: String {
+        selectedBillingCycle == .monthly ? "Pro • $10/mo" : "Pro • $108/yr"
     }
 }

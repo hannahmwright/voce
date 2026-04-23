@@ -400,15 +400,7 @@ public actor LearningEngine {
     // MARK: - Persistence
 
     private static func defaultStorageURL() -> URL {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support", isDirectory: true)
-
-        return appSupport
-            .appendingPathComponent("Voce", isDirectory: true)
-            .appendingPathComponent("learning-data.json")
+        VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "learning-data.json")
     }
 
     private static func load(from url: URL) -> LearningData {
