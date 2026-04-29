@@ -28,6 +28,23 @@ type ChatCompletionsRequest = {
   }>;
   temperature: number;
   max_completion_tokens: number;
+  response_format?: {
+    type: "json_schema";
+    json_schema: {
+      name: string;
+      strict: boolean;
+      schema: {
+        type: "object";
+        properties: {
+          text: {
+            type: "string";
+          };
+        };
+        required: ["text"];
+        additionalProperties: false;
+      };
+    };
+  };
 };
 
 type ChatCompletionsResponse = {
@@ -117,6 +134,8 @@ function providerFailureMessage(status: number, payload: Record<string, any> | n
 async function openAIJSONRequest(path: string, body: ChatCompletionsRequest, timeoutMs: number) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+  const bodyJSON = JSON.stringify(body);
 
   try {
     const response = await fetch(`${OPENAI_BASE_URL}${path}`, {
@@ -125,8 +144,15 @@ async function openAIJSONRequest(path: string, body: ChatCompletionsRequest, tim
         authorization: `Bearer ${openAIAPIKey()}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: bodyJSON,
       signal: controller.signal,
+    });
+    console.info("openai json request completed", {
+      path,
+      model: body.model,
+      status: response.status,
+      requestBytes: bodyJSON.length,
+      elapsedMs: Date.now() - startedAt,
     });
 
     const payload = await readJSONSafe(response);
@@ -145,6 +171,12 @@ async function openAIJSONRequest(path: string, body: ChatCompletionsRequest, tim
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new CloudDictationProviderError(504, "Cloud dictation request timed out.");
     }
+    console.error("openai json request failed", {
+      path,
+      model: body.model,
+      elapsedMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw new CloudDictationProviderError(502, "Cloud dictation provider is unavailable.");
   } finally {
     clearTimeout(timeout);
@@ -231,19 +263,14 @@ function buildRefinementPrompt(args: {
 
   return {
     system: `
-You refine speech-to-text transcripts for dictation.
-Return compact JSON only: {"text":"..."}.
+Refine speech-to-text dictation for insertion. Return compact JSON only: {"text":"..."}.
 Preserve intent and wording unless a correction is explicitly spoken.
-Resolve spoken self-corrections like "no", "I mean", "or I meant", "actually", "no actually", "wait no", "rather", "scratch that", "sorry", or "replace X with Y".
-When the speaker revises a place, person, object, action, or choice mid-sentence, keep only the final intended version and remove the superseded alternative.
-For example, "Yesterday I went to Publix or I meant Lowes to pick up groceries" should become "Yesterday I went to Lowes to pick up groceries."
-Likewise, "Let's do xyz no actually let's do abc" should become "Let's do abc."
-Preserve dictionary spellings exactly when they are present or strongly implied.
-Infer bullet lists when the transcript clearly represents multiple requirements, tasks, acceptance criteria, ingredients, steps, or grouped attributes.
-Use bullet lists only when structure is clearly beneficial. Otherwise return a paragraph.
-Do not add headings.
-Do not summarize away substance.
-Do not add marketing language or PM-speak.
+Resolve self-corrections: "no", "I mean", "or I meant", "actually", "no actually", "wait no", "rather", "scratch that", "sorry", and "replace X with Y".
+When the speaker revises a place, person, object, action, or choice, keep only the final intended version.
+Examples: "Yesterday I went to Publix or I meant Lowes to pick up groceries" -> "Yesterday I went to Lowes to pick up groceries."; "Let's do xyz no actually let's do abc" -> "Let's do abc."
+Preserve dictionary spellings when present or strongly implied.
+Use bullets only when the transcript clearly represents requirements, tasks, criteria, ingredients, steps, or grouped attributes. Otherwise return a paragraph.
+Do not add headings, summarize away substance, or add marketing language or PM-speak.
 Keep punctuation clean and natural.
     `.trim(),
     user: `
@@ -347,7 +374,14 @@ export async function refineWithCloudProvider(args: {
   profile: SerializedStyleProfile;
   appContext?: SerializedAppContext | null;
 }) {
+  const startedAt = Date.now();
   const prompt = buildRefinementPrompt(args);
+  console.info("cloud refinement started", {
+    model: refinementModel(),
+    transcriptCharacters: args.transcript.length,
+    dictionaryEntries: args.dictionary.length,
+    promptCharacters: prompt.system.length + prompt.user.length,
+  });
   const response = await openAIJSONRequest(
     "/v1/chat/completions",
     {
@@ -358,6 +392,21 @@ export async function refineWithCloudProvider(args: {
       ],
       temperature: 0.1,
       max_completion_tokens: 700,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "voce_refined_transcript",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              text: { type: "string" },
+            },
+            required: ["text"],
+            additionalProperties: false,
+          },
+        },
+      },
     },
     45_000,
   );
@@ -368,5 +417,9 @@ export async function refineWithCloudProvider(args: {
     throw new CloudDictationProviderError(502, "Cloud dictation provider returned an invalid response.");
   }
 
+  console.info("cloud refinement completed", {
+    outputCharacters: text.length,
+    elapsedMs: Date.now() - startedAt,
+  });
   return { text };
 }

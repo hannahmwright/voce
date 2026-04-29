@@ -2818,10 +2818,19 @@ private struct DictationRuntimeFactory {
         let localFallback = RuleBasedCleanupEngine()
         let cloudRefinementEngine: any TranscriptRefinementEngine
         if snapshot.dictation.cloud.refinementEnabled {
-            cloudRefinementEngine = OpenAITranscriptRefinementEngine(
-                provider: makeCloudSpeechProviderClient(),
-                localeIdentifier: snapshot.dictation.localeIdentifier
-            )
+            if Self.environmentFlag("VOCE_CLOUD_REFINEMENT_CHUNKING", defaultValue: true) {
+                cloudRefinementEngine = ChunkedTranscriptRefinementEngine(
+                    provider: makeCloudSpeechProviderClient(),
+                    localeIdentifier: snapshot.dictation.localeIdentifier,
+                    thresholdWordCount: Self.environmentInt("VOCE_CLOUD_REFINEMENT_CHUNK_THRESHOLD_WORDS") ?? 120,
+                    targetChunkWordCount: Self.environmentInt("VOCE_CLOUD_REFINEMENT_CHUNK_WORDS") ?? 80
+                )
+            } else {
+                cloudRefinementEngine = OpenAITranscriptRefinementEngine(
+                    provider: makeCloudSpeechProviderClient(),
+                    localeIdentifier: snapshot.dictation.localeIdentifier
+                )
+            }
         } else {
             cloudRefinementEngine = NoOpTranscriptRefinementEngine()
         }
@@ -2897,5 +2906,31 @@ private struct DictationRuntimeFactory {
             subscriberEmailProvider: { subscriberEmail },
             useDirectCredentials: useDirectCloudCredentials
         )
+    }
+
+    private static func environmentFlag(_ name: String, defaultValue: Bool = false) -> Bool {
+        guard let value = ProcessInfo.processInfo.environment[name]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+            !value.isEmpty
+        else {
+            return defaultValue
+        }
+        if ["1", "true", "yes", "on"].contains(value) {
+            return true
+        }
+        if ["0", "false", "no", "off"].contains(value) {
+            return false
+        }
+        return defaultValue
+    }
+
+    private static func environmentInt(_ name: String) -> Int? {
+        guard let value = ProcessInfo.processInfo.environment[name]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        else {
+            return nil
+        }
+        return Int(value)
     }
 }

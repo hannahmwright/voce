@@ -100,7 +100,10 @@ struct VoceCloudProxySpeechProviderClient: CloudSpeechProviderClient {
 
     func transcribe(audioURL: URL, localeIdentifier: String, hints: [String]) async throws -> RawTranscript {
         let email = try resolvedSubscriberEmail()
+        let clock = ContinuousClock()
+        let preparationStartedAt = clock.now
         let uploadURL = try await CloudAudioUploadPreparation.preparedUploadURL(for: audioURL)
+        let preparationElapsed = preparationStartedAt.duration(to: clock.now)
         let shouldCleanupUploadURL = uploadURL != audioURL
         defer {
             if shouldCleanupUploadURL {
@@ -108,7 +111,9 @@ struct VoceCloudProxySpeechProviderClient: CloudSpeechProviderClient {
             }
         }
 
+        let readStartedAt = clock.now
         let audioData = try Data(contentsOf: uploadURL)
+        let readElapsed = readStartedAt.duration(to: clock.now)
         guard !audioData.isEmpty else {
             throw CloudDictationError.invalidAudioFile
         }
@@ -136,11 +141,22 @@ struct VoceCloudProxySpeechProviderClient: CloudSpeechProviderClient {
         addAuthHeaders(for: email, to: &request)
         request.httpBody = body
 
+        Self.logger.notice(
+            "Starting Voce cloud transcription request [ext=\(uploadURL.pathExtension, privacy: .public), audioBytes=\(audioData.count, privacy: .public), prep=\(Self.seconds(from: preparationElapsed), format: .fixed(precision: 2))s, read=\(Self.seconds(from: readElapsed), format: .fixed(precision: 2))s]"
+        )
+        let requestStartedAt = clock.now
         let (data, response) = try await send(request: request)
+        let requestElapsed = requestStartedAt.duration(to: clock.now)
+        Self.logger.notice(
+            "Voce cloud transcription request finished in \(Self.seconds(from: requestElapsed), format: .fixed(precision: 2))s"
+        )
         try validateResponse(response, data: data)
 
         let decoded = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
         let text = normalizeText(decoded.text)
+        Self.logger.notice(
+            "Voce cloud transcription decoded with \(text.count, privacy: .public) characters"
+        )
         guard !text.isEmpty else {
             throw CloudDictationError.emptyTranscript
         }
@@ -194,10 +210,24 @@ struct VoceCloudProxySpeechProviderClient: CloudSpeechProviderClient {
         )
         request.httpBody = try JSONEncoder().encode(payload)
 
+        let clock = ContinuousClock()
+        let requestStartedAt = clock.now
+        Self.logger.notice(
+            "Starting Voce cloud refinement request with \(transcript.count, privacy: .public) input characters and \(dictionary.count, privacy: .public) lexicon entries"
+        )
         let (data, response) = try await send(request: request)
+        let requestElapsed = requestStartedAt.duration(to: clock.now)
+        Self.logger.notice(
+            "Voce cloud refinement request finished in \(Self.seconds(from: requestElapsed), format: .fixed(precision: 2))s"
+        )
+        let decodeStartedAt = clock.now
         try validateResponse(response, data: data)
         let decoded = try JSONDecoder().decode(RefineResponse.self, from: data)
         let text = normalizeText(decoded.text)
+        let decodeElapsed = decodeStartedAt.duration(to: clock.now)
+        Self.logger.notice(
+            "Voce cloud refinement decoded in \(Self.seconds(from: decodeElapsed), format: .fixed(precision: 2))s with \(text.count, privacy: .public) output characters"
+        )
         guard !text.isEmpty else {
             throw CloudDictationError.invalidResponse
         }
@@ -278,5 +308,10 @@ struct VoceCloudProxySpeechProviderClient: CloudSpeechProviderClient {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func seconds(from duration: Duration) -> Double {
+        Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
     }
 }

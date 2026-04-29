@@ -68,10 +68,35 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
             var content: String
         }
 
+        struct ResponseFormat: Encodable {
+            struct JSONSchema: Encodable {
+                struct Schema: Encodable {
+                    struct TextProperty: Encodable {
+                        var type = "string"
+                    }
+
+                    var type = "object"
+                    var properties = ["text": TextProperty()]
+                    var required = ["text"]
+                    var additionalProperties = false
+                }
+
+                var name = "voce_refined_transcript"
+                var strict = true
+                var schema = Schema()
+            }
+
+            var type = "json_schema"
+            var json_schema = JSONSchema()
+
+            static let refinedTranscript = ResponseFormat()
+        }
+
         var model: String
         var messages: [Message]
         var temperature: Double
         var max_completion_tokens: Int
+        var response_format: ResponseFormat?
     }
 
     private struct ChatCompletionsResponse: Decodable {
@@ -134,7 +159,8 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
                 .init(role: "user", content: "Locale: \(localeIdentifier)")
             ],
             temperature: 0,
-            max_completion_tokens: 12
+            max_completion_tokens: 12,
+            response_format: nil
         )
 
         let response = try await sendJSONRequest(
@@ -151,7 +177,10 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
     }
 
     func transcribe(audioURL: URL, localeIdentifier: String, hints: [String]) async throws -> RawTranscript {
+        let clock = ContinuousClock()
+        let preparationStartedAt = clock.now
         let uploadURL = try await CloudAudioUploadPreparation.preparedUploadURL(for: audioURL)
+        let preparationElapsed = preparationStartedAt.duration(to: clock.now)
         let shouldCleanupUploadURL = uploadURL != audioURL
         defer {
             if shouldCleanupUploadURL {
@@ -159,8 +188,10 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
             }
         }
 
+        let readStartedAt = clock.now
         let boundary = "Boundary-\(UUID().uuidString)"
         let audioData = try Data(contentsOf: uploadURL)
+        let readElapsed = readStartedAt.duration(to: clock.now)
         guard !audioData.isEmpty else {
             throw CloudDictationError.invalidAudioFile
         }
@@ -168,7 +199,7 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
         let locale = effectiveLanguageCode(from: hints.first ?? localeIdentifier)
         let prompt = transcriptionPrompt()
         Self.logger.notice(
-            "Starting OpenAI transcription using \(uploadURL.lastPathComponent, privacy: .private(mask: .hash)) [ext=\(uploadURL.pathExtension, privacy: .public), locale=\(locale, privacy: .public)]"
+            "Starting OpenAI transcription using \(uploadURL.lastPathComponent, privacy: .private(mask: .hash)) [ext=\(uploadURL.pathExtension, privacy: .public), locale=\(locale, privacy: .public), audioBytes=\(audioData.count, privacy: .public), prep=\(Self.seconds(from: preparationElapsed), format: .fixed(precision: 2))s, read=\(Self.seconds(from: readElapsed), format: .fixed(precision: 2))s]"
         )
 
         var body = Data()
@@ -194,12 +225,14 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
 
+        let requestStartedAt = clock.now
         let (data, response) = try await send(request: request)
+        let requestElapsed = requestStartedAt.duration(to: clock.now)
         try validateHTTPResponse(response, data: data)
         let decoded = try JSONDecoder().decode(AudioResponse.self, from: data)
         let text = normalizeText(decoded.text)
         Self.logger.notice(
-            "OpenAI transcription completed with \(text.count, privacy: .public) characters"
+            "OpenAI transcription completed in \(Self.seconds(from: requestElapsed), format: .fixed(precision: 2))s with \(text.count, privacy: .public) characters"
         )
         guard !text.isEmpty else {
             throw CloudDictationError.emptyTranscript
@@ -237,14 +270,23 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
                 .init(role: "user", content: prompt.user)
             ],
             temperature: 0.1,
-            max_completion_tokens: 700
+            max_completion_tokens: 700,
+            response_format: .refinedTranscript
         )
 
+        let clock = ContinuousClock()
+        let requestStartedAt = clock.now
         let data = try await sendJSONRequest(
             path: "/v1/chat/completions",
             body: request,
             timeout: 45
         )
+        let requestElapsed = requestStartedAt.duration(to: clock.now)
+        Self.logger.notice(
+            "OpenAI transcript refinement request finished in \(Self.seconds(from: requestElapsed), format: .fixed(precision: 2))s"
+        )
+
+        let decodeStartedAt = clock.now
         let decoded = try JSONDecoder().decode(ChatCompletionsResponse.self, from: data)
         guard let content = decoded.choices.first?.message.content else {
             throw CloudDictationError.invalidResponse
@@ -252,8 +294,9 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
 
         let parsed = extractJSONPayload(from: content)
         let refined = normalizeText(parsed["text"]?.stringValue ?? "")
+        let decodeElapsed = decodeStartedAt.duration(to: clock.now)
         Self.logger.notice(
-            "OpenAI transcript refinement completed with \(refined.count, privacy: .public) output characters"
+            "OpenAI transcript refinement decoded in \(Self.seconds(from: decodeElapsed), format: .fixed(precision: 2))s with \(refined.count, privacy: .public) output characters"
         )
         guard !refined.isEmpty else {
             throw CloudDictationError.invalidResponse
@@ -345,19 +388,14 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
         let serializedDictionary = Self.dictionaryPayload(entries: dictionary)
         let appDescription = appContext.map { "\($0.appName) (\($0.bundleIdentifier))" } ?? "unknown"
         let system = """
-        You refine speech-to-text transcripts for dictation.
-        Return compact JSON only: {"text":"..."}.
+        Refine speech-to-text dictation for insertion. Return compact JSON only: {"text":"..."}.
         Preserve intent and wording unless a correction is explicitly spoken.
-        Resolve spoken self-corrections like "no", "I mean", "or I meant", "actually", "no actually", "wait no", "rather", "scratch that", "sorry", or "replace X with Y".
-        When the speaker revises a place, person, object, action, or choice mid-sentence, keep only the final intended version and remove the superseded alternative.
-        For example, "Yesterday I went to Publix or I meant Lowes to pick up groceries" should become "Yesterday I went to Lowes to pick up groceries."
-        Likewise, "Let's do xyz no actually let's do abc" should become "Let's do abc."
-        Preserve dictionary spellings exactly when they are present or strongly implied.
-        Infer bullet lists when the transcript clearly represents multiple requirements, tasks, acceptance criteria, ingredients, steps, or grouped attributes.
-        Use bullet lists only when structure is clearly beneficial. Otherwise return a paragraph.
-        Do not add headings.
-        Do not summarize away substance.
-        Do not add marketing language or PM-speak.
+        Resolve self-corrections: "no", "I mean", "or I meant", "actually", "no actually", "wait no", "rather", "scratch that", "sorry", and "replace X with Y".
+        When the speaker revises a place, person, object, action, or choice, keep only the final intended version.
+        Examples: "Yesterday I went to Publix or I meant Lowes to pick up groceries" -> "Yesterday I went to Lowes to pick up groceries."; "Let's do xyz no actually let's do abc" -> "Let's do abc."
+        Preserve dictionary spellings when present or strongly implied.
+        Use bullets only when the transcript clearly represents requirements, tasks, criteria, ingredients, steps, or grouped attributes. Otherwise return a paragraph.
+        Do not add headings, summarize away substance, or add marketing language or PM-speak.
         Keep punctuation clean and natural.
         """
         let user = """
@@ -412,6 +450,11 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
     private func effectiveLanguageCode(from localeIdentifier: String) -> String {
         let components = localeIdentifier.split(separator: "-")
         return components.first.map(String.init) ?? "en"
+    }
+
+    private static func seconds(from duration: Duration) -> Double {
+        Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
     }
 }
 

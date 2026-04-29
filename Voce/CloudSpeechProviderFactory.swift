@@ -25,6 +25,8 @@ enum CloudSpeechProviderFactory {
                         throw error
                     }
                 },
+                transcriptionModel: environmentValue("VOCE_OPENAI_TRANSCRIPTION_MODEL") ?? "gpt-4o-mini-transcribe",
+                refinementModel: environmentValue("VOCE_OPENAI_REFINEMENT_MODEL") ?? "gpt-4o-mini",
                 transcriptionHints: Array(transcriptionHints.prefix(200))
             )
         }
@@ -34,5 +36,12 @@ enum CloudSpeechProviderFactory {
             subscriberEmailProvider: subscriberEmailProvider,
             sessionStore: sessionStore
         )
+    }
+
+    private static func environmentValue(_ name: String) -> String? {
+        let value = ProcessInfo.processInfo.environment[name]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty else { return nil }
+        return value
     }
 }

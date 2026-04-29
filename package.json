@@ -6,6 +6,7 @@
     "convex:dev": "convex dev",
     "convex:deploy": "convex deploy",
     "convex:codegen": "convex codegen",
+    "bench:refinement": "node tools/benchmark_refinement_models.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
