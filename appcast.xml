@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.39</title>
+      <sparkle:version>42</sparkle:version>
+      <sparkle:shortVersionString>0.4.39</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.39</h2>
+        <ul>
+          <li>Speeds up cloud dictation by uploading compressed M4A audio instead of expanded WAV audio</li>
+          <li>Runs long cloud refinement in parallel sentence-aware chunks while keeping final cleanup enabled</li>
+          <li>Reduces cloud refinement overhead with structured JSON output, shorter prompts, and more detailed timing logs</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 29 Apr 2026 05:07:09 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.39/Voce-0.4.39.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="uscwuhx5aJZVUKiiZ4fmCC1r11jRku+wPGNMD9RrAEDzoADUoU9GPq05T4tbHCeU+5/i5f6a7UuQqHqO2YHYAw=="
+        length="18436107"
+      />
+    </item>
+    <item>
       <title>Version 0.4.38</title>
       <sparkle:version>41</sparkle:version>
       <sparkle:shortVersionString>0.4.38</sparkle:shortVersionString>

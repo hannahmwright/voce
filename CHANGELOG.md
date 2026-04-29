@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.39] - 2026-04-29
+
+### Changed
+- Cloud dictation now uploads compressed M4A audio instead of expanded WAV audio, reducing upload size and transcription latency.
+- Long cloud refinement now runs in parallel chunks with sentence-aware boundaries, keeping refinement enabled while reducing wait time on longer dictations.
+- Cloud refinement requests now use structured JSON output and shorter prompts to reduce response overhead.
+
+### Added
+- Added more detailed cloud dictation timing logs and a local refinement benchmark tool for comparing model and chunking strategies.
+
 ## [0.4.38] - 2026-04-23
 
 ### Added
