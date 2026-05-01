@@ -34,6 +34,8 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
     private var outputURLs: [SessionID: URL] = [:]
     private var recorderSessionIDs: [ObjectIdentifier: SessionID] = [:]
     private var recorderErrors: [SessionID: MacAudioCaptureError] = [:]
+    private var meterTimer: Timer?
+    public var onAudioLevelChanged: ((Double) -> Void)?
 
     public override init() {
         super.init()
@@ -64,6 +66,7 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
             throw MacAudioCaptureError.failedToCreateRecorder
         }
         recorder.delegate = self
+        recorder.isMeteringEnabled = true
         guard recorder.prepareToRecord() else {
             throw MacAudioCaptureError.failedToPrepareRecorder
         }
@@ -77,6 +80,7 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         outputURLs[sessionID] = fileURL
         recorderSessionIDs[ObjectIdentifier(recorder)] = sessionID
         recorderErrors[sessionID] = nil
+        startMeteringIfNeeded()
     }
 
     public func endCapture(sessionID: SessionID) async throws -> URL {
@@ -87,6 +91,7 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
 
         recorder.stop()
         recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
+        stopMeteringIfIdle()
         if let captureError = recorderErrors.removeValue(forKey: sessionID) {
             try? FileManager.default.removeItem(at: fileURL)
             throw captureError
@@ -103,7 +108,40 @@ public final class MacAudioCaptureService: NSObject, AudioCaptureService, @preco
         recorder.stop()
         recorderSessionIDs.removeValue(forKey: ObjectIdentifier(recorder))
         recorderErrors[sessionID] = nil
+        stopMeteringIfIdle()
         try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private func startMeteringIfNeeded() {
+        guard meterTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 24.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.publishAudioLevel()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        meterTimer = timer
+    }
+
+    private func stopMeteringIfIdle() {
+        guard recorders.isEmpty else { return }
+        meterTimer?.invalidate()
+        meterTimer = nil
+        onAudioLevelChanged?(0)
+    }
+
+    private func publishAudioLevel() {
+        guard !recorders.isEmpty else {
+            onAudioLevelChanged?(0)
+            return
+        }
+
+        let levels = recorders.values.map { recorder -> Double in
+            recorder.updateMeters()
+            let decibels = max(-60, min(0, recorder.averagePower(forChannel: 0)))
+            return pow(10, Double(decibels) / 30)
+        }
+        onAudioLevelChanged?(min(max(levels.max() ?? 0, 0), 1))
     }
 
     private static func tempAudioURL(for sessionID: SessionID) -> URL {

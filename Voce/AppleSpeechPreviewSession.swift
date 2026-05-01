@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import OSLog
 import Speech
 
 enum AppleSpeechPreviewError: Error, LocalizedError {
@@ -30,8 +31,11 @@ struct AppleSpeechPreviewStopResult: Sendable {
 /// Uses Apple's on-device speech recognizer for low-latency partial text while
 /// recording raw microphone audio to disk for the final Apple Speech pass.
 final class AppleSpeechPreviewSession: @unchecked Sendable {
+    private static let logger = Logger(subsystem: "io.voceapp.voce", category: "AppleSpeechPreview")
+
     private let onPartialText: @Sendable (String) -> Void
     private let onTerminalError: @Sendable (Error) -> Void
+    private let onAudioLevel: @Sendable (Double) -> Void
     private let localeIdentifier: String
     private let previewTranscriptionEnabled: Bool
     private let stateLock = NSLock()
@@ -44,23 +48,29 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private var outputURL: URL?
     private var hasStopped = false
     private var latestWriteError: Error?
+    private var capturedFrameCount: AVAudioFramePosition = 0
+    private var captureStartedAt: ContinuousClock.Instant?
 
     init(
         localeIdentifier: String = "en-US",
         previewTranscriptionEnabled: Bool = false,
         onPartialText: @escaping @Sendable (String) -> Void,
-        onTerminalError: @escaping @Sendable (Error) -> Void = { _ in }
+        onTerminalError: @escaping @Sendable (Error) -> Void = { _ in },
+        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in }
     ) {
         self.localeIdentifier = localeIdentifier
         self.previewTranscriptionEnabled = previewTranscriptionEnabled
         self.onPartialText = onPartialText
         self.onTerminalError = onTerminalError
+        self.onAudioLevel = onAudioLevel
     }
 
     func start() async throws {
         stateLock.withLock {
             hasStopped = false
             latestWriteError = nil
+            capturedFrameCount = 0
+            captureStartedAt = nil
         }
 
         let engine = AVAudioEngine()
@@ -120,18 +130,18 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
 
-            let (isStopped, audioFile) = self.stateLock.withLock {
-                (self.hasStopped, self.audioFile)
-            }
-            guard !isStopped else { return }
-
             do {
-                try audioFile?.write(from: buffer)
+                try self.stateLock.withLock {
+                    guard !self.hasStopped else { return }
+                    try self.audioFile?.write(from: buffer)
+                    self.capturedFrameCount += AVAudioFramePosition(buffer.frameLength)
+                }
             } catch {
                 self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
             }
 
             self.recognitionRequest?.append(buffer)
+            self.onAudioLevel(Self.normalizedAudioLevel(from: buffer))
         }
 
         do {
@@ -147,16 +157,18 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         }
 
         audioEngine = engine
+        stateLock.withLock {
+            captureStartedAt = ContinuousClock().now
+        }
     }
 
     func stop() throws -> AppleSpeechPreviewStopResult {
         let outputURL: URL?
+        let capturedFrameCount: AVAudioFramePosition
+        let wallDurationSeconds: Double?
 
-        outputURL = stateLock.withLock {
-            hasStopped = true
-            return self.outputURL
-        }
-
+        // Remove the tap before marking the session stopped. Marking first can
+        // drop the final in-flight buffer, which sounds like missing tail words.
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
@@ -168,8 +180,19 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         recognitionRequest = nil
         speechRecognizer = nil
 
-        stateLock.withLock {
+        let stoppedAt = ContinuousClock().now
+        (outputURL, capturedFrameCount, wallDurationSeconds) = stateLock.withLock {
+            hasStopped = true
+            let wallDurationSeconds = captureStartedAt.map { start in
+                let duration = start.duration(to: stoppedAt)
+                return Double(duration.components.seconds)
+                    + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+            }
+            let outputURL = self.outputURL
+            let capturedFrameCount = self.capturedFrameCount
             audioFile = nil
+            captureStartedAt = nil
+            return (outputURL, capturedFrameCount, wallDurationSeconds)
         }
 
         if let latestWriteError {
@@ -182,6 +205,11 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         }
 
         let captureDurationMS = Self.captureDurationMS(for: outputURL)
+        let wallDurationDescription = wallDurationSeconds.map { "\($0.formatted(.number.precision(.fractionLength(2))))s" } ?? "unknown"
+        let fileDurationSeconds = Double(captureDurationMS) / 1_000
+        Self.logger.notice(
+            "Preview capture stopped; wall=\(wallDurationDescription, privacy: .public) file=\(fileDurationSeconds, format: .fixed(precision: 2))s frames=\(capturedFrameCount, privacy: .public)"
+        )
         self.outputURL = nil
         return AppleSpeechPreviewStopResult(
             captureURL: outputURL,
@@ -209,6 +237,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             audioFile = nil
             self.outputURL = nil
             latestWriteError = nil
+            capturedFrameCount = 0
+            captureStartedAt = nil
         }
 
         cleanupOutputFile(at: outputURL)
@@ -255,6 +285,33 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
                 continuation.resume(returning: status)
             }
         }
+    }
+
+    private static func normalizedAudioLevel(from buffer: AVAudioPCMBuffer) -> Double {
+        guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else {
+            return 0
+        }
+
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        var sumSquares: Float = 0
+        var sampleCount = 0
+
+        for channel in 0..<channelCount {
+            let samples = channelData[channel]
+            for frame in 0..<frameCount {
+                let sample = samples[frame]
+                sumSquares += sample * sample
+            }
+            sampleCount += frameCount
+        }
+
+        guard sampleCount > 0 else { return 0 }
+
+        let rms = sqrt(sumSquares / Float(sampleCount))
+        let decibels = 20 * log10(max(rms, 0.000_001))
+        let clipped = max(-55, min(0, decibels))
+        return Double((clipped + 55) / 55)
     }
 }
 

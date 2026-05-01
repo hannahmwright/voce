@@ -53,6 +53,21 @@ enum AppAppearancePreference: String, Codable, Sendable, Equatable, CaseIterable
     }
 }
 
+extension OverlayBubbleAppearance {
+    var title: String {
+        switch self {
+        case .matchApp:
+            return "Match App"
+        case .light:
+            return "Light"
+        case .dark:
+            return "Dark"
+        case .techMeter:
+            return "Tech Meter"
+        }
+    }
+}
+
 enum DictationEngineMode: String, Codable, Sendable, Equatable, CaseIterable {
     case local
     case cloud
@@ -170,19 +185,22 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var showOnboarding: Bool
         var userName: String
         var appearancePreference: AppAppearancePreference
+        var bubbleAppearance: OverlayBubbleAppearance
 
         init(
             launchAtLoginEnabled: Bool,
             showDockIcon: Bool,
             showOnboarding: Bool,
             userName: String = "",
-            appearancePreference: AppAppearancePreference = .currentSystemDefault
+            appearancePreference: AppAppearancePreference = .currentSystemDefault,
+            bubbleAppearance: OverlayBubbleAppearance = .matchApp
         ) {
             self.launchAtLoginEnabled = launchAtLoginEnabled
             self.showDockIcon = showDockIcon
             self.showOnboarding = showOnboarding
             self.userName = userName
             self.appearancePreference = appearancePreference
+            self.bubbleAppearance = bubbleAppearance
         }
 
         init(from decoder: Decoder) throws {
@@ -193,6 +211,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             userName = try container.decodeIfPresent(String.self, forKey: .userName) ?? ""
             appearancePreference = try container.decodeIfPresent(AppAppearancePreference.self, forKey: .appearancePreference)
                 ?? .currentSystemDefault
+            bubbleAppearance = try container.decodeIfPresent(OverlayBubbleAppearance.self, forKey: .bubbleAppearance) ?? .matchApp
         }
     }
 

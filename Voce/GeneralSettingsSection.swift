@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import VoceKit
 
 struct GeneralSettingsSection: View {
     @Binding var preferences: AppPreferences
@@ -32,6 +33,21 @@ struct GeneralSettingsSection: View {
 
                     Picker("Appearance", selection: $preferences.general.appearancePreference) {
                         ForEach(AppAppearancePreference.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    settingInlineLabel(
+                        "Bubble",
+                        help: "Choose how the floating dictation bubble looks while Voce is listening or processing."
+                    )
+
+                    Picker("Bubble", selection: $preferences.general.bubbleAppearance) {
+                        ForEach(OverlayBubbleAppearance.allCases, id: \.self) { option in
                             Text(option.title).tag(option)
                         }
                     }

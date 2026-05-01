@@ -5,6 +5,7 @@ import VoceKit
 
 enum CloudAudioUploadPreparation {
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "CloudAudioUpload")
+    private static let aacUploadBitrate = 128_000
 
     static func preparedUploadURL(for originalURL: URL) async throws -> URL {
         let supportedExtensions: Set<String> = ["wav", "m4a", "mp3", "webm"]
@@ -28,7 +29,7 @@ enum CloudAudioUploadPreparation {
                 arguments: [
                     "-f", "m4af",
                     "-d", "aac",
-                    "-b", "64000",
+                    "-b", "\(aacUploadBitrate)",
                     originalURL.path,
                     outputURL.path
                 ]

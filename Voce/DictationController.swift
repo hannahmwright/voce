@@ -198,6 +198,7 @@ final class DictationController: ObservableObject {
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var recordingElapsed: TimeInterval = 0
     @Published var hasBootstrapped = false
+    @Published private(set) var backgroundProcessingSessionCount: Int = 0
     @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail {
         didSet {
             guard hasBootstrapped else { return }
@@ -242,6 +243,7 @@ final class DictationController: ObservableObject {
     private var pendingCompletionActionOverride: CompletionAction?
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
+    private var activeStartTaskID: UUID?
     private var activePreviewSession: AppleSpeechPreviewSession?
     private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
@@ -257,6 +259,13 @@ final class DictationController: ObservableObject {
     private var cloudValidationCredentialVersion = UUID()
     private var lastCloudValidationToken: String?
     private var lastCloudValidationFailureMessage: String?
+    private var nextBackgroundProcessingSequence = 0
+    private var nextCompletionSequenceToCommit = 0
+    private var completedCompletionSequences = Set<Int>()
+    private var completionSequenceWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var pendingStartAfterAudioSecured: RecordingMode?
+    private var lastRecordingStopTime: CFAbsoluteTime = 0
+    private var lastRecordingStopMode: RecordingMode?
 
     private struct SelectionCapture {
         var text: String
@@ -309,6 +318,10 @@ final class DictationController: ObservableObject {
         )
         self.snippetService = SnippetService(snippets: AppPreferences.default.snippets)
         self.voiceCommandService = VoiceCommandService(commands: AppPreferences.default.voiceCommands)
+
+        captureService.onAudioLevelChanged = { [weak overlay] level in
+            overlay?.updateAudioLevel(level)
+        }
 
         hotkey.onPressToTalkStart = { [weak self] in
             self?.pressToTalkStart()
@@ -401,7 +414,7 @@ final class DictationController: ObservableObject {
     }
 
     var recordingLifecycleState: RecordingLifecycleState {
-        recordingStateMachine.state
+        return recordingStateMachine.state
     }
 
     func bootstrap() async {
@@ -661,6 +674,10 @@ final class DictationController: ObservableObject {
 
     func pressToTalkStart() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        guard !shouldIgnoreResidualStartSignal(mode: .pressToTalk) else { return }
+        if queueStartAfterAudioSecuredIfNeeded(mode: .pressToTalk) {
+            return
+        }
         guard canStartRecordingNow() else { return }
         suppressNextPressToTalkStop = false
         apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
@@ -668,6 +685,10 @@ final class DictationController: ObservableObject {
 
     func pressToTalkStop() {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
+        if pendingStartAfterAudioSecured == .pressToTalk {
+            pendingStartAfterAudioSecured = nil
+            return
+        }
         if suppressNextPressToTalkStop {
             suppressNextPressToTalkStop = false
             return
@@ -675,11 +696,30 @@ final class DictationController: ObservableObject {
         if preferences.hotkeys.enterFinishesHandsFreeAndSubmits {
             pendingCompletionActionOverride = .insertAndSubmit
         }
-        apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
+        let transition = recordingStateMachine.handlePressToTalkKeyUp()
+        if case .ignore = transition,
+           isRecording,
+           activeRecordingMode == .pressToTalk {
+            stopSession(mode: .pressToTalk)
+            return
+        }
+        apply(transition: transition)
     }
 
     func toggleHandsFree() {
-        if recordingLifecycleState == .idle {
+        if isRecording,
+           activeRecordingMode == .handsFree,
+           recordingStateMachine.state != .recordingHandsFree {
+            stopSession(mode: .handsFree)
+            return
+        }
+        if recordingStateMachine.state == .idle {
+            guard !shouldIgnoreResidualStartSignal(mode: .handsFree) else { return }
+        }
+        if queueStartAfterAudioSecuredIfNeeded(mode: .handsFree) {
+            return
+        }
+        if recordingStateMachine.state == .idle {
             guard canStartRecordingNow() else { return }
         }
         apply(transition: recordingStateMachine.handleHandsFreeToggle())
@@ -697,7 +737,9 @@ final class DictationController: ObservableObject {
         case .recordingPressToTalk:
             pressToTalkStop()
         case .idle, .transcribing:
-            break
+            if let activeRecordingMode, isRecording {
+                stopSession(mode: activeRecordingMode)
+            }
         }
     }
 
@@ -1301,6 +1343,8 @@ final class DictationController: ObservableObject {
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
 
+        let startTaskID = UUID()
+        activeStartTaskID = startTaskID
         activeStartTask = Task { @MainActor in
             do {
                 try await ensureMicrophonePermission()
@@ -1315,10 +1359,19 @@ final class DictationController: ObservableObject {
                         Task { @MainActor [weak self] in
                             self?.handleStreamingFailure(error)
                         }
+                    },
+                    onAudioLevel: { [weak overlay] level in
+                        Task { @MainActor [weak overlay] in
+                            overlay?.updateAudioLevel(level)
+                        }
                     }
                 )
                 activePreviewSession = session
                 try await session.start()
+
+                let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
+                await coordinator.setHandsFreeEnabled(mode == .handsFree)
+                currentSessionID = sessionID
 
                 status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
                 isRecording = true
@@ -1338,12 +1391,13 @@ final class DictationController: ObservableObject {
                 overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
 
                 if shouldPauseMedia {
-                    activeMediaToken = await mediaInterruption.beginInterruption()
+                    let mediaToken = await mediaInterruption.beginInterruption()
+                    if currentSessionID == sessionID, isRecording {
+                        activeMediaToken = mediaToken
+                    } else if let mediaToken {
+                        mediaInterruption.endInterruption(token: mediaToken)
+                    }
                 }
-
-                let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
-                await coordinator.setHandsFreeEnabled(mode == .handsFree)
-                currentSessionID = sessionID
             } catch {
                 if let token = activeMediaToken {
                     mediaInterruption.endInterruption(token: token)
@@ -1368,7 +1422,10 @@ final class DictationController: ObservableObject {
                 overlay.hide()
                 clipboardRecoveryPrompt.hide()
             }
-            activeStartTask = nil
+            if activeStartTaskID == startTaskID {
+                activeStartTask = nil
+                activeStartTaskID = nil
+            }
         }
     }
 
@@ -1377,6 +1434,7 @@ final class DictationController: ObservableObject {
 
         let pendingStart = activeStartTask
         activeStartTask = nil
+        activeStartTaskID = nil
         activePreviewSession = nil
 
         recordingTimer?.invalidate()
@@ -1418,8 +1476,10 @@ final class DictationController: ObservableObject {
     }
 
     private func stopSession(mode: RecordingMode) {
+        recordStopForResidualStartSuppression(mode: mode)
         let pendingStart = activeStartTask
         activeStartTask = nil
+        activeStartTaskID = nil
 
         // Capture streaming session before clearing state.
         let previewSession = activePreviewSession
@@ -1438,30 +1498,78 @@ final class DictationController: ObservableObject {
         activeFreeUsageLimitSeconds = nil
         updateActiveRecordingHotkeys()
 
-        Task {
-            // Wait for startSession's Task to finish so currentSessionID
-            // and activeMediaToken are guaranteed to be set (or errored out).
-            await pendingStart?.value
+        let readyCoordinator = coordinator
+        let readySessionID = currentSessionID
+        let readyPreferredCompletionAction = pendingCompletionActionOverride
+        let readyMediaToken = activeMediaToken
 
-            guard let coordinator, let sessionID = currentSessionID else {
+        if readySessionID != nil {
+            currentSessionID = nil
+            activeAppContext = nil
+            pendingCompletionActionOverride = nil
+            activeMediaToken = nil
+            recordingStateMachine.markTranscriptionCompleted()
+            startPendingRecordingAfterAudioSecuredIfNeeded()
+        }
+
+        Task {
+            var isBackgroundProcessing = false
+            var processingSequence: Int?
+            defer {
+                if isBackgroundProcessing {
+                    if let processingSequence {
+                        finishCompletionTurn(sequence: processingSequence)
+                    }
+                    finishBackgroundProcessingSession()
+                }
+            }
+
+            let coordinator: SessionCoordinator?
+            let sessionID: SessionID?
+            let preferredCompletionAction: CompletionAction?
+            let mediaToken: MediaInterruptionToken?
+
+            if let readyCoordinator, let readySessionID {
+                coordinator = readyCoordinator
+                sessionID = readySessionID
+                preferredCompletionAction = readyPreferredCompletionAction
+                mediaToken = readyMediaToken
+            } else {
+                // If stop happens while the microphone is still arming, wait
+                // only until setup either publishes a session ID or fails.
+                await pendingStart?.value
+                coordinator = self.coordinator
+                sessionID = currentSessionID
+                preferredCompletionAction = pendingCompletionActionOverride
+                mediaToken = activeMediaToken
+
+                currentSessionID = nil
+                activeAppContext = nil
+                pendingCompletionActionOverride = nil
+                activeMediaToken = nil
+                recordingStateMachine.markTranscriptionCompleted()
+                startPendingRecordingAfterAudioSecuredIfNeeded()
+            }
+
+            guard let coordinator, let sessionID else {
                 previewSession?.cancel()
                 recordingStateMachine.markTranscriptionFailed()
                 status = "No active recording session."
                 return
             }
-            currentSessionID = nil
-            let preferredCompletionAction = pendingCompletionActionOverride
-            activeAppContext = nil
-            pendingCompletionActionOverride = nil
+            beginBackgroundProcessingSession()
+            isBackgroundProcessing = true
+            processingSequence = allocateBackgroundProcessingSequence()
 
-            if let token = activeMediaToken {
-                mediaInterruption.endInterruption(token: token)
-                activeMediaToken = nil
+            if !isRecording, activeStartTask == nil {
+                status = "Finalising..."
+                lastError = ""
+                overlay.show(state: .transcribing)
             }
 
-            status = "Finalising..."
-            lastError = ""
-            overlay.show(state: .transcribing)
+            if let mediaToken {
+                mediaInterruption.endInterruption(token: mediaToken)
+            }
 
             var captureDurationMS = 0
             do {
@@ -1490,6 +1598,10 @@ final class DictationController: ObservableObject {
                 Self.logger.notice(
                     "Coordinator finalized transcript in \(transcriptionElapsedSeconds, format: .fixed(precision: 2))s"
                 )
+
+                if let processingSequence {
+                    await waitForCompletionTurn(sequence: processingSequence)
+                }
 
                 let routingBeganAt = clock.now
                 let routedCompletion = try completionRoutingService.route(
@@ -1533,10 +1645,14 @@ final class DictationController: ObservableObject {
                     )
 
                     lastTranscript = execution.finalText
+                    let shouldPreserveActiveRecordingStatus = isRecording
                     applyExecutionOutcomeStatus(
                         execution,
                         targetAppContext: finalizedTranscript.appContext
                     )
+                    if shouldPreserveActiveRecordingStatus {
+                        restoreActiveRecordingStatus()
+                    }
                     do {
                         try await appendHistoryEntry(
                             finalizedTranscript: finalizedTranscript,
@@ -1548,16 +1664,22 @@ final class DictationController: ObservableObject {
                     scheduleLearningUpdate(for: finalizedTranscript)
                     let insertedSuccessfully = execution.insertResult.status == .inserted
                     let insertedIntoVoce = finalizedTranscript.appContext.bundleIdentifier == Bundle.main.bundleIdentifier
-                    dismissOverlaySoon(
-                        pop: insertedSuccessfully || insertedIntoVoce,
-                        delayNanoseconds: (insertedSuccessfully || insertedIntoVoce) ? 0 : 1_500_000_000
-                    )
+                    if !isRecording {
+                        dismissOverlaySoon(
+                            pop: insertedSuccessfully || insertedIntoVoce,
+                            delayNanoseconds: (insertedSuccessfully || insertedIntoVoce) ? 0 : 1_500_000_000
+                        )
+                    }
                 } catch let aiError as AIWorkflowError {
                     lastTranscript = finalizedTranscript.cleanText
-                    status = aiError.errorDescription ?? "AI request failed."
-                    lastError = aiError.errorDescription ?? ""
-                    overlay.hide()
-                    clipboardRecoveryPrompt.hide()
+                    if isRecording {
+                        restoreActiveRecordingStatus()
+                    } else {
+                        status = aiError.errorDescription ?? "AI request failed."
+                        lastError = aiError.errorDescription ?? ""
+                        overlay.hide()
+                        clipboardRecoveryPrompt.hide()
+                    }
                     do {
                         try await appendFailedAIHistoryEntry(
                             finalizedTranscript: finalizedTranscript,
@@ -1568,18 +1690,25 @@ final class DictationController: ObservableObject {
                         lastError = aiError.errorDescription ?? ""
                     }
                     scheduleLearningUpdate(for: finalizedTranscript)
-                    dismissOverlaySoon()
+                    if !isRecording {
+                        dismissOverlaySoon()
+                    }
                 } catch let routingError as CompletionRoutingError {
                     lastTranscript = finalizedTranscript.cleanText
-                    status = routingErrorStatusMessage(for: routingError)
-                    lastError = ""
-                    overlay.hide()
-                    clipboardRecoveryPrompt.hide()
+                    if isRecording {
+                        restoreActiveRecordingStatus()
+                    } else {
+                        status = routingErrorStatusMessage(for: routingError)
+                        lastError = ""
+                        overlay.hide()
+                        clipboardRecoveryPrompt.hide()
+                    }
                     scheduleLearningUpdate(for: finalizedTranscript)
-                    dismissOverlaySoon()
+                    if !isRecording {
+                        dismissOverlaySoon()
+                    }
                 }
                 await refreshHistory()
-                recordingStateMachine.markTranscriptionCompleted()
                 await applyDeferredRebuildIfNeeded()
             } catch {
                 if shouldSuppressEmptyTranscriptError(error, captureDurationMS: captureDurationMS) {
@@ -1593,14 +1722,112 @@ final class DictationController: ObservableObject {
                 Self.logger.error(
                     "Streaming transcription failed after \(captureDurationMS, privacy: .public)ms capture: \(error.localizedDescription, privacy: .public)"
                 )
-                status = "Transcription failed"
-                lastError = error.localizedDescription
-                overlay.hide()
-                clipboardRecoveryPrompt.hide()
-                recordingStateMachine.markTranscriptionFailed()
+                if isBackgroundProcessing, isRecording {
+                    restoreActiveRecordingStatus()
+                } else {
+                    status = "Transcription failed"
+                    lastError = error.localizedDescription
+                    overlay.hide()
+                    clipboardRecoveryPrompt.hide()
+                    recordingStateMachine.markTranscriptionFailed()
+                }
                 await applyDeferredRebuildIfNeeded()
             }
         }
+    }
+
+    private func beginBackgroundProcessingSession() {
+        backgroundProcessingSessionCount += 1
+    }
+
+    private func finishBackgroundProcessingSession() {
+        backgroundProcessingSessionCount = max(0, backgroundProcessingSessionCount - 1)
+    }
+
+    private func queueStartAfterAudioSecuredIfNeeded(mode: RecordingMode) -> Bool {
+        guard recordingStateMachine.state == .transcribing else {
+            return false
+        }
+
+        guard !isRecording else {
+            return false
+        }
+
+        guard !shouldIgnoreResidualStartSignal(mode: mode) else {
+            return true
+        }
+
+        pendingStartAfterAudioSecured = mode
+        status = "Starting next dictation..."
+        lastError = ""
+        return true
+    }
+
+    private func recordStopForResidualStartSuppression(mode: RecordingMode) {
+        lastRecordingStopTime = CFAbsoluteTimeGetCurrent()
+        lastRecordingStopMode = mode
+    }
+
+    private func shouldIgnoreResidualStartSignal(mode: RecordingMode) -> Bool {
+        guard lastRecordingStopMode == mode else { return false }
+
+        let elapsed = CFAbsoluteTimeGetCurrent() - lastRecordingStopTime
+        return elapsed >= 0 && elapsed < 0.45
+    }
+
+    private func startPendingRecordingAfterAudioSecuredIfNeeded() {
+        guard let mode = pendingStartAfterAudioSecured else { return }
+        pendingStartAfterAudioSecured = nil
+
+        guard recordingStateMachine.state == .idle else { return }
+        guard canStartRecordingNow() else { return }
+
+        switch mode {
+        case .pressToTalk:
+            suppressNextPressToTalkStop = false
+            apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
+        case .handsFree:
+            apply(transition: recordingStateMachine.handleHandsFreeToggle())
+        }
+    }
+
+    private func allocateBackgroundProcessingSequence() -> Int {
+        let sequence = nextBackgroundProcessingSequence
+        nextBackgroundProcessingSequence += 1
+        return sequence
+    }
+
+    private func waitForCompletionTurn(sequence: Int) async {
+        guard sequence > nextCompletionSequenceToCommit else { return }
+
+        await withCheckedContinuation { continuation in
+            completionSequenceWaiters[sequence] = continuation
+        }
+    }
+
+    private func finishCompletionTurn(sequence: Int) {
+        guard sequence >= nextCompletionSequenceToCommit else { return }
+
+        completedCompletionSequences.insert(sequence)
+
+        while completedCompletionSequences.remove(nextCompletionSequenceToCommit) != nil {
+            nextCompletionSequenceToCommit += 1
+            completionSequenceWaiters.removeValue(forKey: nextCompletionSequenceToCommit)?.resume()
+        }
+    }
+
+    private func restoreActiveRecordingStatus() {
+        guard isRecording else { return }
+
+        switch activeRecordingMode {
+        case .handsFree:
+            status = "Hands-free listening..."
+        case .pressToTalk:
+            status = "Recording..."
+        case nil:
+            break
+        }
+        lastError = ""
     }
 
     private func dismissOverlaySoon(pop: Bool = false, delayNanoseconds: UInt64 = 1_500_000_000) {
@@ -1890,6 +2117,7 @@ final class DictationController: ObservableObject {
         hotkey.aiFinishHotkey = newValue.ai.handsFreeFinishHotkey
         hotkey.aiWorkflowFinishHotkeys = newValue.ai.workflows.compactMap(\.handsFreeFinishHotkey)
         overlay.controlWorkflows = enabledAIWorkflows
+        overlay.bubbleAppearance = newValue.general.bubbleAppearance
         updateActiveRecordingHotkeys()
         applyDockVisibility(showDockIcon: newValue.general.showDockIcon)
 

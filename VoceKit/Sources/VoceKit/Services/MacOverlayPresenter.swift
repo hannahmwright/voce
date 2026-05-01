@@ -236,6 +236,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var auraSecondaryLayer: CAGradientLayer?
     private var glassTintLayer: CAGradientLayer?
     private var sheenLayer: CAGradientLayer?
+    private var meterBarLayers: [CALayer] = []
+    private var processingIndicatorLayer: CAShapeLayer?
+    private var processingRunnerLayer: CALayer?
+    private var latestAudioLevel: Double = 0.18
     private var statusTextField: NSTextField?
     private var transcriptScrollView: NSScrollView?
     private var transcriptTextView: NSTextView?
@@ -269,7 +273,20 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     /// for choosing the processing video (light vs dark).  Set this to the
     /// app-level dark-mode preference so the overlay stays in sync even though
     /// it lives in a standalone NSPanel outside the SwiftUI view hierarchy.
-    public var prefersDarkAppearance: Bool?
+    public var prefersDarkAppearance: Bool? {
+        didSet {
+            guard oldValue != prefersDarkAppearance else { return }
+            refreshSurfaceAssets()
+            applyAppearanceForCurrentState()
+        }
+    }
+    public var bubbleAppearance: OverlayBubbleAppearance = .matchApp {
+        didSet {
+            guard oldValue != bubbleAppearance else { return }
+            refreshSurfaceAssets()
+            applyAppearanceForCurrentState()
+        }
+    }
     public var controlWorkflows: [AIWorkflow] = []
     public var onStopRequested: (() -> Void)?
     public var onAIWorkflowRequested: ((UUID) -> Void)?
@@ -285,6 +302,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private static let accentWheat = NSColor(red: 0.82, green: 0.74, blue: 0.52, alpha: 1.0)   // golden wheat
     private static let warmAccentFill = NSColor(red: 0.84, green: 0.89, blue: 0.76, alpha: 1.0)
     private static let warmAccentText = NSColor(red: 0.27, green: 0.34, blue: 0.19, alpha: 1.0)
+    private static let techBackground = NSColor(red: 0.055, green: 0.075, blue: 0.095, alpha: 0.92)
+    private static let techAccent = NSColor(red: 0.38, green: 0.95, blue: 0.82, alpha: 1.0)
     private static let compactCornerRadius: CGFloat = 26
     private static let transcriptCornerRadius: CGFloat = 30
     private static let initialTranscriptShellHeight: CGFloat = 78
@@ -395,20 +414,18 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             lastLiveTranscriptText = ""
             hasShownLiveTranscriptInSession = false
             resetTranscriptBubbleGrowth()
-            stopTimer()
-            showCompactVideoBadge()
+            showCompactListeningBadge()
 
         case .liveTranscript(let text, _):
             setBubbleControlsEnabled(true)
-            stopTimer()
             lastLiveTranscriptText = text
             hasShownLiveTranscriptInSession = true
-            showCompactVideoBadge()
+            showCompactListeningBadge()
 
         case .transcribing:
             setBubbleControlsEnabled(false)
             stopTimer()
-            showCompactVideoBadge()
+            showCompactProcessingBadge()
 
         case .inserted:
             setBubbleControlsEnabled(false)
@@ -712,6 +729,32 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassHost.layer?.addSublayer(sheen)
         self.sheenLayer = sheen
 
+        let processingIndicatorLayer = CAShapeLayer()
+        processingIndicatorLayer.fillColor = Self.accentBlue.withAlphaComponent(0.72).cgColor
+        processingIndicatorLayer.opacity = 0.0
+        glassHost.layer?.addSublayer(processingIndicatorLayer)
+        self.processingIndicatorLayer = processingIndicatorLayer
+
+        let processingRunnerLayer = CALayer()
+        processingRunnerLayer.backgroundColor = Self.techAccent.withAlphaComponent(0.86).cgColor
+        processingRunnerLayer.cornerRadius = 4
+        processingRunnerLayer.opacity = 0.0
+        processingRunnerLayer.shadowColor = Self.techAccent.withAlphaComponent(0.45).cgColor
+        processingRunnerLayer.shadowOpacity = 1
+        processingRunnerLayer.shadowOffset = .zero
+        processingRunnerLayer.shadowRadius = 8
+        glassHost.layer?.addSublayer(processingRunnerLayer)
+        self.processingRunnerLayer = processingRunnerLayer
+
+        meterBarLayers = (0..<12).map { _ in
+            let layer = CALayer()
+            layer.backgroundColor = Self.techAccent.withAlphaComponent(0.74).cgColor
+            layer.cornerRadius = 2
+            layer.opacity = 0.0
+            glassHost.layer?.addSublayer(layer)
+            return layer
+        }
+
         // Soft natural shadow — not colored, just depth.
         container.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
         container.layer?.shadowOffset = CGSize(width: 0, height: -3)
@@ -727,6 +770,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             glassHost.topAnchor.constraint(equalTo: container.topAnchor),
             glassHost.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
+        updateProcessingIndicatorFrame()
+        updateMeterBarFrames(level: 0.18)
 
         // Compact status text.
         let label = NSTextField(labelWithString: "Listening 00:00")
@@ -843,6 +888,122 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         })
     }
 
+    public func updateAudioLevel(_ level: Double) {
+        guard activePulseMode == .listening,
+              !meterBarLayers.isEmpty else { return }
+        latestAudioLevel = min(max(level, 0), 1)
+        updateMeterBarFrames(level: level)
+    }
+
+    private func updateMeterBarFrames(level: Double) {
+        guard let glassHostView, !meterBarLayers.isEmpty else { return }
+        let bounds = glassHostView.bounds
+        let barCount = meterBarLayers.count
+        let barWidth: CGFloat = bubbleAppearance == .techMeter ? 3 : 4
+        let spacing: CGFloat = 3
+        let totalWidth = (CGFloat(barCount) * barWidth) + (CGFloat(barCount - 1) * spacing)
+        let startX = max(12, bounds.midX - (totalWidth / 2))
+        let baselineY: CGFloat = 12
+        let baseLevel = pow(min(max(level, 0), 1), 0.52)
+        let minHeight: CGFloat = 5
+        let maxHeight: CGFloat = 25
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(false)
+        CATransaction.setAnimationDuration(0.07)
+        for (index, layer) in meterBarLayers.enumerated() {
+            let phase = Double(index) / Double(max(barCount - 1, 1))
+            let variation = 0.48 + (0.52 * abs(sin((phase * .pi * 2) + (Date().timeIntervalSince1970 * 4.4))))
+            let height = minHeight + (baseLevel * variation * maxHeight)
+            layer.backgroundColor = meterBarColor.withAlphaComponent(0.70).cgColor
+            layer.frame = CGRect(
+                x: startX + (CGFloat(index) * (barWidth + spacing)),
+                y: baselineY,
+                width: barWidth,
+                height: max(minHeight, height)
+            )
+            layer.opacity = Float(0.30 + (baseLevel * 0.54))
+        }
+        CATransaction.commit()
+    }
+
+    private func updateProcessingIndicatorFrame() {
+        guard let glassHostView, let processingIndicatorLayer else { return }
+        let rect = CGRect(x: glassHostView.bounds.maxX - 22, y: 14, width: 7, height: 7)
+        let path = CGPath(ellipseIn: rect, transform: nil)
+        processingIndicatorLayer.path = path
+    }
+
+    private func updateProcessingRunnerFrame() {
+        guard let glassHostView, let processingRunnerLayer else { return }
+        let size = CGSize(width: 18, height: 7)
+        processingRunnerLayer.bounds = CGRect(origin: .zero, size: size)
+        processingRunnerLayer.cornerRadius = size.height / 2
+        processingRunnerLayer.position = CGPoint(x: glassHostView.bounds.midX, y: glassHostView.bounds.midY)
+    }
+
+    private func setMeterVisible(_ visible: Bool) {
+        for layer in meterBarLayers {
+            layer.opacity = visible ? max(layer.opacity, 0.24) : 0.0
+        }
+    }
+
+    private func startMeterBars() {
+        updateMeterBarFrames(level: max(latestAudioLevel, 0.18))
+        setMeterVisible(true)
+    }
+
+    private func addProcessingIndicatorAnimation() {
+        guard bubbleAppearance == .techMeter else { return }
+        startTechProcessingRunnerAnimation()
+    }
+
+    private func startTechProcessingRunnerAnimation() {
+        guard let glassHostView, let layer = processingRunnerLayer else { return }
+        updateProcessingRunnerFrame()
+        layer.removeAllAnimations()
+        layer.backgroundColor = Self.techAccent.withAlphaComponent(0.86).cgColor
+        layer.opacity = 0.92
+
+        guard !reduceMotion else { return }
+
+        let travel = CABasicAnimation(keyPath: "position.x")
+        travel.fromValue = glassHostView.bounds.minX + 18
+        travel.toValue = glassHostView.bounds.maxX - 18
+        travel.duration = 1.05
+        travel.autoreverses = true
+        travel.repeatCount = .infinity
+        travel.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        travel.isRemovedOnCompletion = false
+
+        let squash = CABasicAnimation(keyPath: "transform.scale.x")
+        squash.fromValue = 0.72
+        squash.toValue = 1.28
+        squash.duration = 0.34
+        squash.autoreverses = true
+        squash.repeatCount = .infinity
+        squash.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        squash.isRemovedOnCompletion = false
+
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 0.56
+        pulse.toValue = 0.96
+        pulse.duration = 0.48
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        pulse.isRemovedOnCompletion = false
+
+        layer.add(travel, forKey: "techRunnerTravel")
+        layer.add(squash, forKey: "techRunnerSquash")
+        layer.add(pulse, forKey: "techRunnerPulse")
+    }
+
+    private func stopTechProcessingRunnerAnimation() {
+        processingRunnerLayer?.removeAllAnimations()
+        processingRunnerLayer?.opacity = 0.0
+    }
+
     private func updateTranscript(_ text: String, preserveBubbleShell: Bool = false) {
         statusTextField?.isHidden = true
         transcriptScrollView?.isHidden = false
@@ -893,42 +1054,93 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func applyDefaultSurfaceAppearance() {
         stopProcessingVideo()
+        processingVideoLayer?.opacity = 0.0
+        processingIndicatorLayer?.opacity = 0.0
+        stopTechProcessingRunnerAnimation()
+        if bubbleAppearance == .techMeter {
+            applyTechSurfaceAppearance(isProcessing: false)
+            return
+        }
+
         backgroundImageLayer?.opacity = 0.70
         revealedBackgroundImageLayer?.opacity = 0.0
-        processingVideoLayer?.opacity = 0.0
         scrimLayer?.colors = [
-            NSColor.white.withAlphaComponent(0.82).cgColor,
-            NSColor.white.withAlphaComponent(0.62).cgColor,
-            NSColor.white.withAlphaComponent(0.35).cgColor
+            bubbleSurfaceColor(lightAlpha: 0.82, darkAlpha: 0.78).cgColor,
+            bubbleSurfaceColor(lightAlpha: 0.62, darkAlpha: 0.56).cgColor,
+            bubbleSurfaceColor(lightAlpha: 0.35, darkAlpha: 0.36).cgColor
         ]
         glassTintLayer?.colors = [
             Self.accentCyan.withAlphaComponent(0.06).cgColor,
-            NSColor.white.withAlphaComponent(0.02).cgColor,
+            neutralSurfaceColor(lightAlpha: 0.02, darkAlpha: 0.04).cgColor,
             Self.accentWheat.withAlphaComponent(0.10).cgColor
         ]
         sheenLayer?.opacity = 1.0
         glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
-        glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.50).cgColor
+        glassHostView?.layer?.borderColor = bubbleBorderColor.cgColor
+        statusTextField?.textColor = bubbleTextColor
+        statusTextField?.shadow = resolvedTextShadow
+        setMeterVisible(activePulseMode == .listening)
     }
 
     private func applyTranscribingSurfaceAppearance() {
+        if bubbleAppearance == .techMeter {
+            stopProcessingVideo()
+            applyTechSurfaceAppearance(isProcessing: true)
+            return
+        }
+
         playProcessingVideoIfNeeded()
         backgroundImageLayer?.opacity = 0.0
         revealedBackgroundImageLayer?.opacity = 0.0
         processingVideoLayer?.opacity = 1.0
+        processingIndicatorLayer?.opacity = 0.0
+        stopTechProcessingRunnerAnimation()
         scrimLayer?.colors = [
-            NSColor.white.withAlphaComponent(0.28).cgColor,
-            NSColor.white.withAlphaComponent(0.16).cgColor,
-            NSColor.white.withAlphaComponent(0.08).cgColor
+            bubbleSurfaceColor(lightAlpha: 0.28, darkAlpha: 0.32).cgColor,
+            bubbleSurfaceColor(lightAlpha: 0.16, darkAlpha: 0.22).cgColor,
+            bubbleSurfaceColor(lightAlpha: 0.08, darkAlpha: 0.14).cgColor
         ]
         glassTintLayer?.colors = [
             Self.accentCyan.withAlphaComponent(0.03).cgColor,
-            NSColor.white.withAlphaComponent(0.01).cgColor,
+            neutralSurfaceColor(lightAlpha: 0.01, darkAlpha: 0.03).cgColor,
             Self.accentWheat.withAlphaComponent(0.04).cgColor
         ]
         sheenLayer?.opacity = 0.42
         glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
-        glassHostView?.layer?.borderColor = NSColor.white.withAlphaComponent(0.56).cgColor
+        glassHostView?.layer?.borderColor = bubbleBorderColor.cgColor
+        statusTextField?.textColor = bubbleTextColor
+        statusTextField?.shadow = resolvedTextShadow
+        setMeterVisible(false)
+    }
+
+    private func applyTechSurfaceAppearance(isProcessing: Bool) {
+        backgroundImageLayer?.opacity = 0.0
+        revealedBackgroundImageLayer?.opacity = 0.0
+        processingVideoLayer?.opacity = 0.0
+        scrimLayer?.colors = [
+            Self.techBackground.withAlphaComponent(isProcessing ? 0.86 : 0.92).cgColor,
+            NSColor(red: 0.08, green: 0.10, blue: 0.13, alpha: isProcessing ? 0.80 : 0.88).cgColor,
+            NSColor(red: 0.04, green: 0.05, blue: 0.07, alpha: 0.92).cgColor
+        ]
+        glassTintLayer?.colors = [
+            Self.techAccent.withAlphaComponent(isProcessing ? 0.08 : 0.12).cgColor,
+            Self.accentBlue.withAlphaComponent(0.05).cgColor,
+            NSColor.black.withAlphaComponent(0.04).cgColor
+        ]
+        sheenLayer?.opacity = 0.20
+        processingIndicatorLayer?.fillColor = Self.techAccent.withAlphaComponent(0.72).cgColor
+        processingIndicatorLayer?.opacity = 0.0
+        if isProcessing {
+            startTechProcessingRunnerAnimation()
+        } else {
+            stopTechProcessingRunnerAnimation()
+        }
+        glassHostView?.layer?.backgroundColor = Self.techBackground.cgColor
+        glassHostView?.layer?.borderColor = Self.techAccent.withAlphaComponent(isProcessing ? 0.38 : 0.26).cgColor
+        containerView?.layer?.shadowColor = Self.techAccent.withAlphaComponent(0.16).cgColor
+        statusTextField?.textColor = NSColor(red: 0.80, green: 1.0, blue: 0.94, alpha: 0.92)
+        statusTextField?.shadow = nil
+        setMeterVisible(!isProcessing)
     }
 
     private func applyLayout(_ newLayout: LayoutMode, bubbleSize requestedSize: NSSize? = nil) {
@@ -951,6 +1163,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         window.contentView?.layoutSubtreeIfNeeded()
         glassHostView?.layoutSubtreeIfNeeded()
         updateBorderGradientFrame(for: glassHostView?.bounds.size ?? targetSize)
+        updateProcessingIndicatorFrame()
+        updateProcessingRunnerFrame()
+        updateMeterBarFrames(level: 0.18)
         positionWindow()
         let cornerRadius = newLayout == .transcript ? Self.transcriptCornerRadius : Self.compactCornerRadius
         containerView?.layer?.cornerRadius = cornerRadius
@@ -968,9 +1183,22 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         transcriptBubbleHeight = TranscriptOverlayLayout.minimumTranscriptHeight
     }
 
-    private func showCompactVideoBadge() {
+    private func showCompactListeningBadge() {
         applyLayout(.compact)
-        hideContent()
+        transcriptScrollView?.isHidden = true
+        statusTextField?.isHidden = true
+        resetBorderToAccent()
+        applyDefaultSurfaceAppearance()
+        startDotPulse()
+        startMeterBars()
+        startTimer()
+        updateListeningText()
+    }
+
+    private func showCompactProcessingBadge() {
+        applyLayout(.compact)
+        transcriptScrollView?.isHidden = true
+        statusTextField?.isHidden = true
         resetBorderToAccent()
         applyTranscribingSurfaceAppearance()
         startTranscribingPulse()
@@ -1443,17 +1671,25 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         addBreathingAnimation(to: auraSecondaryLayer, key: "secondaryBreath", scale: 1.12, opacity: 0.86, duration: 3.8)
         addDriftAnimation(to: auraSecondaryLayer)
         startBorderAnimation()
+        startMeterBars()
     }
 
     private func startTranscribingPulse() {
         guard activePulseMode != .transcribing else { return }
         stopDotPulse()
         activePulseMode = .transcribing
-        playProcessingVideoIfNeeded()
+        if bubbleAppearance != .techMeter {
+            playProcessingVideoIfNeeded()
+        }
+        addProcessingIndicatorAnimation()
     }
 
     private func stopDotPulse() {
         stopProcessingVideo()
+        processingIndicatorLayer?.removeAllAnimations()
+        processingIndicatorLayer?.opacity = 0.0
+        stopTechProcessingRunnerAnimation()
+        setMeterVisible(false)
         activePulseMode = .none
         auraPrimaryLayer?.removeAllAnimations()
         auraSecondaryLayer?.removeAllAnimations()
@@ -1503,11 +1739,88 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private var prefersDarkProcessingVideo: Bool {
+        resolvedBubbleIsDark
+    }
+
+    private var resolvedBubbleIsDark: Bool {
+        switch bubbleAppearance {
+        case .dark, .techMeter:
+            return true
+        case .light:
+            return false
+        case .matchApp:
+            break
+        }
         if let override = prefersDarkAppearance {
             return override
         }
         let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
         return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+
+    private var bubbleTextColor: NSColor {
+        resolvedBubbleIsDark
+            ? NSColor(red: 0.92, green: 0.95, blue: 0.96, alpha: 0.90)
+            : NSColor(calibratedWhite: 0.20, alpha: 0.85)
+    }
+
+    private var bubbleBorderColor: NSColor {
+        resolvedBubbleIsDark
+            ? NSColor.white.withAlphaComponent(0.18)
+            : NSColor.white.withAlphaComponent(0.50)
+    }
+
+    private var meterBarColor: NSColor {
+        switch bubbleAppearance {
+        case .techMeter:
+            return Self.techAccent
+        case .dark:
+            return Self.accentCyan
+        case .light:
+            return NSColor(red: 0.36, green: 0.52, blue: 0.58, alpha: 1.0)
+        case .matchApp:
+            return resolvedBubbleIsDark
+                ? Self.accentCyan
+                : NSColor(red: 0.36, green: 0.52, blue: 0.58, alpha: 1.0)
+        }
+    }
+
+    private var resolvedTextShadow: NSShadow? {
+        bubbleAppearance == .techMeter ? nil : textShadow
+    }
+
+    private func bubbleSurfaceColor(lightAlpha: CGFloat, darkAlpha: CGFloat) -> NSColor {
+        resolvedBubbleIsDark
+            ? NSColor(red: 0.08, green: 0.09, blue: 0.11, alpha: darkAlpha)
+            : NSColor.white.withAlphaComponent(lightAlpha)
+    }
+
+    private func neutralSurfaceColor(lightAlpha: CGFloat, darkAlpha: CGFloat) -> NSColor {
+        resolvedBubbleIsDark
+            ? NSColor.black.withAlphaComponent(darkAlpha)
+            : NSColor.white.withAlphaComponent(lightAlpha)
+    }
+
+    private func refreshSurfaceAssets() {
+        if let cgImage = Self.loadBlurredBackgroundImage(isDark: prefersDarkProcessingVideo) {
+            backgroundImageLayer?.contents = cgImage
+        }
+        if let cgImage = Self.loadBackgroundCGImage(isDark: prefersDarkProcessingVideo) {
+            revealedBackgroundImageLayer?.contents = cgImage
+        }
+        processingPlayerURL = nil
+        processingPlayer?.pause()
+    }
+
+    private func applyAppearanceForCurrentState() {
+        switch activePulseMode {
+        case .listening:
+            applyDefaultSurfaceAppearance()
+        case .transcribing:
+            applyTranscribingSurfaceAppearance()
+        case .none:
+            applyDefaultSurfaceAppearance()
+        }
     }
 
     /// Observe both ends of the video so we can ping-pong playback

@@ -18,8 +18,18 @@ struct CloudCleanupEngineAdapter: CleanupEngine, Sendable {
         profile: StyleProfile,
         lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
+        let rawText = normalizeText(raw.text)
+        guard !rawText.isEmpty else {
+            return CleanTranscript(text: "")
+        }
+
         var cleaned = try await refinementEngine.refine(
-            raw: raw,
+            raw: RawTranscript(
+                text: rawText,
+                segments: raw.segments,
+                avgConfidence: raw.avgConfidence,
+                durationMS: raw.durationMS
+            ),
             profile: profile,
             lexicon: lexicon,
             appContext: currentAppContextProvider()
@@ -30,7 +40,7 @@ struct CloudCleanupEngineAdapter: CleanupEngine, Sendable {
         cleaned.text = normalizeText(lexiconResult.text)
         cleaned.edits.append(contentsOf: lexiconResult.edits)
 
-        if cleaned.text.isEmpty && !raw.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if cleaned.text.isEmpty && !rawText.isEmpty {
             throw CloudDictationError.invalidResponse
         }
 

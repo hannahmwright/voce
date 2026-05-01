@@ -3,6 +3,28 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.40</title>
+      <sparkle:version>43</sparkle:version>
+      <sparkle:shortVersionString>0.4.40</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.40</h2>
+        <ul>
+          <li>Speeds up cloud dictation and keeps the app ready for a new dictation while the previous one finishes processing</li>
+          <li>Adds selectable dictation bubble styles with responsive voice bars, a tech meter option, and subtler processing states</li>
+          <li>Adds settings search, refreshed usage metrics, richer media diagnostics in bug reports, and more reliable update behavior</li>
+          <li>Improves stop and restart reliability during quick back-to-back dictations</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 01 May 2026 22:15:27 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.40/Voce-0.4.40.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="ryuPlfBApSaVCjd20al7d+0YMEKn7jgNgjLDC7r0Ib9qyWGlZ2JoVFou2mB+iXpPzPp4+o19bF24hFNOraUMCQ=="
+        length="18637521"
+      />
+    </item>
+    <item>
       <title>Version 0.4.39</title>
       <sparkle:version>42</sparkle:version>
       <sparkle:shortVersionString>0.4.39</sparkle:shortVersionString>

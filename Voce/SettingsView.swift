@@ -14,6 +14,8 @@ struct SettingsView: View {
     private let onClose: (() -> Void)?
     @State private var preferencesDraft: AppPreferences = .default
     @State private var selectedGroup: SettingsGroup = .setup
+    @State private var settingsSearchText = ""
+    @FocusState private var settingsSearchIsFocused: Bool
 
     init(
         initialLaunchTarget: SettingsLaunchTarget? = nil,
@@ -66,19 +68,22 @@ struct SettingsView: View {
                     .keyboardShortcut(.escape, modifiers: [])
                     .accessibilityLabel("Back")
 
-                    Text("Settings")
-                        .font(VoceDesign.font(size: isCompactHeight ? 20 : 22, weight: .bold))
-                        .foregroundStyle(VoceDesign.textPrimary)
+	                    Text("Settings")
+	                        .font(VoceDesign.font(size: isCompactHeight ? 20 : 22, weight: .bold))
+	                        .foregroundStyle(VoceDesign.textPrimary)
 
-                    Spacer()
-                }
-                .padding(.horizontal, isCompactWidth ? chromePadding : VoceDesign.xl)
-                .padding(.top, chromePadding)
-                .padding(.bottom, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
+	                    Spacer()
 
-                topTabBar(isCompactHeight: isCompactHeight)
-                .padding(.horizontal, shellPadding)
-                .padding(.bottom, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
+	                    settingsSearchField
+	                        .frame(width: isCompactWidth ? 210 : 260)
+	                }
+	                .padding(.horizontal, isCompactWidth ? chromePadding : VoceDesign.xl)
+	                .padding(.top, chromePadding)
+	                .padding(.bottom, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
+
+	                topTabBar(isCompactHeight: isCompactHeight)
+	                .padding(.horizontal, shellPadding)
+	                .padding(.bottom, isCompactHeight ? VoceDesign.sm : VoceDesign.md)
 
                 contentPane(isCompactHeight: isCompactHeight)
                     .padding(.horizontal, shellPadding)
@@ -119,6 +124,13 @@ struct SettingsView: View {
                 controller.savePreferencesQuietly(preferences: newValue)
             }
         }
+        .onExitCommand {
+            if isSearchingSettings {
+                settingsSearchText = ""
+            } else {
+                closeSettings()
+            }
+        }
     }
 
     private func topTabBar(isCompactHeight: Bool) -> some View {
@@ -141,6 +153,47 @@ struct SettingsView: View {
             RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
                 .stroke(Color.white.opacity(0.28), lineWidth: VoceDesign.borderThin)
         )
+    }
+
+    private var settingsSearchField: some View {
+        HStack(spacing: VoceDesign.xs) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            TextField("Find setting", text: $settingsSearchText)
+                .textFieldStyle(.plain)
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textPrimary)
+                .focused($settingsSearchIsFocused)
+
+            if !settingsSearchText.isEmpty {
+                Button {
+                    settingsSearchText = ""
+                    settingsSearchIsFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear settings search")
+            }
+        }
+        .padding(.horizontal, VoceDesign.sm)
+        .padding(.vertical, VoceDesign.xs)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                .fill(VoceDesign.surface.opacity(0.64))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                        .stroke(
+                            settingsSearchIsFocused ? VoceDesign.accent.opacity(0.42) : Color.white.opacity(0.24),
+                            lineWidth: VoceDesign.borderThin
+                        )
+                )
+        )
+        .accessibilityElement(children: .contain)
     }
 
     private func topTabButton(for group: SettingsGroup, isCompactHeight: Bool) -> some View {
@@ -167,12 +220,16 @@ struct SettingsView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: VoceDesign.sm) {
-                    groupContent(selectedGroup)
+                    if isSearchingSettings {
+                        searchResultsContent
+                    } else {
+                        groupContent(selectedGroup)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, VoceDesign.xs)
             }
-            .id(selectedGroup)
+            .id(isSearchingSettings ? "settings-search" : selectedGroup.rawValue)
             .scrollIndicators(.visible)
         }
         .padding(isCompactHeight ? VoceDesign.md : VoceDesign.lg)
@@ -194,15 +251,73 @@ struct SettingsView: View {
 
     private func contentHeader(isCompactHeight: Bool) -> some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
-            Text(selectedGroup.title)
+            Text(isSearchingSettings ? "Search Results" : selectedGroup.title)
                 .font(VoceDesign.font(size: isCompactHeight ? 22 : 24, weight: .bold))
                 .foregroundStyle(VoceDesign.textPrimary)
 
-            Text(selectedGroup.subtitle)
+            Text(isSearchingSettings ? searchSummaryText : selectedGroup.subtitle)
                 .font(VoceDesign.body())
                 .foregroundStyle(VoceDesign.textSecondary)
         }
         .padding(.bottom, isCompactHeight ? 0 : VoceDesign.xs)
+    }
+
+    private var isSearchingSettings: Bool {
+        !normalizedSettingsSearchText.isEmpty
+    }
+
+    private var normalizedSettingsSearchText: String {
+        settingsSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var searchSummaryText: String {
+        let count = visibleSearchResults.count
+        if count == 1 {
+            return "1 match for \"\(normalizedSettingsSearchText)\""
+        }
+        return "\(count) matches for \"\(normalizedSettingsSearchText)\""
+    }
+
+    private var visibleSearchResults: [SettingsSearchResult] {
+        SettingsSearchResult.matches(
+            query: normalizedSettingsSearchText,
+            visibleGroups: visibleGroups
+        )
+    }
+
+    @ViewBuilder
+    private var searchResultsContent: some View {
+        if visibleSearchResults.isEmpty {
+            settingsSubcard {
+                HStack(spacing: VoceDesign.md) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: VoceDesign.iconMD, weight: .semibold))
+                        .foregroundStyle(VoceDesign.textSecondary)
+
+                    VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                        Text("No matching settings")
+                            .font(VoceDesign.bodyEmphasis())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        Text("Try words like hotkey, cloud, media, bubble, launch, AI, support, or microphone.")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        } else {
+            ForEach(visibleSearchResults) { result in
+                Button {
+                    selectedGroup = result.group
+                    settingsSearchText = ""
+                    settingsSearchIsFocused = false
+                } label: {
+                    SettingsSearchResultRow(result: result)
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     private var visibleGroups: [SettingsGroup] {
@@ -303,6 +418,8 @@ struct SettingsView: View {
                 appearancePreference: preferencesDraft.general.appearancePreference,
                 launchAtLoginEnabled: preferencesDraft.general.launchAtLoginEnabled,
                 showDockIcon: preferencesDraft.general.showDockIcon,
+                pauseDuringHandsFree: preferencesDraft.media.pauseDuringHandsFree,
+                pauseDuringPressToTalk: preferencesDraft.media.pauseDuringPressToTalk,
                 tapHotkeyLabel: settingsTapToTalkLabel,
                 holdHotkeyLabel: settingsHoldToTalkLabel,
                 hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage,
@@ -423,6 +540,170 @@ private enum SettingsGroup: String, CaseIterable {
     }
 }
 
+private struct SettingsSearchResult: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let group: SettingsGroup
+    let keywords: [String]
+
+    var searchableText: String {
+        ([title, detail, group.title, group.subtitle] + keywords)
+            .joined(separator: " ")
+            .lowercased()
+    }
+
+    static func matches(query: String, visibleGroups: [SettingsGroup]) -> [SettingsSearchResult] {
+        let terms = query
+            .lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+
+        guard !terms.isEmpty else { return [] }
+
+        let visibleGroupSet = Set(visibleGroups)
+        return all
+            .filter { visibleGroupSet.contains($0.group) }
+            .filter { result in
+                terms.allSatisfy { result.searchableText.contains($0) }
+            }
+    }
+
+    private static let all: [SettingsSearchResult] = [
+        .init(
+            id: "access",
+            title: "Voce access",
+            detail: "Subscription email, verification code, entitlement, and account access.",
+            group: .setup,
+            keywords: ["login", "email", "code", "base", "pro", "billing", "subscription", "account"]
+        ),
+        .init(
+            id: "permissions",
+            title: "Permissions",
+            detail: "Microphone, speech recognition, accessibility, and input monitoring access.",
+            group: .setup,
+            keywords: ["privacy", "system settings", "input", "monitoring", "mic", "speech", "accessibility"]
+        ),
+        .init(
+            id: "recording-shortcuts",
+            title: "Recording shortcuts",
+            detail: "Tap to Talk, Hold to Talk, global hotkeys, Return to submit, dictionary quick fix, and snippet creation.",
+            group: .setup,
+            keywords: ["shortcut", "key", "hotkey", "keyboard", "option", "hold", "tap", "press", "return", "submit"]
+        ),
+        .init(
+            id: "dictation-engine",
+            title: "Dictation engine",
+            detail: "Choose local or cloud transcription, language, and cloud model behavior.",
+            group: .setup,
+            keywords: ["cloud", "local", "model", "transcription", "speech", "openai", "language", "locale", "whisper"]
+        ),
+        .init(
+            id: "media",
+            title: "Media controls",
+            detail: "Pause and resume music or video while dictating.",
+            group: .behavior,
+            keywords: ["spotify", "youtube", "music", "pause", "resume", "playback", "sound", "audio"]
+        ),
+        .init(
+            id: "ai-workflows",
+            title: "AI workflows",
+            detail: "Configure AI cleanup, finish keys, workflow shortcuts, and spoken triggers.",
+            group: .ai,
+            keywords: ["cleanup", "refinement", "refine", "apple intelligence", "trigger", "workflow", "prompt", "finish"]
+        ),
+        .init(
+            id: "appearance",
+            title: "Appearance",
+            detail: "Choose app theme, light or dark mode behavior, and the dictation bubble style.",
+            group: .general,
+            keywords: ["theme", "dark", "light", "bubble", "tech", "meter", "visual", "mode"]
+        ),
+        .init(
+            id: "profile",
+            title: "Profile",
+            detail: "Set the name Voce uses in the main recording prompt.",
+            group: .general,
+            keywords: ["name", "username", "display", "greeting", "prompt"]
+        ),
+        .init(
+            id: "app-behavior",
+            title: "App behavior",
+            detail: "Launch at login, Dock icon visibility, and app-level behavior.",
+            group: .general,
+            keywords: ["startup", "login", "dock", "window", "menu bar", "launch"]
+        ),
+        .init(
+            id: "walkthrough",
+            title: "Walkthrough",
+            detail: "Replay the teaching flow for dictation, shortcuts, and dictionary fixes.",
+            group: .help,
+            keywords: ["tutorial", "guide", "practice", "learn", "training", "onboarding"]
+        ),
+        .init(
+            id: "support",
+            title: "Support",
+            detail: "Report a bug, send feedback, request a feature, and include diagnostics.",
+            group: .help,
+            keywords: ["bug", "feedback", "feature", "diagnostics", "email", "help", "contact"]
+        ),
+        .init(
+            id: "faq",
+            title: "FAQ",
+            detail: "Quick answers for starting dictation, fixing words, and pasted transcripts.",
+            group: .help,
+            keywords: ["question", "answer", "fix word", "clipboard", "paste", "dictating"]
+        )
+    ]
+}
+
+private struct SettingsSearchResultRow: View {
+    let result: SettingsSearchResult
+
+    var body: some View {
+        settingsSubcard {
+            HStack(alignment: .top, spacing: VoceDesign.md) {
+                Image(systemName: result.group.icon)
+                    .font(.system(size: VoceDesign.iconMD, weight: .semibold))
+                    .foregroundStyle(VoceDesign.accent)
+                    .frame(width: 18)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                    HStack(spacing: VoceDesign.sm) {
+                        Text(result.title)
+                            .font(VoceDesign.bodyEmphasis())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        Text(result.group.title)
+                            .font(VoceDesign.captionEmphasis())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                            .padding(.horizontal, VoceDesign.xs)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(VoceDesign.surfaceSecondary.opacity(0.78))
+                            )
+                    }
+
+                    Text(result.detail)
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .padding(.top, 3)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 private struct HelpFAQSection: View {
     let tapHotkeyLabel: String
     let holdHotkeyLabel: String
@@ -476,6 +757,8 @@ private struct HelpSupportSection: View {
     let appearancePreference: AppAppearancePreference
     let launchAtLoginEnabled: Bool
     let showDockIcon: Bool
+    let pauseDuringHandsFree: Bool
+    let pauseDuringPressToTalk: Bool
     let tapHotkeyLabel: String
     let holdHotkeyLabel: String
     let hotkeyRegistrationMessage: String
@@ -484,6 +767,7 @@ private struct HelpSupportSection: View {
     @State private var selectedCategory: VoceSupportRequestCategory?
     @State private var feedbackMessage = ""
     @State private var feedbackIsError = false
+    @State private var mediaDiagnosticsText = "media_diagnostics_status=pending"
 
     var body: some View {
         settingsCardWithSubtitle(
@@ -552,6 +836,9 @@ private struct HelpSupportSection: View {
             )
             .environmentObject(controller)
         }
+        .task {
+            await refreshMediaDiagnostics()
+        }
     }
 
     private var diagnosticsText: String {
@@ -567,10 +854,18 @@ private struct HelpSupportSection: View {
             "appearance=\(appearancePreference.title)",
             "launch_at_login=\(launchAtLoginEnabled)",
             "show_dock_icon=\(showDockIcon)",
+            "pause_media_for_tap_to_talk=\(pauseDuringHandsFree)",
+            "pause_media_for_hold_to_talk=\(pauseDuringPressToTalk)",
             "ai_available=\(aiAvailable)",
-            "hotkey_registration=\(hotkeyRegistrationMessage.isEmpty ? "ok" : hotkeyRegistrationMessage)"
+            "hotkey_registration=\(hotkeyRegistrationMessage.isEmpty ? "ok" : hotkeyRegistrationMessage)",
+            mediaDiagnosticsText
         ]
         return values.joined(separator: "\n")
+    }
+
+    private func refreshMediaDiagnostics() async {
+        let snapshot = await MacMediaInterruptionService.capturePlaybackDiagnostics()
+        mediaDiagnosticsText = snapshot.diagnosticsText
     }
 }
 

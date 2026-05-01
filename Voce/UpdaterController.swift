@@ -26,6 +26,7 @@ final class UpdaterController: NSObject, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.updaterController.startUpdater()
+            self.disableAutomaticUpdateDownloadsIfNeeded()
             self.refreshUpdaterState()
 
             // Force a launch-time check for users who just installed an update,
@@ -75,6 +76,18 @@ final class UpdaterController: NSObject, ObservableObject {
     private func refreshUpdaterState() {
         canCheckForUpdates = updaterController.updater.canCheckForUpdates
         automaticallyChecksForUpdates = updaterController.updater.automaticallyChecksForUpdates
+    }
+
+    private func disableAutomaticUpdateDownloadsIfNeeded() {
+        let updater = updaterController.updater
+        guard updater.automaticallyDownloadsUpdates else {
+            return
+        }
+
+        // Existing installs may have persisted SUAutomaticallyUpdate=true from
+        // earlier releases. Background-downloaded update sessions can become
+        // stale when several releases ship before the user clicks install.
+        updater.automaticallyDownloadsUpdates = false
     }
 
     @objc private func handleExternalUpdateRequest() {

@@ -13,6 +13,45 @@ internal func voceMediaKeyTapLocation(
     }
 }
 
+public struct MediaPlaybackDiagnosticsSnapshot: Sendable, Equatable {
+    public let detection: String
+    public let displayID: String?
+    public let anyApplicationIsPlaying: Bool?
+    public let nowPlayingApplicationIsPlaying: Bool?
+    public let playbackState: Int?
+    public let playbackStateIsAdvancing: Bool?
+    public let playbackRate: Double?
+    public let stateSignalTrusted: Bool
+    public let stateTrustReason: String
+
+    public var diagnosticsText: String {
+        [
+            "media_detection=\(detection)",
+            "media_display_id=\(displayID ?? "nil")",
+            "media_any_application_is_playing=\(Self.describe(anyApplicationIsPlaying))",
+            "media_now_playing_application_is_playing=\(Self.describe(nowPlayingApplicationIsPlaying))",
+            "media_playback_state=\(Self.describe(playbackState))",
+            "media_playback_state_is_advancing=\(Self.describe(playbackStateIsAdvancing))",
+            "media_playback_rate=\(Self.describe(playbackRate))",
+            "media_state_signal_trusted=\(stateSignalTrusted)",
+            "media_state_trust_reason=\(stateTrustReason)"
+        ].joined(separator: "\n")
+    }
+
+    private static func describe(_ value: Bool?) -> String {
+        value.map { String($0) } ?? "nil"
+    }
+
+    private static func describe(_ value: Int?) -> String {
+        value.map { String($0) } ?? "nil"
+    }
+
+    private static func describe(_ value: Double?) -> String {
+        guard let value else { return "nil" }
+        return String(format: "%.4f", value)
+    }
+}
+
 @MainActor
 public final class MacMediaInterruptionService: MediaInterruptionService {
     private static let logger = VoceKitDiagnostics.logger
@@ -38,6 +77,75 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         self.pauseConfirmationDelayNanoseconds = 120_000_000
         self.unknownResumeRetryDelayNanoseconds = 150_000_000
         self.maximumUnknownResumeRetryCount = 2
+    }
+
+    public static func capturePlaybackDiagnostics() async -> MediaPlaybackDiagnosticsSnapshot {
+        let bridge = MediaRemoteBridge()
+        bridge.activate()
+        defer { bridge.deactivate() }
+
+        async let anyApplicationIsPlaying = bridge.anyApplicationIsPlaying()
+        async let nowPlayingApplicationDisplayID = bridge.nowPlayingApplicationDisplayID()
+        async let nowPlayingApplicationIsPlaying = bridge.nowPlayingApplicationIsPlaying()
+        async let nowPlayingPlaybackState = bridge.nowPlayingPlaybackState()
+        async let nowPlayingPlaybackRate = bridge.nowPlayingPlaybackRate()
+
+        let anyPlaying = await anyApplicationIsPlaying
+        let displayID = await nowPlayingApplicationDisplayID
+        let nowPlaying = await nowPlayingApplicationIsPlaying
+        let playbackState = await nowPlayingPlaybackState
+        let playbackRate = await nowPlayingPlaybackRate
+
+        let trust = MultiSignalMediaPlaybackStateDetector.playbackStateTrust(
+            playbackState: playbackState,
+            playbackRate: playbackRate,
+            nowPlaying: nowPlaying
+        )
+
+        let playbackStateIsAdvancing: Bool?
+        if trust.trusted, let playbackState {
+            playbackStateIsAdvancing = bridge.isPlaybackStateAdvancing(playbackState)
+        } else {
+            playbackStateIsAdvancing = nil
+        }
+
+        let hasStrongPositive =
+            (playbackRate.map { $0 > 0 } ?? false)
+            || (playbackStateIsAdvancing == true)
+        let hasStrongNegative =
+            (playbackRate.map { $0 == 0 } ?? false)
+            || (playbackStateIsAdvancing == false)
+        let hasWeakPositive = (anyPlaying == true) || (nowPlaying == true)
+
+        let detection: String
+        if anyPlaying == false,
+           nowPlaying == false,
+           playbackState == MultiSignalMediaPlaybackStateDetector.pausedPlaybackState,
+           playbackRate == nil {
+            detection = PlaybackDetectionResult.notPlaying.logValue
+        } else if hasStrongPositive && !hasStrongNegative {
+            detection = PlaybackDetectionResult.playing.logValue
+        } else if hasStrongPositive && hasStrongNegative {
+            detection = PlaybackDetectionResult.unknown.logValue
+        } else if hasStrongNegative {
+            detection = PlaybackDetectionResult.notPlaying.logValue
+        } else if hasWeakPositive {
+            detection = PlaybackDetectionResult.likelyPlaying.logValue
+        } else {
+            detection = PlaybackDetectionResult.unknown.logValue
+        }
+
+        return MediaPlaybackDiagnosticsSnapshot(
+            detection: detection,
+            displayID: displayID,
+            anyApplicationIsPlaying: anyPlaying,
+            nowPlayingApplicationIsPlaying: nowPlaying,
+            playbackState: playbackState,
+            playbackStateIsAdvancing: playbackStateIsAdvancing,
+            playbackRate: playbackRate,
+            stateSignalTrusted: trust.trusted,
+            stateTrustReason: trust.reason
+        )
     }
 
     init(
@@ -366,7 +474,7 @@ protocol MediaRemoteBridging: Sendable {
 final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
     private static let logger = VoceKitDiagnostics.logger
     private static let weakPositiveConfirmationDelayNanoseconds: UInt64 = 80_000_000
-    private static let pausedPlaybackState = 2
+    fileprivate static let pausedPlaybackState = 2
     private let bridge: any MediaRemoteBridging
     private(set) var lastDetectedDisplayID: String?
 
@@ -533,7 +641,7 @@ final class MultiSignalMediaPlaybackStateDetector: MediaPlaybackStateDetector {
         )
     }
 
-    private static func playbackStateTrust(
+    fileprivate static func playbackStateTrust(
         playbackState: Int?,
         playbackRate: Double?,
         nowPlaying: Bool?

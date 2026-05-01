@@ -16,6 +16,13 @@ public enum OverlayState: Sendable, Equatable {
     case failure(message: String)
 }
 
+public enum OverlayBubbleAppearance: String, Codable, Sendable, Equatable, CaseIterable {
+    case matchApp
+    case light
+    case dark
+    case techMeter
+}
+
 /// An opaque token ensuring media is only resumed if it was actually paused.
 public struct MediaInterruptionToken: Sendable, Equatable {
     public let id: UUID

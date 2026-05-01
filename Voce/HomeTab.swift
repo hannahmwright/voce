@@ -222,40 +222,15 @@ struct HomeTab: View {
         VStack(spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
-                    // Metrics card
-                    VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                        metricRow(
-                            value: formattedMetricValue(controller.wordsDictatedToday),
-                            title: "Today",
-                            unit: controller.wordsDictatedToday == 1 ? "word" : "words"
-                        )
-                        metricRow(
-                            value: formattedMetricValue(controller.currentUsageStreak),
-                            title: "Streak",
-                            unit: controller.currentUsageStreak == 1 ? "day" : "days"
-                        )
-                        metricRow(
-                            value: formattedMetricValue(controller.totalWordsDictated),
-                            title: "Lifetime",
-                            unit: "words"
-                        )
-
-                    }
-                    .padding(VoceDesign.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                            .fill(VoceDesign.contentBackground)
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
-                            .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
-                    )
-                    .shadowStyle(.sm)
-                    .padding(VoceDesign.md)
-                    .padding(.top, VoceDesign.lg)
+                    metricsSummaryCard
+                        .padding(VoceDesign.md)
+                        .padding(.top, VoceDesign.lg)
 
                     activityHeatmapCard
+                        .padding(.horizontal, VoceDesign.md)
+                        .padding(.bottom, VoceDesign.md)
+
+                    topAppsCard
                         .padding(.horizontal, VoceDesign.md)
                         .padding(.bottom, VoceDesign.md)
 
@@ -322,36 +297,263 @@ struct HomeTab: View {
             .lineLimit(1)
     }
 
-    private func metricRow(value: String, title: String, unit: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text(title)
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
-                .frame(width: 52, alignment: .leading)
+    private func formattedMetricValue(_ value: Int) -> String {
+        value.formatted(.number.grouping(.automatic))
+    }
 
-            Text(value)
-                .font(VoceDesign.font(size: 20, weight: .bold))
-                .foregroundStyle(VoceDesign.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+    private var metricsSummaryCard: some View {
+        let dashboard = metricsDashboard
 
-            Text(" \(unit)")
-                .font(VoceDesign.caption())
-                .foregroundStyle(VoceDesign.textSecondary)
+        return VStack(alignment: .leading, spacing: VoceDesign.md) {
+            HStack(spacing: VoceDesign.xs) {
+                Image(systemName: "timer")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VoceDesign.warmAccentText)
+                    .frame(width: 24, height: 24)
+                    .background(VoceDesign.warmAccentFill)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .accessibilityHidden(true)
 
-            Spacer(minLength: 0)
+                Text("This Week")
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Text("Saved")
+                    .font(VoceDesign.font(size: 10, weight: .semibold))
+                    .foregroundStyle(VoceDesign.warmAccentText)
+                    .padding(.horizontal, VoceDesign.xs)
+                    .padding(.vertical, 3)
+                    .background(VoceDesign.warmAccentFill.opacity(0.72))
+                    .clipShape(Capsule())
+            }
+
+            HStack(alignment: .bottom, spacing: VoceDesign.sm) {
+                Text(dashboard.weeklyTimeSaved)
+                    .font(VoceDesign.font(size: 38, weight: .bold))
+                    .foregroundStyle(VoceDesign.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
+                    .monospacedDigit()
+
+                Text("this week")
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .padding(.bottom, 6)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+
+                Spacer(minLength: 0)
+            }
+
+            VStack(spacing: VoceDesign.xs) {
+                timeComparisonRow(
+                    icon: "text.cursor",
+                    title: "If typed",
+                    value: dashboard.weeklyTypedTime,
+                    progress: 1,
+                    color: VoceDesign.textSecondary.opacity(0.58)
+                )
+
+                timeComparisonRow(
+                    icon: "mic.fill",
+                    title: "With Voce",
+                    value: dashboard.weeklyDictatedTime,
+                    progress: dashboard.weeklyDictationShareOfTyping,
+                    color: VoceDesign.accent.opacity(0.76)
+                )
+            }
+            .padding(.top, VoceDesign.xxs)
+            .help("Estimated from dictated words and your typing speed setting. Voce does not track what you type.")
+
+            HStack(spacing: VoceDesign.xs) {
+                Image(systemName: "hourglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(VoceDesign.accent)
+                    .frame(width: 23, height: 23)
+                    .background(VoceDesign.accent.opacity(0.09))
+                    .clipShape(Circle())
+                    .accessibilityHidden(true)
+
+                Text(dashboard.allTimeSaved)
+                    .font(VoceDesign.font(size: 14, weight: .bold))
+                    .foregroundStyle(VoceDesign.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.74)
+                    .monospacedDigit()
+
+                Text("all time")
+                    .font(VoceDesign.font(size: 10, weight: .medium))
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, VoceDesign.sm)
+            .padding(.vertical, VoceDesign.sm)
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .fill(VoceDesign.surface.opacity(0.48))
+            }
         }
-        .padding(.horizontal, VoceDesign.sm)
-        .padding(.vertical, VoceDesign.xs + 1)
+        .padding(VoceDesign.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                .fill(VoceDesign.surface.opacity(0.4))
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.contentBackground)
+                .overlay(alignment: .topTrailing) {
+                    Rectangle()
+                        .fill(VoceDesign.warmAccentFill.opacity(0.22))
+                        .frame(width: 74, height: 42)
+                        .clipShape(
+                            UnevenRoundedRectangle(
+                                topLeadingRadius: 0,
+                                bottomLeadingRadius: VoceDesign.radiusLarge,
+                                bottomTrailingRadius: 0,
+                                topTrailingRadius: VoceDesign.radiusMedium,
+                                style: .continuous
+                            )
+                        )
+                }
         }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+        )
+        .shadowStyle(.sm)
         .accessibilityElement(children: .combine)
     }
 
-    private func formattedMetricValue(_ value: Int) -> String {
-        value.formatted(.number.grouping(.automatic))
+    private func timeComparisonRow(
+        icon: String,
+        title: String,
+        value: String,
+        progress: Double,
+        color: Color
+    ) -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: VoceDesign.xs) {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .frame(width: 15, alignment: .center)
+                    .accessibilityHidden(true)
+
+                Text(title)
+                    .font(VoceDesign.font(size: 10, weight: .medium))
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Text(value)
+                    .font(VoceDesign.font(size: 10, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(VoceDesign.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+
+            GeometryReader { proxy in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(VoceDesign.surfaceSecondary)
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(color)
+                            .frame(width: max(4, proxy.size.width * CGFloat(min(max(progress, 0), 1))))
+                    }
+            }
+            .frame(height: 6)
+        }
+    }
+
+    private var topAppsCard: some View {
+        let apps = topAppMetrics
+
+        return VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Top Apps")
+                    .font(VoceDesign.captionEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "trophy.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(VoceDesign.warmAccentText)
+                    .accessibilityHidden(true)
+            }
+
+            if apps.isEmpty {
+                emptyTopAppsView
+            } else {
+                VStack(spacing: VoceDesign.xs) {
+                    ForEach(apps) { app in
+                        topAppRow(app)
+                    }
+                }
+            }
+        }
+        .padding(VoceDesign.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.contentBackground)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+        )
+        .shadowStyle(.sm)
+    }
+
+    private var emptyTopAppsView: some View {
+        HStack(spacing: VoceDesign.sm) {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            Text("No app activity yet")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+
+    private func topAppRow(_ app: HomeTopAppMetric) -> some View {
+        HStack(spacing: VoceDesign.sm) {
+            Text("\(app.rank)")
+                .font(VoceDesign.font(size: 11, weight: .bold))
+                .foregroundStyle(VoceDesign.textSecondary)
+                .frame(width: 16, alignment: .center)
+
+            appIconView(bundleID: app.bundleID, size: 26)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: VoceDesign.xs) {
+                    Text(app.name)
+                        .font(VoceDesign.font(size: 12, weight: .semibold))
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+
+                    Spacer(minLength: 0)
+
+                    Text(formattedMetricValue(app.wordCount))
+                        .font(VoceDesign.font(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .lineLimit(1)
+                }
+
+                ProgressView(value: app.share)
+                    .progressViewStyle(.linear)
+                    .tint(app.rank == 1 ? VoceDesign.warmAccentText : VoceDesign.accent)
+                    .scaleEffect(x: 1, y: 0.55, anchor: .center)
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.vertical, VoceDesign.xs)
+        .accessibilityElement(children: .combine)
     }
 
     private var activityHeatmapCard: some View {
@@ -556,6 +758,109 @@ struct HomeTab: View {
 
     private func activityAccessibilityLabel(for cell: HomeActivityCell) -> String {
         activityTooltip(for: cell)
+    }
+
+    private var metricsDashboard: HomeMetricsDashboard {
+        let entries = entriesInCurrentWeek
+        let weeklyWordCount = entries.reduce(0) { $0 + metricWordCount(for: $1) }
+        let typingWPM = max(controller.preferences.metricsBestTypingWordsPerMinute, 40)
+        let dictationWPM = max(Double(controller.wordsPerMinute), 125)
+        let weeklyTypedMinutes = estimatedTypedMinutes(wordCount: weeklyWordCount, typingWPM: typingWPM)
+        let weeklyDictatedMinutes = estimatedDictatedMinutes(wordCount: weeklyWordCount, dictationWPM: dictationWPM)
+        let weeklySavedMinutes = max(0, weeklyTypedMinutes - weeklyDictatedMinutes)
+
+        return HomeMetricsDashboard(
+            weeklyTimeSaved: formattedSavedTime(weeklySavedMinutes),
+            weeklyTypedTime: formattedSavedTime(weeklyTypedMinutes),
+            weeklyDictatedTime: formattedSavedTime(weeklyDictatedMinutes),
+            weeklyDictationShareOfTyping: weeklyTypedMinutes > 0 ? weeklyDictatedMinutes / weeklyTypedMinutes : 0,
+            allTimeSaved: formattedSavedTime(
+                estimatedSavedMinutes(wordCount: controller.totalWordsDictated, typingWPM: typingWPM, dictationWPM: dictationWPM)
+            )
+        )
+    }
+
+    private var entriesInCurrentWeek: [TranscriptEntry] {
+        let calendar = activityCalendar
+        let today = calendar.startOfDay(for: currentTime)
+        let weekStart = calendar.dateInterval(of: .weekOfYear, for: today)?.start ?? today
+        guard let nextWeekStart = calendar.date(byAdding: .day, value: 7, to: weekStart) else {
+            return controller.recentEntries
+        }
+
+        return controller.recentEntries.filter { entry in
+            entry.createdAt >= weekStart && entry.createdAt < nextWeekStart
+        }
+    }
+
+    private var topAppMetrics: [HomeTopAppMetric] {
+        let entries = entriesInCurrentWeek.filter { entry in
+            !entry.appBundleID.isEmpty && entry.appBundleID != "unknown"
+        }
+        let grouped = Dictionary(grouping: entries, by: \.appBundleID)
+        let appStats = grouped.map { bundleID, entries in
+            let words = entries.reduce(0) { $0 + metricWordCount(for: $1) }
+            return (bundleID: bundleID, words: words)
+        }
+        .filter { $0.words > 0 }
+        .sorted {
+            if $0.words == $1.words {
+                return appName(for: $0.bundleID).localizedCaseInsensitiveCompare(appName(for: $1.bundleID)) == .orderedAscending
+            }
+            return $0.words > $1.words
+        }
+        .prefix(3)
+
+        let totalWords = max(appStats.reduce(0) { $0 + $1.words }, 1)
+        return appStats.enumerated().map { index, stat in
+            HomeTopAppMetric(
+                rank: index + 1,
+                bundleID: stat.bundleID,
+                name: appName(for: stat.bundleID),
+                wordCount: stat.words,
+                share: Double(stat.words) / Double(totalWords)
+            )
+        }
+    }
+
+    private func metricWordCount(for entry: TranscriptEntry) -> Int {
+        let text: String
+        if entry.aiWorkflowName != nil,
+           let sourceText = entry.sourceText,
+           !sourceText.isEmpty {
+            text = sourceText
+        } else {
+            text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+        }
+        return text.split(whereSeparator: \.isWhitespace).count
+    }
+
+    private func estimatedSavedMinutes(wordCount: Int, typingWPM: Double, dictationWPM: Double) -> Double {
+        let typedMinutes = estimatedTypedMinutes(wordCount: wordCount, typingWPM: typingWPM)
+        let dictatedMinutes = estimatedDictatedMinutes(wordCount: wordCount, dictationWPM: dictationWPM)
+        return max(0, typedMinutes - dictatedMinutes)
+    }
+
+    private func estimatedTypedMinutes(wordCount: Int, typingWPM: Double) -> Double {
+        Double(wordCount) / typingWPM
+    }
+
+    private func estimatedDictatedMinutes(wordCount: Int, dictationWPM: Double) -> Double {
+        Double(wordCount) / dictationWPM
+    }
+
+    private func formattedSavedTime(_ minutes: Double) -> String {
+        guard minutes >= 1 else {
+            return "<1m"
+        }
+        if minutes < 60 {
+            return "\(Int(minutes.rounded()))m"
+        }
+        let hours = minutes / 60
+        if hours < 10 {
+            return String(format: "%.1fh", hours)
+        }
+        return "\(Int(hours.rounded()))h"
     }
 
     private var activityDateFormatter: DateFormatter {
@@ -1183,6 +1488,35 @@ struct HomeTab: View {
         return icon
     }
 
+    private func appIconView(bundleID: String, size: CGFloat) -> some View {
+        Group {
+            if let icon = appIcon(for: bundleID, size: size) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            } else {
+                Image(systemName: "app.fill")
+                    .font(.system(size: size * 0.5, weight: .medium))
+                    .foregroundStyle(VoceDesign.textSecondary.opacity(0.65))
+                    .frame(width: size, height: size)
+                    .background(VoceDesign.surfaceSecondary)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            }
+        }
+        .help(appName(for: bundleID))
+    }
+
+    private func appIcon(for bundleID: String, size: CGFloat) -> NSImage? {
+        guard !bundleID.isEmpty,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            return nil
+        }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        icon.size = NSSize(width: size, height: size)
+        return icon
+    }
+
     private func formatElapsedTime(_ interval: TimeInterval) -> String {
         let total = Int(interval)
         let minutes = total / 60
@@ -1214,6 +1548,24 @@ private struct HomeActivityCell: Identifiable {
     }()
 }
 
+private struct HomeMetricsDashboard {
+    let weeklyTimeSaved: String
+    let weeklyTypedTime: String
+    let weeklyDictatedTime: String
+    let weeklyDictationShareOfTyping: Double
+    let allTimeSaved: String
+}
+
+private struct HomeTopAppMetric: Identifiable {
+    var id: String { bundleID }
+
+    let rank: Int
+    let bundleID: String
+    let name: String
+    let wordCount: Int
+    let share: Double
+}
+
 private struct HomeLayout {
     let mainHorizontalPadding: CGFloat
     let metricsColumnWidth: CGFloat
@@ -1225,7 +1577,7 @@ private struct HomeLayout {
         let compact = totalWidth < 980
         return HomeLayout(
             mainHorizontalPadding: compact ? VoceDesign.lg : VoceDesign.xl,
-            metricsColumnWidth: 200,
+            metricsColumnWidth: compact ? 214 : 228,
             timestampColumnWidth: compact ? 60 : 70,
             greetingFontSize: compact ? 20 : 22,
             bannerHeight: compact ? 220 : 300

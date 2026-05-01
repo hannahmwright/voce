@@ -29,7 +29,9 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Voce uses on-device speech recognition for live transcript previews while you speak.</string>
 	<key>SUAutomaticallyUpdate</key>
-	<true/>
+	<false/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUScheduledCheckInterval</key>
