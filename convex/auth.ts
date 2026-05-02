@@ -57,14 +57,22 @@ export const createSession = internalMutation({
     expiresAt: v.number(),
   },
   handler: async (ctx, args) => {
+    const email = normalizeEmail(args.email);
     const now = Date.now();
+    const existingSession = await ctx.db
+      .query("authSessions")
+      .withIndex("by_email", (q) => q.eq("email", email))
+      .first();
+
     await ctx.db.insert("authSessions", {
-      email: normalizeEmail(args.email),
+      email,
       tokenHash: args.tokenHash,
       expiresAt: args.expiresAt,
       createdAt: now,
       lastSeenAt: now,
     });
+
+    return { isFirstSession: !existingSession };
   },
 });
 

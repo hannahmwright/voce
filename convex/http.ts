@@ -202,6 +202,49 @@ async function sendSupportEmail(payload: {
   }
 }
 
+async function sendSignupEmail(payload: {
+  email: string;
+  source: string;
+  planTier: string;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.VOCE_SUPPORT_EMAIL_FROM ?? "Voce Support <support@voceapp.io>";
+  const to =
+    process.env.VOCE_SIGNUP_EMAIL_TO ??
+    process.env.VOCE_SUPPORT_EMAIL_TO ??
+    "h.wright@vervetechgroup.com";
+  if (!apiKey) {
+    throw new Error("Signup email is not configured");
+  }
+
+  const lines = [
+    "A new Voce user verified their email.",
+    "",
+    `Email: ${payload.email}`,
+    `Plan: ${payload.planTier}`,
+    `Source: ${payload.source}`,
+  ];
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to,
+      subject: `[Voce] New signup: ${payload.email}`,
+      text: lines.join("\n"),
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`Resend rejected signup email with ${response.status}: ${responseText}`);
+  }
+}
+
 async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: string) {
   const token = request.headers.get("x-voce-session-token");
   if (!token) {
@@ -539,11 +582,27 @@ http.route({
     }
 
     const sessionToken = randomToken();
-    await ctx.runMutation(internal.auth.createSession, {
+    const session = await ctx.runMutation(internal.auth.createSession, {
       email,
       tokenHash: await tokenHash(sessionToken),
       expiresAt: Date.now() + SESSION_TTL_MS,
     });
+
+    if (session.isFirstSession) {
+      const entitlement = await ctx.runQuery(api.entitlements.check, { email });
+      try {
+        await sendSignupEmail({
+          email,
+          source: entitlement.source ?? "unknown",
+          planTier: entitlement.planTier ?? "unknown",
+        });
+      } catch (error) {
+        console.error("Could not send Voce signup email", {
+          emailDomain: email.split("@")[1] ?? "",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     return jsonResponse({ email, sessionToken, expiresAt: Date.now() + SESSION_TTL_MS });
   }),
