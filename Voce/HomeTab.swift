@@ -10,6 +10,7 @@ struct HomeTab: View {
     @State private var expandedIDs: Set<UUID> = []
     @State private var hoveredID: UUID?
     @State private var hoveredActivityCellID: String?
+    @State private var activityMonthOffset = 0
     @State private var currentTime = Date()
     @State private var showErrorBanner = false
     @State private var dismissedPermissionCallouts: Set<PermissionCalloutKind> = []
@@ -559,7 +560,6 @@ struct HomeTab: View {
     private var activityHeatmapCard: some View {
         let cells = activityHeatmapGridCells
         let columns = Array(repeating: GridItem(.fixed(activityHeatmapColumnWidth), spacing: activityHeatmapSpacing), count: 7)
-        let hoveredCell = cells.first { $0.id == hoveredActivityCellID }
 
         return VStack(alignment: .leading, spacing: VoceDesign.sm) {
             HStack(alignment: .firstTextBaseline) {
@@ -569,17 +569,28 @@ struct HomeTab: View {
 
                 Spacer(minLength: 0)
 
-                Text("6 weeks")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
+                HStack(spacing: VoceDesign.xs) {
+                    activityMonthButton(systemName: "chevron.left", label: "Previous month") {
+                        shiftActivityMonth(by: -1)
+                    }
+
+                    Text(activityDisplayedMonthLabel)
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .lineLimit(1)
+                        .frame(minWidth: 76, alignment: .center)
+
+                    activityMonthButton(
+                        systemName: "chevron.right",
+                        label: "Next month",
+                        isEnabled: canNavigateActivityForward
+                    ) {
+                        shiftActivityMonth(by: 1)
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(activityCurrentMonthLabel)
-                    .font(VoceDesign.captionEmphasis())
-                    .foregroundStyle(VoceDesign.textPrimary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-
                 LazyVGrid(
                     columns: columns,
                     alignment: .center,
@@ -604,14 +615,20 @@ struct HomeTab: View {
                     ForEach(cells) { cell in
                         let isHovered = hoveredActivityCellID == cell.id
                         RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(activityHeatmapColor(for: cell.level, isFuture: cell.isFuture))
+                            .fill(
+                                activityHeatmapColor(
+                                    for: cell.level,
+                                    isFuture: cell.isFuture,
+                                    isInDisplayedMonth: cell.isInDisplayedMonth
+                                )
+                            )
                             .frame(width: activityHeatmapCellSize, height: activityHeatmapCellSize)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                                     .stroke(
                                         isHovered
                                             ? VoceDesign.textPrimary.opacity(0.78)
-                                            : VoceDesign.border.opacity(cell.level == 0 ? 0.55 : 0.18),
+                                            : activityHeatmapBorderColor(for: cell),
                                         lineWidth: isHovered ? 1.2 : VoceDesign.borderThin
                                     )
                             )
@@ -624,12 +641,6 @@ struct HomeTab: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
-
-                Text(activityHoverSummary(for: hoveredCell))
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 16, alignment: .center)
             }
         }
         .padding(VoceDesign.md)
@@ -652,37 +663,66 @@ struct HomeTab: View {
     private var activityHeatmapWeeks: [[HomeActivityCell]] {
         let calendar = activityCalendar
         let today = calendar.startOfDay(for: currentTime)
-        let currentWeekStart = calendar.dateInterval(of: .weekOfYear, for: today)?.start ?? today
-        let firstWeekStart = calendar.date(byAdding: .weekOfYear, value: -5, to: currentWeekStart) ?? currentWeekStart
+        let monthStart = activityDisplayedMonthStart
+        let firstWeekStart = calendar.dateInterval(of: .weekOfYear, for: monthStart)?.start ?? monthStart
+        let nextMonthStart = calendar.date(byAdding: .month, value: 1, to: monthStart) ?? monthStart
+        let monthEnd = calendar.date(byAdding: .day, value: -1, to: nextMonthStart) ?? monthStart
+        let lastWeekStart = calendar.dateInterval(of: .weekOfYear, for: monthEnd)?.start ?? monthEnd
 
         let statsByDay = Dictionary(uniqueKeysWithValues: controller.dailyUsageActivity.map { stat in
             (calendar.startOfDay(for: stat.day), stat)
         })
-        let maxWords = max(statsByDay.values.map(\.wordCount).max() ?? 0, 1)
+        let monthStats = statsByDay.filter { day, _ in
+            calendar.isDate(day, equalTo: monthStart, toGranularity: .month) && day <= today
+        }
+        let maxWords = max(monthStats.values.map(\.wordCount).max() ?? 0, 1)
 
-        return (0..<6).map { weekOffset in
-            let weekStart = calendar.date(byAdding: .weekOfYear, value: weekOffset, to: firstWeekStart) ?? firstWeekStart
+        var weeks: [[HomeActivityCell]] = []
+        var weekStart = firstWeekStart
 
-            return (0..<7).map { dayOffset in
+        while weekStart <= lastWeekStart {
+            let week = Array(0..<7).map { (dayOffset: Int) in
                 let date = calendar.date(byAdding: .day, value: dayOffset, to: weekStart) ?? weekStart
-                let isFuture = date > today
-                let stat = isFuture ? nil : statsByDay[calendar.startOfDay(for: date)]
+                let day = calendar.startOfDay(for: date)
+                let isFuture = day > today
+                let isInDisplayedMonth = calendar.isDate(day, equalTo: monthStart, toGranularity: .month)
+                let stat = isFuture || !isInDisplayedMonth ? nil : statsByDay[day]
                 let words = stat?.wordCount ?? 0
                 let sessions = stat?.sessionCount ?? 0
 
                 return HomeActivityCell(
-                    date: date,
+                    date: day,
                     wordCount: words,
                     sessionCount: sessions,
                     level: activityHeatmapLevel(wordCount: words, maxWords: maxWords),
-                    isFuture: isFuture
+                    isFuture: isFuture,
+                    isInDisplayedMonth: isInDisplayedMonth
                 )
             }
+
+            weeks.append(week)
+            guard let nextWeekStart = calendar.date(byAdding: .weekOfYear, value: 1, to: weekStart) else {
+                break
+            }
+            weekStart = nextWeekStart
         }
+
+        return weeks
     }
 
-    private var activityCurrentMonthLabel: String {
-        activityMonthFormatter.string(from: currentTime)
+    private var activityDisplayedMonthStart: Date {
+        let calendar = activityCalendar
+        let today = calendar.startOfDay(for: currentTime)
+        let currentMonthStart = calendar.dateInterval(of: .month, for: today)?.start ?? today
+        return calendar.date(byAdding: .month, value: activityMonthOffset, to: currentMonthStart) ?? currentMonthStart
+    }
+
+    private var activityDisplayedMonthLabel: String {
+        activityMonthFormatter.string(from: activityDisplayedMonthStart)
+    }
+
+    private var canNavigateActivityForward: Bool {
+        activityMonthOffset < 0
     }
 
     private var activityWeekdayLabels: [String] {
@@ -713,7 +753,37 @@ struct HomeTab: View {
         return min(max(scaled, 1), 4)
     }
 
-    private func activityHeatmapColor(for level: Int, isFuture: Bool) -> Color {
+    private func shiftActivityMonth(by offset: Int) {
+        activityMonthOffset = min(0, activityMonthOffset + offset)
+        hoveredActivityCellID = nil
+    }
+
+    private func activityMonthButton(
+        systemName: String,
+        label: String,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(isEnabled ? VoceDesign.textSecondary : VoceDesign.textSecondary.opacity(0.35))
+                .frame(width: 18, height: 18)
+                .background {
+                    Circle()
+                        .fill(VoceDesign.surfaceSecondary.opacity(isEnabled ? 0.9 : 0.35))
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .accessibilityLabel(label)
+    }
+
+    private func activityHeatmapColor(for level: Int, isFuture: Bool, isInDisplayedMonth: Bool) -> Color {
+        guard isInDisplayedMonth else {
+            return VoceDesign.surfaceSecondary.opacity(0.18)
+        }
+
         if isFuture {
             return VoceDesign.surfaceSecondary.opacity(0.35)
         }
@@ -732,28 +802,27 @@ struct HomeTab: View {
         }
     }
 
+    private func activityHeatmapBorderColor(for cell: HomeActivityCell) -> Color {
+        guard cell.isInDisplayedMonth else {
+            return VoceDesign.border.opacity(0.16)
+        }
+        return VoceDesign.border.opacity(cell.level == 0 ? 0.55 : 0.18)
+    }
+
     private func activityTooltip(for cell: HomeActivityCell) -> String {
         let date = activityDateFormatter.string(from: cell.date)
-        if cell.isFuture || cell.wordCount == 0 {
+        if !cell.isInDisplayedMonth {
+            return "\(date): outside \(activityDisplayedMonthLabel)"
+        }
+        if cell.isFuture {
+            return "\(date): upcoming"
+        }
+        if cell.wordCount == 0 {
             return "\(date): no dictation"
         }
         let wordUnit = cell.wordCount == 1 ? "word" : "words"
         let sessionUnit = cell.sessionCount == 1 ? "session" : "sessions"
         return "\(date): \(cell.wordCount) \(wordUnit) in \(cell.sessionCount) \(sessionUnit)"
-    }
-
-    private func activityHoverSummary(for cell: HomeActivityCell?) -> String {
-        guard let cell else {
-            return "Hover a square to see that day's words."
-        }
-
-        let date = activityDateFormatter.string(from: cell.date)
-        if cell.isFuture || cell.wordCount == 0 {
-            return "\(date): no words dictated"
-        }
-
-        let wordUnit = cell.wordCount == 1 ? "word" : "words"
-        return "\(date): \(cell.wordCount.formatted(.number.grouping(.automatic))) \(wordUnit) dictated"
     }
 
     private func activityAccessibilityLabel(for cell: HomeActivityCell) -> String {
@@ -872,7 +941,7 @@ struct HomeTab: View {
 
     private var activityMonthFormatter: DateFormatter {
         let formatter = DateFormatter()
-        formatter.dateFormat = "LLLL"
+        formatter.dateFormat = "LLLL yyyy"
         return formatter
     }
 
@@ -1540,6 +1609,7 @@ private struct HomeActivityCell: Identifiable {
     let sessionCount: Int
     let level: Int
     let isFuture: Bool
+    let isInDisplayedMonth: Bool
 
     private static let idFormatter: DateFormatter = {
         let formatter = DateFormatter()

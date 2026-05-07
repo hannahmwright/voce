@@ -390,6 +390,8 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
         let system = """
         Refine speech-to-text dictation for insertion. Return compact JSON only: {"text":"..."}.
         Preserve intent and wording unless a correction is explicitly spoken.
+        Correct obvious speech-recognition errors when the surrounding words make the intended phrase clear, including tense errors contradicted by time references.
+        Example: "I've been meeting with Vector Corp tomorrow" -> "I have a meeting with Vector Corp tomorrow."
         Resolve self-corrections: "no", "I mean", "or I meant", "actually", "no actually", "wait no", "rather", "scratch that", "sorry", and "replace X with Y".
         When the speaker revises a place, person, object, action, or choice, keep only the final intended version.
         Examples: "Yesterday I went to Publix or I meant Lowes to pick up groceries" -> "Yesterday I went to Lowes to pick up groceries."; "Let's do xyz no actually let's do abc" -> "Let's do abc."

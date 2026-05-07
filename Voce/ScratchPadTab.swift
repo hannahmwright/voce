@@ -65,14 +65,6 @@ struct ScratchPadTab: View {
                     RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
                         .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
                 )
-                .overlay(alignment: .center) {
-                    if content.isEmpty {
-                        Text("Start typing or dictate something...")
-                            .font(VoceDesign.body())
-                            .foregroundStyle(VoceDesign.textSecondary.opacity(0.5))
-                            .allowsHitTesting(false)
-                    }
-                }
         }
         .padding(VoceDesign.lg)
     }

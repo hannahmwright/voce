@@ -8,9 +8,24 @@ struct LexiconSettingsSection: View {
 
     @State private var editingCorrection: LexiconEditDraft?
 
-    private var visibleEntries: [LexiconEntry] {
-        preferences.visibleLexiconEntries.sorted { lhs, rhs in
-            lhs.term.localizedCaseInsensitiveCompare(rhs.term) == .orderedAscending
+    private var visibleCorrectionGroups: [LexiconCorrectionGroup] {
+        let grouped = Dictionary(grouping: preferences.visibleLexiconEntries) { entry in
+            LexiconCorrectionGroup.Key(preferred: entry.preferred, scopeID: LexiconCorrectionGroup.scopeID(for: entry.scope))
+        }
+
+        return grouped.map { key, entries in
+            LexiconCorrectionGroup(
+                preferred: key.preferred,
+                scope: entries.first?.scope ?? .global,
+                entries: entries
+            )
+        }
+        .sorted { lhs, rhs in
+            let preferredOrder = lhs.preferred.localizedCaseInsensitiveCompare(rhs.preferred)
+            if preferredOrder != .orderedSame {
+                return preferredOrder == .orderedAscending
+            }
+            return lhs.heardSummary.localizedCaseInsensitiveCompare(rhs.heardSummary) == .orderedAscending
         }
     }
 
@@ -28,45 +43,6 @@ struct LexiconSettingsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
-            HStack(spacing: VoceDesign.xs) {
-                Text("Corrections")
-                    .font(VoceDesign.heading3())
-                    .foregroundStyle(VoceDesign.textPrimary)
-
-                HelpBubbleButton(text: "Replace words that speech gets wrong.")
-
-                Spacer(minLength: 0)
-
-                Button {
-                    editingCorrection = LexiconEditDraft()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .bold))
-                        .frame(width: 30, height: 30)
-                        .background(VoceDesign.warmAccentFill)
-                        .foregroundStyle(VoceDesign.warmAccentText)
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("Add correction")
-            }
-
-            settingsSubcard {
-                if visibleEntries.isEmpty {
-                        Text("Add a fix like “Chat GBT” to “ChatGPT”.")
-                            .font(VoceDesign.callout())
-                            .foregroundStyle(VoceDesign.textSecondary)
-                    } else {
-                        correctionsTable
-                    }
-                }
-        }
-        .cardStyle()
-        .overlay {
             if let draft = editingCorrection {
                 LexiconEditSheet(
                     draft: draft,
@@ -82,23 +58,57 @@ struct LexiconSettingsSection: View {
                         editingCorrection = nil
                     }
                 )
-                .settingsModalPanel()
-                .dismissOnOutsideClick {
-                    editingCorrection = nil
+            } else {
+                HStack(spacing: VoceDesign.xs) {
+                    Text("Corrections")
+                        .font(VoceDesign.heading3())
+                        .foregroundStyle(VoceDesign.textPrimary)
+
+                    HelpBubbleButton(text: "Replace words that speech gets wrong.")
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        editingCorrection = LexiconEditDraft()
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 30, height: 30)
+                            .background(VoceDesign.warmAccentFill)
+                            .foregroundStyle(VoceDesign.warmAccentText)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add correction")
+                }
+
+                settingsSubcard {
+                    if visibleCorrectionGroups.isEmpty {
+                        Text("Add a fix like “Chat GBT” to “ChatGPT”.")
+                            .font(VoceDesign.callout())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                    } else {
+                        correctionsTable
+                    }
                 }
             }
         }
+        .cardStyle()
     }
 
     private var correctionsTable: some View {
         VStack(spacing: 0) {
             correctionsTableHeader
 
-            ForEach(visibleEntries.indices, id: \.self) { index in
-                let entry = visibleEntries[index]
-                correctionRow(entry)
+            ForEach(visibleCorrectionGroups.indices, id: \.self) { index in
+                let group = visibleCorrectionGroups[index]
+                correctionRow(group)
 
-                if index != visibleEntries.count - 1 {
+                if index != visibleCorrectionGroups.count - 1 {
                     Divider()
                         .padding(.leading, VoceDesign.sm)
                 }
@@ -131,27 +141,27 @@ struct LexiconSettingsSection: View {
         .background(VoceDesign.surface)
     }
 
-    private func correctionRow(_ entry: LexiconEntry) -> some View {
+    private func correctionRow(_ group: LexiconCorrectionGroup) -> some View {
         HStack(spacing: VoceDesign.md) {
             Button {
-                editingCorrection = LexiconEditDraft(entry: entry)
+                editingCorrection = LexiconEditDraft(group: group)
             } label: {
                 HStack(spacing: VoceDesign.md) {
-                    Text(entry.preferred)
+                    Text(group.preferred)
                         .font(VoceDesign.bodyEmphasis())
                         .foregroundStyle(VoceDesign.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
 
-                    Text(entry.term)
+                    Text(group.heardSummary)
                         .font(VoceDesign.callout())
                         .foregroundStyle(VoceDesign.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(minWidth: 140, maxWidth: .infinity, alignment: .leading)
 
-                    scopeDescription(for: entry.scope)
+                    scopeDescription(for: group.scope)
                         .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -160,7 +170,9 @@ struct LexiconSettingsSection: View {
             .buttonStyle(.plain)
 
             Button(role: .destructive) {
-                preferences.lexiconEntries.removeAll { $0 == entry }
+                preferences.lexiconEntries.removeAll { entry in
+                    group.entries.contains(entry)
+                }
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 12, weight: .semibold))
@@ -194,9 +206,9 @@ struct LexiconSettingsSection: View {
     }
 
     private func saveCorrection(_ draft: LexiconEditDraft) {
-        let term = draft.term.trimmingCharacters(in: .whitespacesAndNewlines)
+        let terms = normalizedLexiconTerms(from: draft.heardTerms)
         let preferred = draft.preferred.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty, !preferred.isEmpty else { return }
+        guard !terms.isEmpty, !preferred.isEmpty else { return }
 
         let scopes: [Scope]
         if draft.isGlobal {
@@ -208,13 +220,15 @@ struct LexiconSettingsSection: View {
         deleteCorrection(draft)
 
         for scope in scopes {
-            let newEntry = LexiconEntry(term: term, preferred: preferred, scope: scope)
-            if let existingIndex = preferences.lexiconEntries.firstIndex(where: {
-                $0.term.caseInsensitiveCompare(newEntry.term) == .orderedSame && $0.scope == newEntry.scope
-            }) {
-                preferences.lexiconEntries[existingIndex] = newEntry
-            } else {
-                preferences.lexiconEntries.append(newEntry)
+            for term in terms {
+                let newEntry = LexiconEntry(term: term, preferred: preferred, scope: scope)
+                if let existingIndex = preferences.lexiconEntries.firstIndex(where: {
+                    $0.term.caseInsensitiveCompare(newEntry.term) == .orderedSame && $0.scope == newEntry.scope
+                }) {
+                    preferences.lexiconEntries[existingIndex] = newEntry
+                } else {
+                    preferences.lexiconEntries.append(newEntry)
+                }
             }
         }
 
@@ -222,10 +236,9 @@ struct LexiconSettingsSection: View {
     }
 
     private func deleteCorrection(_ draft: LexiconEditDraft) {
-        if let originalTerm = draft.originalTerm,
-           let originalScope = draft.originalScope {
+        if !draft.originalEntries.isEmpty {
             preferences.lexiconEntries.removeAll {
-                $0.term == originalTerm && $0.scope == originalScope
+                draft.originalEntries.contains($0)
             }
         }
     }
@@ -239,12 +252,45 @@ struct LexiconSettingsSection: View {
 
 }
 
+private struct LexiconCorrectionGroup: Identifiable {
+    struct Key: Hashable {
+        let preferred: String
+        let scopeID: String
+    }
+
+    var id: String {
+        "\(preferred.lowercased())|\(Self.scopeID(for: scope))"
+    }
+
+    let preferred: String
+    let scope: Scope
+    let entries: [LexiconEntry]
+
+    var heardTerms: [String] {
+        entries
+            .map(\.term)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    var heardSummary: String {
+        heardTerms.joined(separator: ", ")
+    }
+
+    static func scopeID(for scope: Scope) -> String {
+        switch scope {
+        case .global:
+            return "global"
+        case .app(let bundleID):
+            return "app:\(bundleID)"
+        }
+    }
+}
+
 private struct LexiconEditDraft: Identifiable {
     let id: UUID
     let isNew: Bool
-    let originalTerm: String?
-    let originalScope: Scope?
-    var term: String
+    let originalEntries: [LexiconEntry]
+    var heardTerms: [String]
     var preferred: String
     var isGlobal: Bool
     var selectedBundleIDs: Set<String>
@@ -252,23 +298,21 @@ private struct LexiconEditDraft: Identifiable {
     init() {
         id = UUID()
         isNew = true
-        originalTerm = nil
-        originalScope = nil
-        term = ""
+        originalEntries = []
+        heardTerms = [""]
         preferred = ""
         isGlobal = true
         selectedBundleIDs = []
     }
 
-    init(entry: LexiconEntry) {
+    init(group: LexiconCorrectionGroup) {
         id = UUID()
         isNew = false
-        originalTerm = entry.term
-        originalScope = entry.scope
-        term = entry.term
-        preferred = entry.preferred
+        originalEntries = group.entries
+        heardTerms = group.heardTerms.isEmpty ? [""] : group.heardTerms
+        preferred = group.preferred
 
-        switch entry.scope {
+        switch group.scope {
         case .global:
             isGlobal = true
             selectedBundleIDs = []
@@ -282,6 +326,7 @@ private struct LexiconEditDraft: Identifiable {
 private struct LexiconEditSheet: View {
     @State private var draft: LexiconEditDraft
     @State private var appSearchText = ""
+    @FocusState private var focusedHeardTermIndex: Int?
 
     let availableAppBundleIDs: [String]
     let onCancel: () -> Void
@@ -313,28 +358,55 @@ private struct LexiconEditSheet: View {
     }
 
     private var canSave: Bool {
-        !draft.term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !normalizedLexiconTerms(from: draft.heardTerms).isEmpty &&
         !draft.preferred.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         (draft.isGlobal || !draft.selectedBundleIDs.isEmpty)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
-            Text(draft.isNew ? "Add correction" : "Edit correction")
-                .font(VoceDesign.heading3())
-                .foregroundStyle(VoceDesign.textPrimary)
+            HStack(spacing: VoceDesign.sm) {
+                Button {
+                    onCancel()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(VoceDesign.textSecondary)
+                .help("Back to corrections")
+
+                Text(draft.isNew ? "Add correction" : "Edit correction")
+                    .font(VoceDesign.heading3())
+                    .foregroundStyle(VoceDesign.textPrimary)
+            }
 
             settingsSubcard {
                 subsectionLabel("Phrase")
 
                 VStack(spacing: VoceDesign.sm) {
-                    TextField("Misheard", text: $draft.term)
-                        .textFieldStyle(.plain)
-                        .settingsInputChrome()
+                    VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                        Text("Voce heard")
+                            .font(VoceDesign.captionEmphasis())
+                            .foregroundStyle(VoceDesign.textSecondary)
 
-                    TextField("Should be", text: $draft.preferred)
-                        .textFieldStyle(.plain)
-                        .settingsInputChrome()
+                        VStack(spacing: VoceDesign.xs) {
+                            ForEach(draft.heardTerms.indices, id: \.self) { index in
+                                heardTermRow(at: index)
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                        Text("Use instead")
+                            .font(VoceDesign.captionEmphasis())
+                            .foregroundStyle(VoceDesign.textSecondary)
+
+                        TextField("Should be", text: $draft.preferred)
+                            .textFieldStyle(.plain)
+                            .settingsInputChrome()
+                    }
                 }
             }
 
@@ -397,8 +469,72 @@ private struct LexiconEditSheet: View {
                 .disabled(!canSave)
             }
         }
-        .padding(VoceDesign.xl)
-        .frame(width: 560)
+        .frame(maxWidth: 640, alignment: .leading)
+    }
+
+    private func heardTermRow(at index: Int) -> some View {
+        let isLast = index == draft.heardTerms.indices.last
+
+        return HStack(spacing: VoceDesign.xs) {
+            TextField("Misheard phrase", text: bindingForHeardTerm(at: index))
+                .textFieldStyle(.plain)
+                .settingsInputChrome()
+                .focused($focusedHeardTermIndex, equals: index)
+                .submitLabel(.next)
+                .onSubmit {
+                    addHeardTermRow(focusNewRow: true)
+                }
+
+            Button {
+                if isLast {
+                    addHeardTermRow(focusNewRow: true)
+                } else {
+                    removeHeardTermRow(at: index)
+                }
+            } label: {
+                Image(systemName: isLast ? "plus" : "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 30, height: 30)
+                    .background(isLast ? VoceDesign.warmAccentFill : VoceDesign.surfaceSecondary)
+                    .foregroundStyle(isLast ? VoceDesign.warmAccentText : VoceDesign.textSecondary)
+                    .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help(isLast ? "Add another heard phrase" : "Remove heard phrase")
+        }
+    }
+
+    private func bindingForHeardTerm(at index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                guard draft.heardTerms.indices.contains(index) else { return "" }
+                return draft.heardTerms[index]
+            },
+            set: { newValue in
+                guard draft.heardTerms.indices.contains(index) else { return }
+                draft.heardTerms[index] = newValue
+            }
+        )
+    }
+
+    private func addHeardTermRow(focusNewRow: Bool = false) {
+        draft.heardTerms.append("")
+
+        if focusNewRow {
+            let newIndex = draft.heardTerms.count - 1
+            Task { @MainActor in
+                focusedHeardTermIndex = newIndex
+            }
+        }
+    }
+
+    private func removeHeardTermRow(at index: Int) {
+        guard draft.heardTerms.indices.contains(index), draft.heardTerms.count > 1 else { return }
+        draft.heardTerms.remove(at: index)
     }
 
     private var appSelectionList: some View {
@@ -516,6 +652,19 @@ private struct LexiconEditSheet: View {
             .textCase(.uppercase)
             .foregroundStyle(VoceDesign.textSecondary)
     }
+}
+
+private func normalizedLexiconTerms(from rawValues: [String]) -> [String] {
+    var seen: Set<String> = []
+    return rawValues
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .filter { term in
+            let key = term.lowercased()
+            guard !seen.contains(key) else { return false }
+            seen.insert(key)
+            return true
+        }
 }
 
 private func lexiconAppDisplayName(for bundleID: String) -> String {

@@ -17,3 +17,18 @@ func lexiconGlobalAndScopedReplacement() async throws {
     #expect(general == "hey Voce open cursor")
     #expect(ide == "hey Voce open Cursor IDE")
 }
+
+@Test("Lexicon allows multiple heard variants for one preferred term")
+func lexiconMultipleVariantsForPreferredTerm() async throws {
+    let service = PersonalLexiconService()
+    await service.upsert(term: "Spectra Corp", preferred: "SpectraCorp", scope: .global)
+    await service.upsert(term: "Vector Corp", preferred: "SpectraCorp", scope: .global)
+    await service.upsert(term: "Spectral Core", preferred: "SpectraCorp", scope: .global)
+
+    let corrected = await service.apply(
+        to: "Schedule Spectra Corp today, Vector Corp tomorrow, and Spectral Core Friday.",
+        appContext: nil
+    )
+
+    #expect(corrected == "Schedule SpectraCorp today, SpectraCorp tomorrow, and SpectraCorp Friday.")
+}

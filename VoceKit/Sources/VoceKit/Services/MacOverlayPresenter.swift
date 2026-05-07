@@ -47,6 +47,35 @@ private final class OverlayPassThroughView: NSView {
 }
 
 @MainActor
+private final class OverlayBubbleView: NSView {
+    var onHoverChanged: ((Bool) -> Void)?
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        trackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
+}
+
+@MainActor
 private final class BubbleControlMenuButton: NSButton {
     private let normalBackgroundColor: NSColor
     private let hoverBackgroundColor: NSColor
@@ -241,6 +270,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var processingRunnerLayer: CALayer?
     private var latestAudioLevel: Double = 0.18
     private var statusTextField: NSTextField?
+    private var transcriptBackdropView: NSView?
     private var transcriptScrollView: NSScrollView?
     private var transcriptTextView: NSTextView?
     private var timer: Timer?
@@ -249,6 +279,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var wasHidden = true
     private var anchorSnapshot: AnchorSnapshot?
     private var layoutMode: LayoutMode = .compact
+    private var isBubbleHovered = false
     private var activePulseMode: PulseMode = .none
     private var hasShownLiveTranscriptInSession = false
     private var currentBubbleSize: NSSize = TranscriptOverlayLayout.compactSize
@@ -420,7 +451,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             setBubbleControlsEnabled(true)
             lastLiveTranscriptText = text
             hasShownLiveTranscriptInSession = true
-            showCompactListeningBadge()
+            let shouldExpand = isBubbleHovered && isMouseCurrentlyInsideBubble()
+            isBubbleHovered = shouldExpand
+            if shouldExpand {
+                updateTranscript(text)
+            } else {
+                showCompactListeningBadge()
+            }
 
         case .transcribing:
             setBubbleControlsEnabled(false)
@@ -599,10 +636,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             height: Self.compactSize.height
         )
 
-        let container = NSView(frame: bubbleRect)
+        let container = OverlayBubbleView(frame: bubbleRect)
         container.wantsLayer = true
         container.layer?.cornerRadius = Self.compactCornerRadius
         container.layer?.masksToBounds = false
+        container.onHoverChanged = { [weak self] hovering in
+            self?.handleBubbleHoverChanged(hovering)
+        }
         self.containerView = container
         canvas.interactiveView = container
 
@@ -785,7 +825,19 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassHost.addSubview(label)
         self.statusTextField = label
 
-        // Transcript preview grows to three wrapped lines and follows the latest partials.
+        // Transcript preview sits above the listening meter so hover keeps the speech animation visible.
+        let transcriptBackdropView = NSView(frame: .zero)
+        transcriptBackdropView.wantsLayer = true
+        transcriptBackdropView.layer?.cornerRadius = 12
+        transcriptBackdropView.layer?.masksToBounds = true
+        transcriptBackdropView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.82).cgColor
+        transcriptBackdropView.layer?.borderWidth = 0.5
+        transcriptBackdropView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        transcriptBackdropView.translatesAutoresizingMaskIntoConstraints = false
+        transcriptBackdropView.isHidden = true
+        glassHost.addSubview(transcriptBackdropView)
+        self.transcriptBackdropView = transcriptBackdropView
+
         let transcriptTextView = NSTextView(frame: .zero)
         transcriptTextView.drawsBackground = false
         transcriptTextView.isEditable = false
@@ -810,7 +862,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         transcriptScrollView.documentView = transcriptTextView
         transcriptScrollView.translatesAutoresizingMaskIntoConstraints = false
         transcriptScrollView.isHidden = true
-        glassHost.addSubview(transcriptScrollView)
+        transcriptBackdropView.addSubview(transcriptScrollView)
         self.transcriptTextView = transcriptTextView
         self.transcriptScrollView = transcriptScrollView
 
@@ -819,10 +871,15 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             label.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -20),
             label.centerYAnchor.constraint(equalTo: glassHost.centerYAnchor),
 
-            transcriptScrollView.leadingAnchor.constraint(equalTo: glassHost.leadingAnchor, constant: 24),
-            transcriptScrollView.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -24),
-            transcriptScrollView.topAnchor.constraint(equalTo: glassHost.topAnchor, constant: 16),
-            transcriptScrollView.bottomAnchor.constraint(equalTo: glassHost.bottomAnchor, constant: -16)
+            transcriptBackdropView.leadingAnchor.constraint(equalTo: glassHost.leadingAnchor, constant: 12),
+            transcriptBackdropView.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -12),
+            transcriptBackdropView.topAnchor.constraint(equalTo: glassHost.topAnchor, constant: 10),
+            transcriptBackdropView.bottomAnchor.constraint(equalTo: glassHost.bottomAnchor, constant: -12),
+
+            transcriptScrollView.leadingAnchor.constraint(equalTo: transcriptBackdropView.leadingAnchor, constant: 12),
+            transcriptScrollView.trailingAnchor.constraint(equalTo: transcriptBackdropView.trailingAnchor, constant: -12),
+            transcriptScrollView.topAnchor.constraint(equalTo: transcriptBackdropView.topAnchor, constant: 6),
+            transcriptScrollView.bottomAnchor.constraint(equalTo: transcriptBackdropView.bottomAnchor, constant: -6)
         ])
 
         canvas.addSubview(container)
@@ -868,6 +925,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func updateText(_ newText: String) {
+        transcriptBackdropView?.isHidden = true
         transcriptScrollView?.isHidden = true
         statusTextField?.isHidden = false
         guard !reduceMotion else {
@@ -1006,6 +1064,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func updateTranscript(_ text: String, preserveBubbleShell: Bool = false) {
         statusTextField?.isHidden = true
+        transcriptBackdropView?.isHidden = false
         transcriptScrollView?.isHidden = false
         let attributedText = TranscriptOverlayLayout.attributedText(
             text,
@@ -1049,6 +1108,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func hideContent() {
         statusTextField?.isHidden = true
+        transcriptBackdropView?.isHidden = true
         transcriptScrollView?.isHidden = true
     }
 
@@ -1149,9 +1209,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         guard layoutMode != newLayout || currentBubbleSize != targetSize else {
             if newLayout == .transcript {
                 statusTextField?.isHidden = true
+                transcriptBackdropView?.isHidden = false
                 transcriptScrollView?.isHidden = false
             } else {
                 statusTextField?.isHidden = false
+                transcriptBackdropView?.isHidden = true
                 transcriptScrollView?.isHidden = true
             }
             return
@@ -1172,9 +1234,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassHostView?.layer?.cornerRadius = cornerRadius
         if newLayout == .transcript {
             statusTextField?.isHidden = true
+            transcriptBackdropView?.isHidden = false
             transcriptScrollView?.isHidden = false
         } else {
             statusTextField?.isHidden = false
+            transcriptBackdropView?.isHidden = true
             transcriptScrollView?.isHidden = true
         }
     }
@@ -1185,6 +1249,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func showCompactListeningBadge() {
         applyLayout(.compact)
+        transcriptBackdropView?.isHidden = true
         transcriptScrollView?.isHidden = true
         statusTextField?.isHidden = true
         resetBorderToAccent()
@@ -1197,11 +1262,37 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func showCompactProcessingBadge() {
         applyLayout(.compact)
+        transcriptBackdropView?.isHidden = true
         transcriptScrollView?.isHidden = true
         statusTextField?.isHidden = true
         resetBorderToAccent()
         applyTranscribingSurfaceAppearance()
         startTranscribingPulse()
+    }
+
+    private func handleBubbleHoverChanged(_ hovering: Bool) {
+        isBubbleHovered = hovering
+        guard activePulseMode == .listening else { return }
+        let transcript = lastLiveTranscriptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return }
+        if hovering {
+            updateTranscript(transcript)
+        } else {
+            showCompactListeningBadge()
+        }
+    }
+
+    private func isMouseCurrentlyInsideBubble() -> Bool {
+        guard let window,
+              let containerView,
+              window.isVisible,
+              !wasHidden
+        else {
+            return false
+        }
+        let windowPoint = window.mouseLocationOutsideOfEventStream
+        let containerPoint = containerView.convert(windowPoint, from: nil)
+        return containerView.bounds.contains(containerPoint)
     }
 
     private func setBubbleControlsEnabled(_ enabled: Bool) {

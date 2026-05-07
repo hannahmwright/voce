@@ -24,6 +24,8 @@
 		1AEEA42B54F2CD3B925F30E6 /* RecordTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */; };
 		1B6C12244D8F1E9CE6FE7B67 /* SettingsViewHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */; };
 		1C179BEDA35959E20B569CD3 /* OpenAICloudSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ACFFD36C95CA934864BFFA4 /* OpenAICloudSpeechProviderClient.swift */; };
+		1D5A3E28E1294FC1992B6D11 /* OpenAIRealtimeWhisperSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F4C6A11E74F4588A78B2349 /* OpenAIRealtimeWhisperSpeechProviderClient.swift */; };
+		1F3BE7F5A29B4F34B6E95B6D /* OpenAIRealtimeWhisperCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EF4E22929FC44EA93E16A55 /* OpenAIRealtimeWhisperCaptureSession.swift */; };
 		1EEA0A0E02DD38775D4AC0E2 /* CloudStreamingTranscriptionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A888FBBF2275B2D2C783872B /* CloudStreamingTranscriptionEngine.swift */; };
 		1F10107BCE394366BC6FDF68 /* StyleTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EA039E7BFEB0F1612ED079B /* StyleTab.swift */; };
 		1FAF5EF6CF40FE79D626E1EA /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A43BDB5365A4C04B39377D7 /* AppPreferences.swift */; };
@@ -121,7 +123,9 @@
 		F55F17DD16A4D66173381094 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 627E6D8A9A0959D181744C14 /* HistoryView.swift */; };
 		F5A00A35B80276971C87786A /* processing-background.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 911C21B21664F69036B1443E /* processing-background.mp4 */; };
 		F65157DA0BB02BD00BAC52E3 /* VoceCloudProxySpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EE177E2D97CBCDC0EA13B5D /* VoceCloudProxySpeechProviderClient.swift */; };
+		F8B1D531B1D940AA8CF1921B /* OpenAIRealtimeWhisperSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F4C6A11E74F4588A78B2349 /* OpenAIRealtimeWhisperSpeechProviderClient.swift */; };
 		F969EC94E620CE671A029FBE /* OpenAICloudSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ACFFD36C95CA934864BFFA4 /* OpenAICloudSpeechProviderClient.swift */; };
+		FA94A773320247D59CF3D72C /* OpenAIRealtimeWhisperCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EF4E22929FC44EA93E16A55 /* OpenAIRealtimeWhisperCaptureSession.swift */; };
 		FDA24D431F2A3701451D2EA0 /* MediaSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */; };
 		FE46630AA4D6E4E42A6B4D13 /* VoceAccessSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 637E3E73748DCBC86C3599DC /* VoceAccessSettingsSection.swift */; };
 		FF0B4302EA2DB58792640C19 /* RecordTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF7B9E9955A3031DB6BEDC6C /* RecordTab.swift */; };
@@ -175,6 +179,8 @@
 		6924EB51AD87BBC5B033664E /* MediaSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSettingsSection.swift; sourceTree = "<group>"; };
 		7B575DB65BF978A9BCA10827 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewHelpers.swift; sourceTree = "<group>"; };
+		8F4C6A11E74F4588A78B2349 /* OpenAIRealtimeWhisperSpeechProviderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIRealtimeWhisperSpeechProviderClient.swift; sourceTree = "<group>"; };
+		9EF4E22929FC44EA93E16A55 /* OpenAIRealtimeWhisperCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIRealtimeWhisperCaptureSession.swift; sourceTree = "<group>"; };
 		911C21B21664F69036B1443E /* processing-background.mp4 */ = {isa = PBXFileReference; path = "processing-background.mp4"; sourceTree = "<group>"; };
 		9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatusCard.swift; sourceTree = "<group>"; };
 		9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsTab.swift; sourceTree = "<group>"; };
@@ -291,6 +297,8 @@
 				340E874BDA6F985AB31A34BB /* MicButton.swift */,
 				A3E2FC96193616902F7C0568 /* OnboardingView.swift */,
 				5ACFFD36C95CA934864BFFA4 /* OpenAICloudSpeechProviderClient.swift */,
+				9EF4E22929FC44EA93E16A55 /* OpenAIRealtimeWhisperCaptureSession.swift */,
+				8F4C6A11E74F4588A78B2349 /* OpenAIRealtimeWhisperSpeechProviderClient.swift */,
 				421E757B86947D8D1176BB71 /* OpenAITranscriptRefinementEngine.swift */,
 				DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */,
 				E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */,
@@ -522,6 +530,8 @@
 				BF0EB4627E55370386D60CF1 /* MicButton.swift in Sources */,
 				542AFA53B072C7B9DACA15EC /* OnboardingView.swift in Sources */,
 				1C179BEDA35959E20B569CD3 /* OpenAICloudSpeechProviderClient.swift in Sources */,
+				1F3BE7F5A29B4F34B6E95B6D /* OpenAIRealtimeWhisperCaptureSession.swift in Sources */,
+				1D5A3E28E1294FC1992B6D11 /* OpenAIRealtimeWhisperSpeechProviderClient.swift in Sources */,
 				76E3F7E4849676A66BF5C8AA /* OpenAITranscriptRefinementEngine.swift in Sources */,
 				9B85047FBE27FAF2332A6E4B /* PermissionDiagnostics.swift in Sources */,
 				0FD03CD3551025882DF28DA9 /* PermissionStatusCard.swift in Sources */,
@@ -590,6 +600,8 @@
 				411A42D08C3CBEB12F8DB3E3 /* MicButton.swift in Sources */,
 				BED22121BD085200A09F90AF /* OnboardingView.swift in Sources */,
 				F969EC94E620CE671A029FBE /* OpenAICloudSpeechProviderClient.swift in Sources */,
+				FA94A773320247D59CF3D72C /* OpenAIRealtimeWhisperCaptureSession.swift in Sources */,
+				F8B1D531B1D940AA8CF1921B /* OpenAIRealtimeWhisperSpeechProviderClient.swift in Sources */,
 				DE3C8D02FD254CC56AB6E9D9 /* OpenAITranscriptRefinementEngine.swift in Sources */,
 				04B1A91240C329A601315488 /* PermissionDiagnostics.swift in Sources */,
 				C6D21DB88E69B6D756E227A9 /* PermissionStatusCard.swift in Sources */,

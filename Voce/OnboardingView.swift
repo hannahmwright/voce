@@ -41,45 +41,38 @@ struct OnboardingView: View {
                 .padding(.horizontal, VoceDesign.lg)
                 .padding(.top, VoceDesign.lg)
 
-            GeometryReader { _ in
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-
-                    VStack(spacing: VoceDesign.md) {
-                        ScrollView(showsIndicators: false) {
-                            Group {
-                            switch currentStep {
-                            case .welcome:
-                                welcomeStep
-                            case .typingSpeed:
-                                typingSpeedStep
-                                case .access:
-                                    accessStep
-                                case .permissions:
-                                    permissionsStep
-                                case .ready:
-                                    readyStep
-                            case .walkthrough:
-                                walkthroughStep
-                            case .practice:
-                                practiceStep
-                            }
-                            }
-                            .id(currentStep)
-                            .transition(stepTransition)
-                            .frame(maxWidth: .infinity)
-                            .padding(.bottom, VoceDesign.sm)
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: VoceDesign.md) {
+                    Group {
+                        switch currentStep {
+                        case .welcome:
+                            welcomeStep
+                        case .typingSpeed:
+                            typingSpeedStep
+                        case .access:
+                            accessStep
+                        case .permissions:
+                            permissionsStep
+                        case .ready:
+                            readyStep
+                        case .walkthrough:
+                            walkthroughStep
+                        case .practice:
+                            practiceStep
                         }
-
-                        navigationBar
                     }
-                    .frame(maxWidth: 860)
+                    .id(currentStep)
+                    .transition(stepTransition)
+                    .frame(maxWidth: .infinity)
 
-                    Spacer(minLength: 0)
+                    navigationBar
+                        .padding(.top, VoceDesign.xs)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: 860)
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, VoceDesign.xl)
-                .padding(.bottom, VoceDesign.md)
+                .padding(.top, VoceDesign.lg)
+                .padding(.bottom, VoceDesign.lg)
             }
         }
         .frame(
@@ -545,12 +538,6 @@ struct OnboardingView: View {
             }
             .frame(maxWidth: 860)
             .cardStyle()
-
-            if !permissionsReady {
-                Text("Allow Microphone and Speech to continue.")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.warning)
-            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controller.refreshPermissionStatuses()
@@ -950,7 +937,7 @@ struct OnboardingView: View {
     }
 
     private var navigationBar: some View {
-        HStack {
+        HStack(spacing: VoceDesign.sm) {
             if currentStep != .welcome {
                 Button {
                     goBack()
@@ -970,45 +957,128 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if currentStep == .typingSpeed || currentStep == .practice {
+            if let skipLabel = skipButtonLabel {
                 Button {
-                    if currentStep == .typingSpeed {
-                        goForward()
-                    } else {
-                        completeOnboarding()
-                    }
+                    performSkip()
                 } label: {
-                    Text(currentStep == .typingSpeed ? "Skip" : "Skip test")
-                        .font(VoceDesign.callout())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                        .padding(.horizontal, VoceDesign.md)
+                    Text(skipLabel)
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .padding(.horizontal, VoceDesign.lg)
                         .padding(.vertical, VoceDesign.sm)
+                        .background(
+                            Capsule()
+                                .fill(VoceDesign.surface.opacity(0.55))
+                        )
+                        .overlay(
+                            Capsule()
+                                .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+                        )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(currentStep == .typingSpeed ? "Skip the typing speed test" : "Skip the practice test and finish onboarding")
+                .accessibilityLabel(skipAccessibilityLabel ?? skipLabel)
             }
 
-            Button {
-                if currentStep == .practice {
-                    completeOnboarding()
-                } else {
-                    goForward()
+            if canContinue {
+                Button {
+                    if currentStep == .practice {
+                        completeOnboarding()
+                    } else {
+                        goForward()
+                    }
+                } label: {
+                    Text(currentStep == .practice ? "Start using Voce" : "Continue")
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.warmAccentText)
+                        .padding(.horizontal, VoceDesign.xl)
+                        .padding(.vertical, VoceDesign.sm)
+                        .background(
+                            Capsule()
+                                .fill(VoceDesign.warmAccentFill)
+                        )
                 }
-            } label: {
-                Text(currentStep == .practice ? "Start using Voce" : "Continue")
-                    .font(VoceDesign.bodyEmphasis())
-                    .foregroundStyle(VoceDesign.warmAccentText)
-                    .padding(.horizontal, VoceDesign.xl)
-                    .padding(.vertical, VoceDesign.sm)
-                    .background(
-                        Capsule()
-                            .fill(VoceDesign.warmAccentFill)
-                    )
+                .buttonStyle(.plain)
+                .accessibilityLabel(currentStep == .practice ? "Finish onboarding and start using Voce" : "Continue to next step")
+            } else if let message = continueBlockedMessage {
+                HStack(spacing: VoceDesign.xs) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(VoceDesign.warning)
+
+                    Text(message)
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, VoceDesign.lg)
+                .padding(.vertical, VoceDesign.sm)
+                .background(
+                    Capsule()
+                        .fill(VoceDesign.warning.opacity(0.20))
+                )
+                .overlay(
+                    Capsule()
+                        .stroke(VoceDesign.warning.opacity(0.55), lineWidth: 1)
+                )
+                .accessibilityLabel(message)
             }
-            .buttonStyle(.plain)
-            .disabled(!canContinue)
-            .opacity(canContinue ? 1 : VoceDesign.opacityDisabled)
-            .accessibilityLabel(currentStep == .practice ? "Finish onboarding and start using Voce" : "Continue to next step")
+        }
+    }
+
+    private var skipButtonLabel: String? {
+        switch currentStep {
+        case .welcome, .permissions, .ready:
+            return nil
+        case .typingSpeed:
+            return "Skip"
+        case .access:
+            return "Skip for now"
+        case .walkthrough:
+            return "Skip lesson"
+        case .practice:
+            return "Skip test"
+        }
+    }
+
+    private var skipAccessibilityLabel: String? {
+        switch currentStep {
+        case .typingSpeed:
+            return "Skip the typing speed test"
+        case .access:
+            return "Skip access setup for now"
+        case .walkthrough:
+            return "Skip the guided walkthrough lesson"
+        case .practice:
+            return "Skip the practice test and finish onboarding"
+        case .welcome, .permissions, .ready:
+            return nil
+        }
+    }
+
+    private func performSkip() {
+        switch currentStep {
+        case .practice:
+            completeOnboarding()
+        default:
+            goForward()
+        }
+    }
+
+    private var continueBlockedMessage: String? {
+        switch currentStep {
+        case .welcome, .ready:
+            return nil
+        case .typingSpeed:
+            return "Type the prompt to measure your speed."
+        case .access:
+            return "Verify your email to continue."
+        case .permissions:
+            return "Allow Microphone and Speech to continue."
+        case .walkthrough:
+            return "Try the lesson to continue."
+        case .practice:
+            return "Practice both modes to finish."
         }
     }
 

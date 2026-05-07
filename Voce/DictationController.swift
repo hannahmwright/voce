@@ -245,6 +245,7 @@ final class DictationController: ObservableObject {
     private var activeStartTask: Task<Void, Never>?
     private var activeStartTaskID: UUID?
     private var activePreviewSession: AppleSpeechPreviewSession?
+    private var activeRealtimeWhisperSession: OpenAIRealtimeWhisperCaptureSession?
     private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
@@ -398,6 +399,8 @@ final class DictationController: ObservableObject {
         activeStartTask = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
+        activeRealtimeWhisperSession?.cancel()
+        activeRealtimeWhisperSession = nil
         if let token = activeMediaToken {
             mediaInterruption.endInterruption(token: token)
             activeMediaToken = nil
@@ -1147,6 +1150,13 @@ final class DictationController: ObservableObject {
             return cloudDictationAvailabilityService.directCredentialStatus(for: preferences.dictation)
         }
 
+        if preferences.dictation.cloud.transcriptionMode == .realtimeWhisper {
+            return CloudDictationAvailabilityStatus(
+                message: "Realtime Whisper requires direct OpenAI credentials in this build.",
+                isError: true
+            )
+        }
+
         let email = normalizedSubscriberEmail
         guard !email.isEmpty else {
             return CloudDictationAvailabilityStatus(
@@ -1201,6 +1211,49 @@ final class DictationController: ObservableObject {
             transcriptionHints: preferences.visibleLexiconEntries,
             subscriberEmailProvider: { subscriberEmail },
             useDirectCredentials: usesDirectCloudCredentials
+        )
+    }
+
+    private func usesRealtimeWhisperCapture(for appContext: AppContext) -> Bool {
+        dictationEngineModeResolver.resolve(for: appContext) == .cloud
+            && preferences.dictation.cloud.transcriptionMode == .realtimeWhisper
+            && usesDirectCloudCredentials
+    }
+
+    private func makeRealtimeWhisperCaptureSession(
+        onPartialText: @escaping @Sendable (String) -> Void,
+        onTerminalError: @escaping @Sendable (Error) -> Void,
+        onAudioLevel: @escaping @Sendable (Double) -> Void
+    ) throws -> OpenAIRealtimeWhisperCaptureSession {
+        let apiKeySource = preferences.dictation.cloud.apiKeySource
+        let localeIdentifier = preferences.dictation.localeIdentifier
+        let transcriptionHints = preferences.visibleLexiconEntries
+        let model = ProcessInfo.processInfo.environment["VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel: String
+        if let model, !model.isEmpty {
+            resolvedModel = model
+        } else {
+            resolvedModel = "gpt-realtime-whisper"
+        }
+        return OpenAIRealtimeWhisperCaptureSession(
+            apiKeyProvider: {
+                do {
+                    return try CloudProviderCredentialStore.shared.resolveOpenAIAPIKey(
+                        source: apiKeySource
+                    )
+                } catch CloudProviderCredentialStoreError.missingAPIKey {
+                    throw CloudDictationError.missingAPIKey
+                } catch {
+                    throw error
+                }
+            },
+            model: resolvedModel,
+            localeIdentifier: localeIdentifier,
+            transcriptionHints: transcriptionHints,
+            onPartialText: onPartialText,
+            onTerminalError: onTerminalError,
+            onAudioLevel: onAudioLevel
         )
     }
 
@@ -1351,23 +1404,45 @@ final class DictationController: ObservableObject {
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
 
                 status = "Arming microphone..."
-                let session = AppleSpeechPreviewSession(
-                    localeIdentifier: preferences.dictation.localeIdentifier,
-                    previewTranscriptionEnabled: false,
-                    onPartialText: { _ in },
-                    onTerminalError: { [weak self] error in
-                        Task { @MainActor [weak self] in
-                            self?.handleStreamingFailure(error)
+                if usesRealtimeWhisperCapture(for: capturedContext) {
+                    let session = try makeRealtimeWhisperCaptureSession(
+                        onPartialText: { [weak overlay] text in
+                            Task { @MainActor [weak overlay] in
+                                overlay?.show(state: .liveTranscript(text: text, handsFree: mode == .handsFree))
+                            }
+                        },
+                        onTerminalError: { [weak self] error in
+                            Task { @MainActor [weak self] in
+                                self?.handleStreamingFailure(error)
+                            }
+                        },
+                        onAudioLevel: { [weak overlay] level in
+                            Task { @MainActor [weak overlay] in
+                                overlay?.updateAudioLevel(level)
+                            }
                         }
-                    },
-                    onAudioLevel: { [weak overlay] level in
-                        Task { @MainActor [weak overlay] in
-                            overlay?.updateAudioLevel(level)
+                    )
+                    activeRealtimeWhisperSession = session
+                    try await session.start()
+                } else {
+                    let session = AppleSpeechPreviewSession(
+                        localeIdentifier: preferences.dictation.localeIdentifier,
+                        previewTranscriptionEnabled: false,
+                        onPartialText: { _ in },
+                        onTerminalError: { [weak self] error in
+                            Task { @MainActor [weak self] in
+                                self?.handleStreamingFailure(error)
+                            }
+                        },
+                        onAudioLevel: { [weak overlay] level in
+                            Task { @MainActor [weak overlay] in
+                                overlay?.updateAudioLevel(level)
+                            }
                         }
-                    }
-                )
-                activePreviewSession = session
-                try await session.start()
+                    )
+                    activePreviewSession = session
+                    try await session.start()
+                }
 
                 let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
@@ -1416,6 +1491,7 @@ final class DictationController: ObservableObject {
                 pendingCompletionActionOverride = nil
                 updateActiveRecordingHotkeys()
                 activePreviewSession = nil
+                activeRealtimeWhisperSession = nil
                 recordingStateMachine.markTranscriptionFailed()
                 status = "Failed to start"
                 lastError = error.localizedDescription
@@ -1430,12 +1506,15 @@ final class DictationController: ObservableObject {
     }
 
     private func handleStreamingFailure(_ error: Error) {
-        guard let session = activePreviewSession else { return }
+        let previewSession = activePreviewSession
+        let realtimeSession = activeRealtimeWhisperSession
+        guard previewSession != nil || realtimeSession != nil else { return }
 
         let pendingStart = activeStartTask
         activeStartTask = nil
         activeStartTaskID = nil
         activePreviewSession = nil
+        activeRealtimeWhisperSession = nil
 
         recordingTimer?.invalidate()
         recordingTimer = nil
@@ -1450,7 +1529,8 @@ final class DictationController: ObservableObject {
         Task {
             await pendingStart?.value
 
-            session.cancel()
+            previewSession?.cancel()
+            realtimeSession?.cancel()
 
             if let sessionID = currentSessionID, let coordinator {
                 await coordinator.cancel(sessionID: sessionID)
@@ -1484,6 +1564,8 @@ final class DictationController: ObservableObject {
         // Capture streaming session before clearing state.
         let previewSession = activePreviewSession
         activePreviewSession = nil
+        let realtimeSession = activeRealtimeWhisperSession
+        activeRealtimeWhisperSession = nil
         let recordedSeconds = recordingElapsed
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
@@ -1553,6 +1635,7 @@ final class DictationController: ObservableObject {
 
             guard let coordinator, let sessionID else {
                 previewSession?.cancel()
+                realtimeSession?.cancel()
                 recordingStateMachine.markTranscriptionFailed()
                 status = "No active recording session."
                 return
@@ -1575,29 +1658,56 @@ final class DictationController: ObservableObject {
             do {
                 let clock = ContinuousClock()
                 let stopBeganAt = clock.now
-                guard let stopResult = try previewSession?.stop() else {
+                let finalizedTranscript: FinalizedTranscript
+
+                if let realtimeSession {
+                    let stopResult = try await realtimeSession.stop()
+                    defer { try? FileManager.default.removeItem(at: stopResult.captureURL) }
+                    captureDurationMS = stopResult.rawTranscript.durationMS
+                    let stopElapsed = stopBeganAt.duration(to: clock.now)
+                    let stopElapsedSeconds = Double(stopElapsed.components.seconds)
+                        + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                    Self.logger.notice(
+                        "Realtime Whisper stop completed in \(stopElapsedSeconds, format: .fixed(precision: 2))s; captured \(captureDurationMS)ms"
+                    )
+
+                    let transcriptionBeganAt = clock.now
+                    finalizedTranscript = try await coordinator.processStreamingTranscript(
+                        stopResult.rawTranscript,
+                        sessionID: sessionID,
+                        processingNote: "Realtime Whisper"
+                    )
+                    let transcriptionElapsed = transcriptionBeganAt.duration(to: clock.now)
+                    let transcriptionElapsedSeconds = Double(transcriptionElapsed.components.seconds)
+                        + Double(transcriptionElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                    Self.logger.notice(
+                        "Coordinator finalized realtime transcript in \(transcriptionElapsedSeconds, format: .fixed(precision: 2))s"
+                    )
+                } else if let previewSession {
+                    let stopResult = try previewSession.stop()
+                    captureDurationMS = stopResult.captureDurationMS
+                    let stopElapsed = stopBeganAt.duration(to: clock.now)
+                    let stopElapsedSeconds = Double(stopElapsed.components.seconds)
+                        + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                    Self.logger.notice(
+                        "Preview stop completed in \(stopElapsedSeconds, format: .fixed(precision: 2))s; captured \(captureDurationMS)ms"
+                    )
+
+                    let transcriptionBeganAt = clock.now
+                    finalizedTranscript = try await coordinator.processStreamingAudio(
+                        audioURL: stopResult.captureURL,
+                        sessionID: sessionID,
+                        languageHints: [preferences.dictation.localeIdentifier]
+                    )
+                    let transcriptionElapsed = transcriptionBeganAt.duration(to: clock.now)
+                    let transcriptionElapsedSeconds = Double(transcriptionElapsed.components.seconds)
+                        + Double(transcriptionElapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                    Self.logger.notice(
+                        "Coordinator finalized transcript in \(transcriptionElapsedSeconds, format: .fixed(precision: 2))s"
+                    )
+                } else {
                     throw AppleSpeechPreviewError.missingOutputFile
                 }
-                captureDurationMS = stopResult.captureDurationMS
-                let stopElapsed = stopBeganAt.duration(to: clock.now)
-                let stopElapsedSeconds = Double(stopElapsed.components.seconds)
-                    + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
-                Self.logger.notice(
-                    "Preview stop completed in \(stopElapsedSeconds, format: .fixed(precision: 2))s; captured \(captureDurationMS)ms"
-                )
-
-                let transcriptionBeganAt = clock.now
-                let finalizedTranscript = try await coordinator.processStreamingAudio(
-                    audioURL: stopResult.captureURL,
-                    sessionID: sessionID,
-                    languageHints: [preferences.dictation.localeIdentifier]
-                )
-                let transcriptionElapsed = transcriptionBeganAt.duration(to: clock.now)
-                let transcriptionElapsedSeconds = Double(transcriptionElapsed.components.seconds)
-                    + Double(transcriptionElapsed.components.attoseconds) / 1_000_000_000_000_000_000
-                Self.logger.notice(
-                    "Coordinator finalized transcript in \(transcriptionElapsedSeconds, format: .fixed(precision: 2))s"
-                )
 
                 if let processingSequence {
                     await waitForCompletionTurn(sequence: processingSequence)
@@ -2924,6 +3034,7 @@ final class DictationController: ObservableObject {
             preferences.dictation.localeIdentifier,
             preferences.dictation.engineMode.rawValue,
             preferences.dictation.cloud.provider.rawValue,
+            preferences.dictation.cloud.transcriptionMode.rawValue,
             preferences.dictation.cloud.refinementEnabled ? "refine-on" : "refine-off",
             preferences.dictation.cloud.formattingStyle.rawValue,
             preferences.dictation.cloud.apiKeySource.rawValue,
@@ -3092,12 +3203,15 @@ private struct DictationRuntimeFactory {
 
         if snapshot.dictation.engineMode == .cloud,
            !snapshot.appDictationEnginePreferences.values.contains(.local) {
+            if snapshot.dictation.cloud.transcriptionMode == .realtimeWhisper {
+                return "Running OpenAI Realtime Whisper capture/transcription + structured cloud refinement."
+            }
             return useDirectCloudCredentials
-                ? "Running Apple preview + OpenAI cloud transcription + structured cloud refinement."
-                : "Running Apple preview + Voce cloud transcription + structured cloud refinement."
+                ? "Running cloud audio capture + OpenAI cloud transcription + structured cloud refinement."
+                : "Running cloud audio capture + Voce cloud transcription + structured cloud refinement."
         }
 
-        return "Running Apple preview with per-app local/cloud transcription and cleanup overrides."
+        return "Running Apple preview only for local apps; cloud apps use cloud transcription."
     }
 
     func makeInsertionTransports() -> [any InsertionTransport] {

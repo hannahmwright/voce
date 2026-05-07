@@ -46,6 +46,7 @@ npx convex env set STRIPE_CHECKOUT_SUCCESS_URL https://voceapp.io/account/succes
 npx convex env set STRIPE_CHECKOUT_CANCEL_URL https://voceapp.io/pricing
 npx convex env set VOCE_OPENAI_API_KEY sk-...
 npx convex env set VOCE_OPENAI_TRANSCRIPTION_MODEL gpt-4o-mini-transcribe
+npx convex env set VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL gpt-realtime-whisper
 npx convex env set VOCE_OPENAI_REFINEMENT_MODEL gpt-4o-mini
 ```
 

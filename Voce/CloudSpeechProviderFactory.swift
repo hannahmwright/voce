@@ -12,6 +12,26 @@ enum CloudSpeechProviderFactory {
         session: URLSession = .shared
     ) -> any CloudSpeechProviderClient {
         if useDirectCredentials {
+            if dictation.cloud.transcriptionMode == .realtimeWhisper {
+                return OpenAIRealtimeWhisperSpeechProviderClient(
+                    session: session,
+                    apiKeyProvider: {
+                        do {
+                            return try credentialStore.resolveOpenAIAPIKey(
+                                source: dictation.cloud.apiKeySource
+                            )
+                        } catch CloudProviderCredentialStoreError.missingAPIKey {
+                            throw CloudDictationError.missingAPIKey
+                        } catch {
+                            throw error
+                        }
+                    },
+                    transcriptionModel: environmentValue("VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-realtime-whisper",
+                    refinementModel: environmentValue("VOCE_OPENAI_REFINEMENT_MODEL") ?? "gpt-4o-mini",
+                    transcriptionHints: Array(transcriptionHints.prefix(200))
+                )
+            }
+
             return OpenAICloudSpeechProviderClient(
                 session: session,
                 apiKeyProvider: {
