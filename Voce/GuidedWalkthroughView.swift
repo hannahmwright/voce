@@ -399,6 +399,7 @@ struct AnimatedHotkeyDemo: View {
 struct DictionaryFixDemo: View {
     enum Phase: Int {
         case idle
+        case cursorAppearing
         case selecting
         case selected
         case pressed
@@ -408,6 +409,9 @@ struct DictionaryFixDemo: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase: Phase = .idle
+    // 0 = cursor parked at the right edge of "Kodex", 1 = cursor swept all the way to the left.
+    // Drives both the cursor's x position and the trailing-anchored highlight width.
+    @State private var selectionProgress: Double = 0
     @State private var cycleTask: Task<Void, Never>?
 
     var body: some View {
@@ -439,23 +443,57 @@ struct DictionaryFixDemo: View {
     private var sentenceLine: some View {
         HStack(spacing: 4) {
             Text("Please email")
-            Text("Kodex")
-                .foregroundStyle(VoceDesign.textPrimary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(VoceDesign.skyBlue.opacity(highlightFillOpacity))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .stroke(VoceDesign.accent.opacity(highlightStrokeOpacity), lineWidth: VoceDesign.borderThin)
-                )
-                .scaleEffect(kodexScale)
+            kodexBubble
             Text("the revised invoice today.")
         }
         .font(VoceDesign.heading3())
         .foregroundStyle(VoceDesign.textSecondary)
+    }
+
+    private var kodexBubble: some View {
+        Text("Kodex")
+            .foregroundStyle(VoceDesign.textPrimary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background {
+                // Highlight is anchored to the trailing edge so it appears to grow
+                // leftward as the cursor sweeps from right to left.
+                GeometryReader { proxy in
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(VoceDesign.skyBlue.opacity(highlightFillOpacity))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .stroke(
+                                        VoceDesign.accent.opacity(highlightStrokeOpacity),
+                                        lineWidth: VoceDesign.borderThin
+                                    )
+                            }
+                            .frame(width: proxy.size.width * selectionProgress)
+                    }
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                // Cursor floats just above the bubble with its tip pointing down-into the
+                // highlight's leading edge, mirroring how a real drag-select looks on macOS.
+                GeometryReader { proxy in
+                    cursorView
+                        .position(
+                            x: proxy.size.width * (1 - selectionProgress) + 6,
+                            y: -10
+                        )
+                        .opacity(cursorOpacity)
+                }
+                .allowsHitTesting(false)
+            }
+    }
+
+    private var cursorView: some View {
+        Image(systemName: "cursorarrow")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(VoceDesign.warmAccentText)
+            .shadow(color: Color.black.opacity(0.22), radius: 1.4, y: 0.6)
     }
 
     private var connectorArrow: some View {
@@ -494,7 +532,7 @@ struct DictionaryFixDemo: View {
 
     private var captionText: String {
         switch phase {
-        case .idle, .selecting:
+        case .idle, .cursorAppearing, .selecting:
             return "1. Highlight Kodex"
         case .selected, .pressed:
             return "2. Press \(hotkeyLabel)"
@@ -504,24 +542,28 @@ struct DictionaryFixDemo: View {
     // Highlight visual state
     private var highlightFillOpacity: Double {
         switch phase {
-        case .idle: return 0.0
-        case .selecting: return 0.22
+        case .idle, .cursorAppearing: return 0.0
+        case .selecting: return 0.32
         case .selected, .pressed: return 0.42
         }
     }
 
     private var highlightStrokeOpacity: Double {
         switch phase {
-        case .idle: return 0.0
-        case .selecting: return 0.18
+        case .idle, .cursorAppearing: return 0.0
+        case .selecting: return 0.24
         case .selected, .pressed: return 0.34
         }
     }
 
-    private var kodexScale: Double {
+    // Cursor visual state — fades in just before the sweep, fades out for the key press
+    // so the keyboard takes the spotlight.
+    private var cursorOpacity: Double {
         switch phase {
-        case .selecting: return 1.04
-        default: return 1.0
+        case .idle: return 0.0
+        case .cursorAppearing: return 0.6
+        case .selecting, .selected: return 1.0
+        case .pressed: return 0.0
         }
     }
 
@@ -551,28 +593,57 @@ struct DictionaryFixDemo: View {
 
         guard !reduceMotion else {
             phase = .selected
+            selectionProgress = 1.0
             return
         }
 
         cycleTask = Task { @MainActor in
-            // Initial brief idle
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            // Initial idle pause so the card has a moment of stillness before the loop kicks in.
+            try? await Task.sleep(nanoseconds: 700_000_000)
 
             while !Task.isCancelled {
-                withAnimation(.easeInOut(duration: 0.35)) { phase = .selecting }
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                // 1. Cursor materialises near the right edge of "Kodex".
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    phase = .cursorAppearing
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 if Task.isCancelled { return }
 
-                withAnimation(.easeInOut(duration: 0.25)) { phase = .selected }
-                try? await Task.sleep(nanoseconds: 800_000_000)
+                // 2. Cursor drags right-to-left; the highlight grows behind it.
+                withAnimation(.easeInOut(duration: 0.9)) {
+                    phase = .selecting
+                    selectionProgress = 1.0
+                }
+                try? await Task.sleep(nanoseconds: 900_000_000)
                 if Task.isCancelled { return }
 
-                withAnimation(.easeInOut(duration: 0.18)) { phase = .pressed }
+                // 3. Brief settle once the word is fully selected.
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    phase = .selected
+                }
+                try? await Task.sleep(nanoseconds: 750_000_000)
+                if Task.isCancelled { return }
+
+                // 4. Key press — cursor fades, key dips, arrow brightens.
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    phase = .pressed
+                }
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if Task.isCancelled { return }
+
+                // 5. Highlight fades. Keep selectionProgress at 1.0 while the cursor is hidden
+                //    so we don't visibly "rewind" the cursor back to the right edge.
+                withAnimation(.easeInOut(duration: 0.4)) {
+                    phase = .idle
+                }
                 try? await Task.sleep(nanoseconds: 450_000_000)
                 if Task.isCancelled { return }
 
-                withAnimation(.easeInOut(duration: 0.35)) { phase = .idle }
-                try? await Task.sleep(nanoseconds: 900_000_000)
+                // Snap selection back to zero invisibly while everything is faded out.
+                selectionProgress = 0
+
+                // 6. Larger gap between loops so the demo doesn't feel frantic.
+                try? await Task.sleep(nanoseconds: 1_700_000_000)
             }
         }
     }
