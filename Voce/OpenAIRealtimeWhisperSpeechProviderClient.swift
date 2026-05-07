@@ -10,24 +10,20 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
     private let apiKeyProvider: @Sendable () throws -> String
     private let transcriptionModel: String
     private let batchClient: OpenAICloudSpeechProviderClient
-    private let transcriptionHints: [LexiconEntry]
 
     init(
         session: URLSession = .shared,
         apiKeyProvider: @escaping @Sendable () throws -> String,
         transcriptionModel: String = "gpt-realtime-whisper",
-        refinementModel: String = "gpt-4o-mini",
-        transcriptionHints: [LexiconEntry] = []
+        refinementModel: String = "gpt-4o-mini"
     ) {
         self.session = session
         self.apiKeyProvider = apiKeyProvider
         self.transcriptionModel = transcriptionModel
-        self.transcriptionHints = Array(transcriptionHints.prefix(200))
         self.batchClient = OpenAICloudSpeechProviderClient(
             session: session,
             apiKeyProvider: apiKeyProvider,
-            refinementModel: refinementModel,
-            transcriptionHints: transcriptionHints
+            refinementModel: refinementModel
         )
     }
 

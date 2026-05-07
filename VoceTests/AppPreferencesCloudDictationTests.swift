@@ -8,7 +8,6 @@ func appPreferencesCloudDictationDefaults() {
 
     #expect(preferences.dictation.engineMode == .local)
     #expect(preferences.dictation.cloud.provider == .openAI)
-    #expect(preferences.dictation.cloud.transcriptionMode == .standard)
     #expect(preferences.dictation.cloud.refinementEnabled)
     #expect(preferences.dictation.cloud.formattingStyle == .structured)
     #expect(preferences.dictation.cloud.apiKeySource == .keychain)
@@ -20,15 +19,6 @@ func appPreferencesCloudDictationRebuildSensitivity() {
     let baseline = AppPreferences.default
     var changed = baseline
     changed.appDictationEnginePreferences["com.apple.dt.Xcode"] = .cloud
-
-    #expect(changed.requiresRuntimeRebuild(comparedTo: baseline))
-}
-
-@Test("Changing cloud transcription mode requires a runtime rebuild")
-func appPreferencesCloudTranscriptionModeRebuildSensitivity() {
-    let baseline = AppPreferences.default
-    var changed = baseline
-    changed.dictation.cloud.transcriptionMode = .realtimeWhisper
 
     #expect(changed.requiresRuntimeRebuild(comparedTo: baseline))
 }

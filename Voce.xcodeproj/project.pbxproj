@@ -113,7 +113,6 @@
 		E0A59403F98EA2A9C44CE950 /* AppleFoundationModelsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DA8DBB014F3CD82D09D9DA8 /* AppleFoundationModelsService.swift */; };
 		E24BC444F3A7D6EDFA8BB07B /* AppleSpeechTranscriptionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5971CB5E0295AED08450176 /* AppleSpeechTranscriptionEngine.swift */; };
 		E4E644F363C13417326F0BD4 /* CloudCleanupEngineAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2B589E7E78BE7B8B5453C62 /* CloudCleanupEngineAdapter.swift */; };
-		E737C199D99B869E8DE34EA3 /* VoceCloudProxySpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EE177E2D97CBCDC0EA13B5D /* VoceCloudProxySpeechProviderClient.swift */; };
 		E9ECDA9E2393CAE5A12EADC3 /* SettingsViewHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */; };
 		EBB2C0E1F4F720EF5D2D7771 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 627E6D8A9A0959D181744C14 /* HistoryView.swift */; };
 		EC4DFD98F217107FE76ABC00 /* CloudDictationAvailabilityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62CD9BDA1E022751668C858A /* CloudDictationAvailabilityService.swift */; };
@@ -122,7 +121,6 @@
 		F405620BECD9FA0C302A16BA /* CompletionExecutionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */; };
 		F55F17DD16A4D66173381094 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 627E6D8A9A0959D181744C14 /* HistoryView.swift */; };
 		F5A00A35B80276971C87786A /* processing-background.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 911C21B21664F69036B1443E /* processing-background.mp4 */; };
-		F65157DA0BB02BD00BAC52E3 /* VoceCloudProxySpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EE177E2D97CBCDC0EA13B5D /* VoceCloudProxySpeechProviderClient.swift */; };
 		F8B1D531B1D940AA8CF1921B /* OpenAIRealtimeWhisperSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F4C6A11E74F4588A78B2349 /* OpenAIRealtimeWhisperSpeechProviderClient.swift */; };
 		F969EC94E620CE671A029FBE /* OpenAICloudSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ACFFD36C95CA934864BFFA4 /* OpenAICloudSpeechProviderClient.swift */; };
 		FA94A773320247D59CF3D72C /* OpenAIRealtimeWhisperCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EF4E22929FC44EA93E16A55 /* OpenAIRealtimeWhisperCaptureSession.swift */; };
@@ -161,7 +159,6 @@
 		32D6BB3AE4EEE92E50CFFE78 /* AppPreferencesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferencesStore.swift; sourceTree = "<group>"; };
 		340E874BDA6F985AB31A34BB /* MicButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicButton.swift; sourceTree = "<group>"; };
 		3653857F0B4CD58897D2E51E /* VoceDev.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoceDev.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		3EE177E2D97CBCDC0EA13B5D /* VoceCloudProxySpeechProviderClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoceCloudProxySpeechProviderClient.swift; sourceTree = "<group>"; };
 		4110D21D399A9F170F3EA70E /* AnchorOverrideSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnchorOverrideSettingsSection.swift; sourceTree = "<group>"; };
 		41A4AACACF799B8954E3C2A7 /* HomeTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTab.swift; sourceTree = "<group>"; };
 		421E757B86947D8D1176BB71 /* OpenAITranscriptRefinementEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAITranscriptRefinementEngine.swift; sourceTree = "<group>"; };
@@ -317,7 +314,6 @@
 				5E408341ECED604CAD61B112 /* Voce.entitlements */,
 				637E3E73748DCBC86C3599DC /* VoceAccessSettingsSection.swift */,
 				F4341CE23927C00B47232FAD /* VoceApp.swift */,
-				3EE177E2D97CBCDC0EA13B5D /* VoceCloudProxySpeechProviderClient.swift */,
 				D9457C7DCFE3916C4FBC73BD /* VoceProEntitlementService.swift */,
 				C1D6F6F334166FF103AACA28 /* VoiceCommandsSettingsSection.swift */,
 				47D0F46C83C24CD745A51FC2 /* Resources */,
@@ -547,7 +543,6 @@
 				1330544B34909AF479AB7511 /* UpdaterController.swift in Sources */,
 				69FAB2D24C82F189D5AB6535 /* VoceAccessSettingsSection.swift in Sources */,
 				7B23E2C9CE5F3118BCDF871A /* VoceApp.swift in Sources */,
-				E737C199D99B869E8DE34EA3 /* VoceCloudProxySpeechProviderClient.swift in Sources */,
 				F31E0101DAB6966D7DF067D6 /* VoceProEntitlementService.swift in Sources */,
 				508BFDAD31925683D3E840E7 /* VoiceCommandsSettingsSection.swift in Sources */,
 			);
@@ -617,7 +612,6 @@
 				B09E52D335FEAE1F1AEE2A61 /* UpdaterController.swift in Sources */,
 				FE46630AA4D6E4E42A6B4D13 /* VoceAccessSettingsSection.swift in Sources */,
 				2E860B4B558041E90F57A497 /* VoceApp.swift in Sources */,
-				F65157DA0BB02BD00BAC52E3 /* VoceCloudProxySpeechProviderClient.swift in Sources */,
 				4EB482F30ACA1CE75CAFCA7B /* VoceProEntitlementService.swift in Sources */,
 				C288B74DADB852D353BC06DE /* VoiceCommandsSettingsSection.swift in Sources */,
 			);

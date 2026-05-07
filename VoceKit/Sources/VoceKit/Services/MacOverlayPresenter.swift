@@ -955,7 +955,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func updateMeterBarFrames(level: Double) {
         guard let glassHostView, !meterBarLayers.isEmpty else { return }
-        let bounds = glassHostView.bounds
+        updateMeterBarFrames(level: level, in: glassHostView.bounds)
+    }
+
+    private func updateMeterBarFrames(level: Double, in bounds: CGRect) {
+        guard !meterBarLayers.isEmpty else { return }
         let barCount = meterBarLayers.count
         let barWidth: CGFloat = bubbleAppearance == .techMeter ? 3 : 4
         let spacing: CGFloat = 3
@@ -986,18 +990,28 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func updateProcessingIndicatorFrame() {
-        guard let glassHostView, let processingIndicatorLayer else { return }
-        let rect = CGRect(x: glassHostView.bounds.maxX - 22, y: 14, width: 7, height: 7)
+        guard let glassHostView else { return }
+        updateProcessingIndicatorFrame(in: glassHostView.bounds.size)
+    }
+
+    private func updateProcessingIndicatorFrame(in size: NSSize) {
+        guard let processingIndicatorLayer else { return }
+        let rect = CGRect(x: size.width - 22, y: 14, width: 7, height: 7)
         let path = CGPath(ellipseIn: rect, transform: nil)
         processingIndicatorLayer.path = path
     }
 
     private func updateProcessingRunnerFrame() {
-        guard let glassHostView, let processingRunnerLayer else { return }
-        let size = CGSize(width: 18, height: 7)
-        processingRunnerLayer.bounds = CGRect(origin: .zero, size: size)
-        processingRunnerLayer.cornerRadius = size.height / 2
-        processingRunnerLayer.position = CGPoint(x: glassHostView.bounds.midX, y: glassHostView.bounds.midY)
+        guard let glassHostView else { return }
+        updateProcessingRunnerFrame(in: glassHostView.bounds.size)
+    }
+
+    private func updateProcessingRunnerFrame(in hostSize: NSSize) {
+        guard let processingRunnerLayer else { return }
+        let runnerSize = CGSize(width: 18, height: 7)
+        processingRunnerLayer.bounds = CGRect(origin: .zero, size: runnerSize)
+        processingRunnerLayer.cornerRadius = runnerSize.height / 2
+        processingRunnerLayer.position = CGPoint(x: hostSize.width / 2, y: hostSize.height / 2)
     }
 
     private func setMeterVisible(_ visible: Bool) {
@@ -1222,12 +1236,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         layoutMode = newLayout
         currentBubbleSize = targetSize
         window.setContentSize(windowSize(for: targetSize))
-        window.contentView?.layoutSubtreeIfNeeded()
-        glassHostView?.layoutSubtreeIfNeeded()
-        updateBorderGradientFrame(for: glassHostView?.bounds.size ?? targetSize)
-        updateProcessingIndicatorFrame()
-        updateProcessingRunnerFrame()
-        updateMeterBarFrames(level: 0.18)
+        updateOverlayFrames(for: targetSize, audioLevel: 0.18)
         positionWindow()
         let cornerRadius = newLayout == .transcript ? Self.transcriptCornerRadius : Self.compactCornerRadius
         containerView?.layer?.cornerRadius = cornerRadius
@@ -1745,6 +1754,16 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassTintLayer?.frame = rect
         sheenLayer?.frame = rect
         CATransaction.commit()
+    }
+
+    private func updateOverlayFrames(for bubbleSize: NSSize, audioLevel: Double) {
+        updateBorderGradientFrame(for: bubbleSize)
+        updateProcessingIndicatorFrame(in: bubbleSize)
+        updateProcessingRunnerFrame(in: bubbleSize)
+        updateMeterBarFrames(
+            level: audioLevel,
+            in: CGRect(origin: .zero, size: bubbleSize)
+        )
     }
 
     private func windowSize(for bubbleSize: NSSize) -> NSSize {

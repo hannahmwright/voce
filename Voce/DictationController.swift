@@ -1150,73 +1150,23 @@ final class DictationController: ObservableObject {
             return cloudDictationAvailabilityService.directCredentialStatus(for: preferences.dictation)
         }
 
-        if preferences.dictation.cloud.transcriptionMode == .realtimeWhisper {
-            return CloudDictationAvailabilityStatus(
-                message: "Realtime Whisper requires direct OpenAI credentials in this build.",
-                isError: true
-            )
-        }
-
-        let email = normalizedSubscriberEmail
-        guard !email.isEmpty else {
-            return CloudDictationAvailabilityStatus(
-                message: "Enter your email in Access to use cloud dictation.",
-                isError: true
-            )
-        }
-
-        switch voceProEntitlementStatus {
-        case .missingEmail:
-            return CloudDictationAvailabilityStatus(
-                message: "Enter your email in Access to use cloud dictation.",
-                isError: true
-            )
-        case .needsVerification:
-            return CloudDictationAvailabilityStatus(
-                message: "Verify your email to use cloud dictation.",
-                isError: true
-            )
-        case .checking:
-            return CloudDictationAvailabilityStatus(
-                message: "Checking Voce Pro cloud access...",
-                isError: false
-            )
-        case .notEntitled:
-            return CloudDictationAvailabilityStatus(
-                message: "Cloud dictation is part of Voce Pro.",
-                isError: true
-            )
-        case .failed(_, let message):
-            return CloudDictationAvailabilityStatus(message: message, isError: true)
-        case .entitled(let entitlement):
-            guard entitlement.hasFeature(.cloudDictation) else {
-                return CloudDictationAvailabilityStatus(
-                    message: "Cloud dictation is part of Voce Pro.",
-                    isError: true
-                )
-            }
-            return CloudDictationAvailabilityStatus(
-                message: "Ready through your Voce Pro account.",
-                isError: false
-            )
-        }
+        return CloudDictationAvailabilityStatus(
+            message: "Realtime Whisper requires direct OpenAI credentials in this build.",
+            isError: true
+        )
     }
 
     private func makeCloudSpeechProviderClient(
         for dictation: AppPreferences.Dictation
     ) -> any CloudSpeechProviderClient {
-        let subscriberEmail = normalizedSubscriberEmail
         return CloudSpeechProviderFactory.makeProvider(
             dictation: dictation,
-            transcriptionHints: preferences.visibleLexiconEntries,
-            subscriberEmailProvider: { subscriberEmail },
             useDirectCredentials: usesDirectCloudCredentials
         )
     }
 
     private func usesRealtimeWhisperCapture(for appContext: AppContext) -> Bool {
         dictationEngineModeResolver.resolve(for: appContext) == .cloud
-            && preferences.dictation.cloud.transcriptionMode == .realtimeWhisper
             && usesDirectCloudCredentials
     }
 
@@ -3034,7 +2984,6 @@ final class DictationController: ObservableObject {
             preferences.dictation.localeIdentifier,
             preferences.dictation.engineMode.rawValue,
             preferences.dictation.cloud.provider.rawValue,
-            preferences.dictation.cloud.transcriptionMode.rawValue,
             preferences.dictation.cloud.refinementEnabled ? "refine-on" : "refine-off",
             preferences.dictation.cloud.formattingStyle.rawValue,
             preferences.dictation.cloud.apiKeySource.rawValue,
@@ -3203,12 +3152,7 @@ private struct DictationRuntimeFactory {
 
         if snapshot.dictation.engineMode == .cloud,
            !snapshot.appDictationEnginePreferences.values.contains(.local) {
-            if snapshot.dictation.cloud.transcriptionMode == .realtimeWhisper {
-                return "Running OpenAI Realtime Whisper capture/transcription + structured cloud refinement."
-            }
-            return useDirectCloudCredentials
-                ? "Running cloud audio capture + OpenAI cloud transcription + structured cloud refinement."
-                : "Running cloud audio capture + Voce cloud transcription + structured cloud refinement."
+            return "Running OpenAI Realtime Whisper capture/transcription + structured cloud refinement."
         }
 
         return "Running Apple preview only for local apps; cloud apps use cloud transcription."
@@ -3244,8 +3188,6 @@ private struct DictationRuntimeFactory {
     private func makeCloudSpeechProviderClient() -> any CloudSpeechProviderClient {
         CloudSpeechProviderFactory.makeProvider(
             dictation: snapshot.dictation,
-            transcriptionHints: snapshot.visibleLexiconEntries,
-            subscriberEmailProvider: { subscriberEmail },
             useDirectCredentials: useDirectCloudCredentials
         )
     }

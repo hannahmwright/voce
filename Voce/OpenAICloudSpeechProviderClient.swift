@@ -58,10 +58,6 @@ enum CloudDictationError: LocalizedError {
 struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "OpenAICloudSpeech")
 
-    private struct AudioResponse: Decodable {
-        var text: String
-    }
-
     private struct ChatCompletionsRequest: Encodable {
         struct Message: Encodable {
             var role: String
@@ -113,22 +109,16 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
 
     private let session: URLSession
     private let apiKeyProvider: @Sendable () throws -> String
-    private let transcriptionModel: String
     private let refinementModel: String
-    private let transcriptionHints: [LexiconEntry]
 
     init(
         session: URLSession = .shared,
         apiKeyProvider: @escaping @Sendable () throws -> String,
-        transcriptionModel: String = "gpt-4o-mini-transcribe",
-        refinementModel: String = "gpt-4o-mini",
-        transcriptionHints: [LexiconEntry] = []
+        refinementModel: String = "gpt-4o-mini"
     ) {
         self.session = session
         self.apiKeyProvider = apiKeyProvider
-        self.transcriptionModel = transcriptionModel
         self.refinementModel = refinementModel
-        self.transcriptionHints = Array(transcriptionHints.prefix(200))
     }
 
     static func makeDefault(
@@ -177,71 +167,8 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
     }
 
     func transcribe(audioURL: URL, localeIdentifier: String, hints: [String]) async throws -> RawTranscript {
-        let clock = ContinuousClock()
-        let preparationStartedAt = clock.now
-        let uploadURL = try await CloudAudioUploadPreparation.preparedUploadURL(for: audioURL)
-        let preparationElapsed = preparationStartedAt.duration(to: clock.now)
-        let shouldCleanupUploadURL = uploadURL != audioURL
-        defer {
-            if shouldCleanupUploadURL {
-                try? FileManager.default.removeItem(at: uploadURL)
-            }
-        }
-
-        let readStartedAt = clock.now
-        let boundary = "Boundary-\(UUID().uuidString)"
-        let audioData = try Data(contentsOf: uploadURL)
-        let readElapsed = readStartedAt.duration(to: clock.now)
-        guard !audioData.isEmpty else {
-            throw CloudDictationError.invalidAudioFile
-        }
-
-        let locale = effectiveLanguageCode(from: hints.first ?? localeIdentifier)
-        let prompt = transcriptionPrompt()
-        Self.logger.notice(
-            "Starting OpenAI transcription using \(uploadURL.lastPathComponent, privacy: .private(mask: .hash)) [ext=\(uploadURL.pathExtension, privacy: .public), locale=\(locale, privacy: .public), audioBytes=\(audioData.count, privacy: .public), prep=\(Self.seconds(from: preparationElapsed), format: .fixed(precision: 2))s, read=\(Self.seconds(from: readElapsed), format: .fixed(precision: 2))s]"
-        )
-
-        var body = Data()
-        body.appendMultipartField(named: "model", value: transcriptionModel, boundary: boundary)
-        body.appendMultipartField(named: "language", value: locale, boundary: boundary)
-        body.appendMultipartField(named: "response_format", value: "json", boundary: boundary)
-        if !prompt.isEmpty {
-            body.appendMultipartField(named: "prompt", value: prompt, boundary: boundary)
-        }
-        body.appendMultipartFile(
-            named: "file",
-            filename: uploadURL.lastPathComponent,
-            mimeType: CloudAudioUploadPreparation.mimeType(for: uploadURL),
-            data: audioData,
-            boundary: boundary
-        )
-        body.appendString("--\(boundary)--\r\n")
-
-        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/audio/transcriptions")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 90
-        request.setValue("Bearer \(try resolveAPIKey())", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = body
-
-        let requestStartedAt = clock.now
-        let (data, response) = try await send(request: request)
-        let requestElapsed = requestStartedAt.duration(to: clock.now)
-        try validateHTTPResponse(response, data: data)
-        let decoded = try JSONDecoder().decode(AudioResponse.self, from: data)
-        let text = normalizeText(decoded.text)
-        Self.logger.notice(
-            "OpenAI transcription completed in \(Self.seconds(from: requestElapsed), format: .fixed(precision: 2))s with \(text.count, privacy: .public) characters"
-        )
-        guard !text.isEmpty else {
-            throw CloudDictationError.emptyTranscript
-        }
-
-        return RawTranscript(
-            text: text,
-            segments: [],
-            durationMS: await CloudAudioUploadPreparation.audioDurationMilliseconds(for: audioURL)
+        throw CloudDictationError.providerError(
+            "Standard cloud transcription has been removed. Use Realtime Whisper cloud transcription."
         )
     }
 
@@ -372,12 +299,6 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
         }
     }
 
-    private func transcriptionPrompt() -> String {
-        guard !transcriptionHints.isEmpty else { return "" }
-        let preferredSpellings = transcriptionHints.prefix(40).map { "\($0.term) -> \($0.preferred)" }
-        return "Prefer these spellings when they are clearly intended:\n" + preferredSpellings.joined(separator: "\n")
-    }
-
     static func buildRefinementPrompt(
         transcript: String,
         localeIdentifier: String,
@@ -447,11 +368,6 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func effectiveLanguageCode(from localeIdentifier: String) -> String {
-        let components = localeIdentifier.split(separator: "-")
-        return components.first.map(String.init) ?? "en"
     }
 
     private static func seconds(from duration: Duration) -> Double {

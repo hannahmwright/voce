@@ -132,20 +132,6 @@ enum CloudFormattingStyle: String, Codable, Sendable, Equatable, CaseIterable {
     }
 }
 
-enum CloudTranscriptionMode: String, Codable, Sendable, Equatable, CaseIterable {
-    case standard
-    case realtimeWhisper
-
-    var title: String {
-        switch self {
-        case .standard:
-            return "Standard"
-        case .realtimeWhisper:
-            return "Realtime Whisper"
-        }
-    }
-}
-
 enum CloudAPIKeySource: String, Codable, Sendable, Equatable, CaseIterable {
     case keychain
     case environment
@@ -162,20 +148,17 @@ enum CloudAPIKeySource: String, Codable, Sendable, Equatable, CaseIterable {
 
 struct CloudDictationPreferences: Codable, Sendable, Equatable {
     var provider: CloudDictationProvider
-    var transcriptionMode: CloudTranscriptionMode
     var refinementEnabled: Bool
     var formattingStyle: CloudFormattingStyle
     var apiKeySource: CloudAPIKeySource
 
     init(
         provider: CloudDictationProvider = .openAI,
-        transcriptionMode: CloudTranscriptionMode = .standard,
         refinementEnabled: Bool = true,
         formattingStyle: CloudFormattingStyle = .structured,
         apiKeySource: CloudAPIKeySource = .keychain
     ) {
         self.provider = provider
-        self.transcriptionMode = transcriptionMode
         self.refinementEnabled = refinementEnabled
         self.formattingStyle = formattingStyle
         self.apiKeySource = apiKeySource
@@ -184,7 +167,6 @@ struct CloudDictationPreferences: Codable, Sendable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         provider = try container.decodeIfPresent(CloudDictationProvider.self, forKey: .provider) ?? .openAI
-        transcriptionMode = try container.decodeIfPresent(CloudTranscriptionMode.self, forKey: .transcriptionMode) ?? .standard
         refinementEnabled = try container.decodeIfPresent(Bool.self, forKey: .refinementEnabled) ?? true
         formattingStyle = try container.decodeIfPresent(CloudFormattingStyle.self, forKey: .formattingStyle) ?? .structured
         apiKeySource = try container.decodeIfPresent(CloudAPIKeySource.self, forKey: .apiKeySource) ?? .keychain

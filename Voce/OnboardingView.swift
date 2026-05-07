@@ -39,7 +39,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             progressBar
                 .padding(.horizontal, VoceDesign.lg)
-                .padding(.top, VoceDesign.lg)
+                .padding(.top, VoceDesign.xxl + VoceDesign.xs)
 
             ScrollView(showsIndicators: false) {
                 VStack(spacing: VoceDesign.md) {
@@ -71,7 +71,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: 860)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, VoceDesign.xl)
-                .padding(.top, VoceDesign.lg)
+                .padding(.top, VoceDesign.xl)
                 .padding(.bottom, VoceDesign.lg)
             }
         }
@@ -957,7 +957,7 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if let skipLabel = skipButtonLabel {
+            if let skipLabel = skipButtonLabel, !canContinue {
                 Button {
                     performSkip()
                 } label: {
@@ -999,7 +999,7 @@ struct OnboardingView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(currentStep == .practice ? "Finish onboarding and start using Voce" : "Continue to next step")
-            } else if let message = continueBlockedMessage {
+            } else if skipButtonLabel == nil, let message = continueBlockedMessage {
                 HStack(spacing: VoceDesign.xs) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 12, weight: .semibold))

@@ -4,35 +4,12 @@ import VoceKit
 enum CloudSpeechProviderFactory {
     static func makeProvider(
         dictation: AppPreferences.Dictation,
-        transcriptionHints: [LexiconEntry],
-        subscriberEmailProvider: @escaping @Sendable () -> String?,
         useDirectCredentials: Bool,
         credentialStore: CloudProviderCredentialStore = .shared,
-        sessionStore: VoceAccessSessionStore = .shared,
         session: URLSession = .shared
     ) -> any CloudSpeechProviderClient {
         if useDirectCredentials {
-            if dictation.cloud.transcriptionMode == .realtimeWhisper {
-                return OpenAIRealtimeWhisperSpeechProviderClient(
-                    session: session,
-                    apiKeyProvider: {
-                        do {
-                            return try credentialStore.resolveOpenAIAPIKey(
-                                source: dictation.cloud.apiKeySource
-                            )
-                        } catch CloudProviderCredentialStoreError.missingAPIKey {
-                            throw CloudDictationError.missingAPIKey
-                        } catch {
-                            throw error
-                        }
-                    },
-                    transcriptionModel: environmentValue("VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-realtime-whisper",
-                    refinementModel: environmentValue("VOCE_OPENAI_REFINEMENT_MODEL") ?? "gpt-4o-mini",
-                    transcriptionHints: Array(transcriptionHints.prefix(200))
-                )
-            }
-
-            return OpenAICloudSpeechProviderClient(
+            return OpenAIRealtimeWhisperSpeechProviderClient(
                 session: session,
                 apiKeyProvider: {
                     do {
@@ -45,16 +22,13 @@ enum CloudSpeechProviderFactory {
                         throw error
                     }
                 },
-                transcriptionModel: environmentValue("VOCE_OPENAI_TRANSCRIPTION_MODEL") ?? "gpt-4o-mini-transcribe",
-                refinementModel: environmentValue("VOCE_OPENAI_REFINEMENT_MODEL") ?? "gpt-4o-mini",
-                transcriptionHints: Array(transcriptionHints.prefix(200))
+                transcriptionModel: environmentValue("VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-realtime-whisper",
+                refinementModel: environmentValue("VOCE_OPENAI_REFINEMENT_MODEL") ?? "gpt-4o-mini"
             )
         }
 
-        return VoceCloudProxySpeechProviderClient(
-            session: session,
-            subscriberEmailProvider: subscriberEmailProvider,
-            sessionStore: sessionStore
+        return UnavailableCloudSpeechProviderClient(
+            message: "Realtime Whisper requires direct OpenAI credentials in this build."
         )
     }
 
@@ -63,5 +37,27 @@ enum CloudSpeechProviderFactory {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value, !value.isEmpty else { return nil }
         return value
+    }
+}
+
+private struct UnavailableCloudSpeechProviderClient: CloudSpeechProviderClient {
+    let message: String
+
+    func preflightCheck(localeIdentifier: String) async throws {
+        throw CloudDictationError.providerError(message)
+    }
+
+    func transcribe(audioURL: URL, localeIdentifier: String, hints: [String]) async throws -> RawTranscript {
+        throw CloudDictationError.providerError(message)
+    }
+
+    func refine(
+        transcript: String,
+        localeIdentifier: String,
+        dictionary: [LexiconEntry],
+        profile: StyleProfile,
+        appContext: AppContext?
+    ) async throws -> String {
+        throw CloudDictationError.providerError(message)
     }
 }

@@ -135,20 +135,12 @@ struct EngineSettingsSection: View {
                         VStack(alignment: .leading, spacing: VoceDesign.sm) {
                             labeledValueRow(label: "Cloud Dictation Provider", value: preferences.dictation.cloud.provider.title)
 
-                            Picker("Cloud Transcription", selection: $preferences.dictation.cloud.transcriptionMode) {
-                                ForEach(CloudTranscriptionMode.allCases, id: \.self) { mode in
-                                    Text(mode.title).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .disabled(!cloudControlsUnlocked)
+                            labeledValueRow(label: "Cloud Transcription", value: "Realtime Whisper")
 
-                            if preferences.dictation.cloud.transcriptionMode == .realtimeWhisper {
-                                Text("Realtime Whisper uses OpenAI's Realtime API for final cloud transcription. In this build it requires direct OpenAI credentials.")
-                                    .font(VoceDesign.caption())
-                                    .foregroundStyle(VoceDesign.textSecondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            Text("Cloud dictation uses OpenAI's Realtime API for low-latency transcription. In this build it requires direct OpenAI credentials.")
+                                .font(VoceDesign.caption())
+                                .foregroundStyle(VoceDesign.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
 
                             Toggle("Cloud Refinement", isOn: $preferences.dictation.cloud.refinementEnabled)
                                 .tint(VoceDesign.warmAccentText)

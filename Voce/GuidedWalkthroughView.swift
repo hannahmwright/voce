@@ -82,9 +82,8 @@ struct GuidedWalkthroughView: View {
         switch selectedStep {
         case .tapToRecord:
             dictationPracticeCard(
-                startLabel: "Tap",
+                action: .tap,
                 startHotkey: tapHotkeyLabel,
-                startDetail: "Tap \(tapHotkeyLabel) to start dictating.",
                 sentence: "Please send the meeting notes after lunch.",
                 stopLabel: "Stop",
                 stopHotkey: tapHotkeyLabel,
@@ -92,9 +91,8 @@ struct GuidedWalkthroughView: View {
             )
         case .holdToRecord:
             dictationPracticeCard(
-                startLabel: "Hold",
+                action: .hold,
                 startHotkey: holdHotkeyLabel,
-                startDetail: "Hold \(holdHotkeyLabel) to start dictating.",
                 sentence: "I am running five minutes late, but I am on my way.",
                 stopLabel: "Stop",
                 stopHotkey: "Release",
@@ -106,9 +104,8 @@ struct GuidedWalkthroughView: View {
     }
 
     private func dictationPracticeCard(
-        startLabel: String,
+        action: AnimatedHotkeyDemo.Action,
         startHotkey: String,
-        startDetail: String,
         sentence: String,
         stopLabel: String,
         stopHotkey: String,
@@ -139,16 +136,34 @@ struct GuidedWalkthroughView: View {
                     emphasized: true
                 )
             } else {
-                lessonStepRow(
-                    label: startLabel,
-                    detail: startDetail,
-                    hotkey: startHotkey,
-                    emphasized: true
-                )
+                VStack(spacing: VoceDesign.md) {
+                    AnimatedHotkeyDemo(label: startHotkey, action: action)
+                        .id("\(startHotkey)-\(action)")
+
+                    VStack(spacing: 4) {
+                        Text(action == .tap ? "Tap to start" : "Hold while you speak")
+                            .font(VoceDesign.heading3())
+                            .foregroundStyle(VoceDesign.textPrimary)
+
+                        Text(action == .tap
+                            ? "Then say a sentence. Tap again to stop."
+                            : "Keep holding while you speak, then let go.")
+                            .font(VoceDesign.callout())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, VoceDesign.xs)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(action == .tap
+                    ? "Tap \(startHotkey) to start dictating. Speak a sentence, then tap \(startHotkey) again to stop."
+                    : "Hold \(startHotkey) while you speak, then release \(startHotkey) to stop.")
             }
         }
         .padding(VoceDesign.lg)
-        .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 168, alignment: isActiveLesson ? .leading : .center)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(VoceDesign.surfaceSecondary.opacity(0.76))
@@ -189,15 +204,29 @@ struct GuidedWalkthroughView: View {
                 .textSelection(.enabled)
             }
 
-            lessonStepRow(
-                label: "Press",
-                detail: "Use the shortcut, then replace it with Codex.",
-                hotkey: dictionaryHotkeyLabel,
-                emphasized: true
-            )
+            VStack(spacing: VoceDesign.md) {
+                AnimatedHotkeyDemo(label: dictionaryHotkeyLabel, action: .press)
+                    .id("\(dictionaryHotkeyLabel)-press")
+
+                VStack(spacing: 4) {
+                    Text("Highlight, then press")
+                        .font(VoceDesign.heading3())
+                        .foregroundStyle(VoceDesign.textPrimary)
+
+                    Text("Select \"Kodex\" below, then press the shortcut to swap it for Codex.")
+                        .font(VoceDesign.callout())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, VoceDesign.xs)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Highlight Kodex in the practice pad below, then press \(dictionaryHotkeyLabel) to replace it with Codex.")
         }
         .padding(VoceDesign.lg)
-        .frame(maxWidth: .infinity, minHeight: 148, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 168, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(VoceDesign.surfaceSecondary.opacity(0.76))
@@ -305,6 +334,102 @@ struct GuidedWalkthroughView: View {
             setSelectedStep(availableSteps[nextIndex])
         } else if let firstStep = availableSteps.first {
             setSelectedStep(firstStep)
+        }
+    }
+}
+
+struct AnimatedHotkeyDemo: View {
+    enum Action: Hashable {
+        case tap
+        case hold
+        case press
+    }
+
+    let label: String
+    let action: Action
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var pressed = false
+
+    var body: some View {
+        VStack(spacing: VoceDesign.xs) {
+            ZStack(alignment: .top) {
+                Color.clear
+                    .frame(width: 1, height: 84)
+
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(VoceDesign.warmAccentText.opacity(pressed ? 1 : 0.4))
+                    .offset(y: pressed ? 8 : 0)
+
+                keyBadge
+                    .offset(y: pressed ? 6 : 2)
+                    .padding(.top, 24)
+            }
+
+            Text(captionText)
+                .font(VoceDesign.font(size: 11, weight: .bold))
+                .foregroundStyle(VoceDesign.textSecondary)
+                .textCase(.uppercase)
+                .tracking(0.6)
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityHidden(true)
+        .onAppear {
+            startAnimation()
+        }
+    }
+
+    private var keyBadge: some View {
+        Text(label)
+            .font(VoceDesign.font(size: 17, weight: .bold).monospacedDigit())
+            .foregroundStyle(VoceDesign.warmAccentText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, VoceDesign.md)
+            .padding(.vertical, 9)
+            .frame(minWidth: 56)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(VoceDesign.warmAccentFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(VoceDesign.warmAccentText.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(
+                color: Color.black.opacity(pressed ? 0.04 : 0.18),
+                radius: pressed ? 1 : 3,
+                x: 0,
+                y: pressed ? 1 : 2
+            )
+    }
+
+    private var captionText: String {
+        switch action {
+        case .tap:
+            return "Tap, then speak"
+        case .hold:
+            return "Hold, then speak"
+        case .press:
+            return "Press to fix"
+        }
+    }
+
+    private var animationDuration: Double {
+        switch action {
+        case .tap, .press:
+            return 0.55
+        case .hold:
+            return 1.45
+        }
+    }
+
+    private func startAnimation() {
+        pressed = false
+        guard !reduceMotion else { return }
+        withAnimation(.easeInOut(duration: animationDuration).repeatForever(autoreverses: true)) {
+            pressed = true
         }
     }
 }
