@@ -176,54 +176,16 @@ struct GuidedWalkthroughView: View {
 
     private var dictionaryPracticeCard: some View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
-            VStack(alignment: .leading, spacing: VoceDesign.md) {
-                Text("Fix this")
-                    .font(VoceDesign.captionEmphasis())
-                    .foregroundStyle(VoceDesign.textSecondary)
-                    .textCase(.uppercase)
-                    .tracking(0.4)
-
-                HStack(spacing: 4) {
-                    Text("Please email")
-                    Text("Kodex")
-                        .foregroundStyle(VoceDesign.textPrimary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(VoceDesign.skyBlue.opacity(0.42))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .stroke(VoceDesign.accent.opacity(0.34), lineWidth: VoceDesign.borderThin)
-                        )
-                    Text("the revised invoice today.")
-                }
-                .font(VoceDesign.heading3())
+            Text("Fix this")
+                .font(VoceDesign.captionEmphasis())
                 .foregroundStyle(VoceDesign.textSecondary)
-                .textSelection(.enabled)
-            }
+                .textCase(.uppercase)
+                .tracking(0.4)
 
-            VStack(spacing: VoceDesign.md) {
-                AnimatedHotkeyDemo(label: dictionaryHotkeyLabel, action: .press)
-                    .id("\(dictionaryHotkeyLabel)-press")
-
-                VStack(spacing: 4) {
-                    Text("Highlight, then press")
-                        .font(VoceDesign.heading3())
-                        .foregroundStyle(VoceDesign.textPrimary)
-
-                    Text("Select \"Kodex\" below, then press the shortcut to swap it for Codex.")
-                        .font(VoceDesign.callout())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, VoceDesign.xs)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Highlight Kodex in the practice pad below, then press \(dictionaryHotkeyLabel) to replace it with Codex.")
+            DictionaryFixDemo(hotkeyLabel: dictionaryHotkeyLabel)
+                .id(dictionaryHotkeyLabel)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Highlight Kodex in the practice pad below, then press \(dictionaryHotkeyLabel) to replace it with Codex.")
         }
         .padding(VoceDesign.lg)
         .frame(maxWidth: .infinity, minHeight: 168, alignment: .leading)
@@ -430,6 +392,188 @@ struct AnimatedHotkeyDemo: View {
         guard !reduceMotion else { return }
         withAnimation(.easeInOut(duration: animationDuration).repeatForever(autoreverses: true)) {
             pressed = true
+        }
+    }
+}
+
+struct DictionaryFixDemo: View {
+    enum Phase: Int {
+        case idle
+        case selecting
+        case selected
+        case pressed
+    }
+
+    let hotkeyLabel: String
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: Phase = .idle
+    @State private var cycleTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(spacing: VoceDesign.md) {
+            sentenceLine
+
+            connectorArrow
+
+            keyCap
+
+            Text(captionText)
+                .font(VoceDesign.font(size: 11, weight: .bold))
+                .foregroundStyle(VoceDesign.textSecondary)
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: phase)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, VoceDesign.xs)
+        .onAppear {
+            startCycle()
+        }
+        .onDisappear {
+            cycleTask?.cancel()
+            cycleTask = nil
+        }
+    }
+
+    private var sentenceLine: some View {
+        HStack(spacing: 4) {
+            Text("Please email")
+            Text("Kodex")
+                .foregroundStyle(VoceDesign.textPrimary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(VoceDesign.skyBlue.opacity(highlightFillOpacity))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .stroke(VoceDesign.accent.opacity(highlightStrokeOpacity), lineWidth: VoceDesign.borderThin)
+                )
+                .scaleEffect(kodexScale)
+            Text("the revised invoice today.")
+        }
+        .font(VoceDesign.heading3())
+        .foregroundStyle(VoceDesign.textSecondary)
+    }
+
+    private var connectorArrow: some View {
+        Image(systemName: "arrow.down")
+            .font(.system(size: 14, weight: .bold))
+            .foregroundStyle(VoceDesign.warmAccentText.opacity(arrowOpacity))
+            .offset(y: arrowOffset)
+    }
+
+    private var keyCap: some View {
+        Text(hotkeyLabel)
+            .font(VoceDesign.font(size: 17, weight: .bold))
+            .foregroundStyle(VoceDesign.warmAccentText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .padding(.horizontal, VoceDesign.md)
+            .padding(.vertical, 9)
+            .frame(minWidth: 56)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(VoceDesign.warmAccentFill)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(VoceDesign.warmAccentText.opacity(0.18), lineWidth: 1)
+            )
+            .scaleEffect(keyScale)
+            .offset(y: keyOffset)
+            .shadow(
+                color: Color.black.opacity(phase == .pressed ? 0.04 : 0.18),
+                radius: phase == .pressed ? 1 : 3,
+                x: 0,
+                y: phase == .pressed ? 1 : 2
+            )
+    }
+
+    private var captionText: String {
+        switch phase {
+        case .idle, .selecting:
+            return "1. Highlight Kodex"
+        case .selected, .pressed:
+            return "2. Press \(hotkeyLabel)"
+        }
+    }
+
+    // Highlight visual state
+    private var highlightFillOpacity: Double {
+        switch phase {
+        case .idle: return 0.0
+        case .selecting: return 0.22
+        case .selected, .pressed: return 0.42
+        }
+    }
+
+    private var highlightStrokeOpacity: Double {
+        switch phase {
+        case .idle: return 0.0
+        case .selecting: return 0.18
+        case .selected, .pressed: return 0.34
+        }
+    }
+
+    private var kodexScale: Double {
+        switch phase {
+        case .selecting: return 1.04
+        default: return 1.0
+        }
+    }
+
+    // Arrow + key visual state
+    private var arrowOpacity: Double {
+        switch phase {
+        case .selected: return 0.95
+        case .pressed: return 1.0
+        default: return 0.35
+        }
+    }
+
+    private var arrowOffset: CGFloat {
+        phase == .pressed ? 6 : 0
+    }
+
+    private var keyScale: Double {
+        phase == .pressed ? 0.94 : 1.0
+    }
+
+    private var keyOffset: CGFloat {
+        phase == .pressed ? 5 : 0
+    }
+
+    private func startCycle() {
+        cycleTask?.cancel()
+
+        guard !reduceMotion else {
+            phase = .selected
+            return
+        }
+
+        cycleTask = Task { @MainActor in
+            // Initial brief idle
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            while !Task.isCancelled {
+                withAnimation(.easeInOut(duration: 0.35)) { phase = .selecting }
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                if Task.isCancelled { return }
+
+                withAnimation(.easeInOut(duration: 0.25)) { phase = .selected }
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                if Task.isCancelled { return }
+
+                withAnimation(.easeInOut(duration: 0.18)) { phase = .pressed }
+                try? await Task.sleep(nanoseconds: 450_000_000)
+                if Task.isCancelled { return }
+
+                withAnimation(.easeInOut(duration: 0.35)) { phase = .idle }
+                try? await Task.sleep(nanoseconds: 900_000_000)
+            }
         }
     }
 }

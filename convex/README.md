@@ -14,6 +14,22 @@ Feature flags:
 
 Manual grant examples:
 
+Prefer the `planTier` shorthand so a Pro grant always includes both features:
+
+```sh
+# Grants Base in one call (voce_app_access).
+npx convex run entitlements:grantManual '{"email":"friend@example.com","planTier":"base","note":"Base access"}'
+
+# Grants Pro in one call (voce_app_access + voce_cloud_dictation).
+npx convex run entitlements:grantManual '{"email":"friend@example.com","planTier":"pro","note":"Pro access"}'
+
+# Revoke a whole tier or every manual grant for the email.
+npx convex run entitlements:revokeManual '{"email":"friend@example.com","planTier":"pro"}'
+npx convex run entitlements:revokeManual '{"email":"friend@example.com","planTier":"all"}'
+```
+
+The per-feature form still works for surgical edits:
+
 ```sh
 npx convex run entitlements:grantManual '{"email":"friend@example.com","feature":"voce_app_access","note":"Base access"}'
 npx convex run entitlements:grantManual '{"email":"friend@example.com","feature":"voce_cloud_dictation","note":"Pro access"}'
@@ -21,8 +37,9 @@ npx convex run entitlements:revokeManual '{"email":"friend@example.com","feature
 npx convex run entitlements:revokeManual '{"email":"friend@example.com","feature":"voce_cloud_dictation"}'
 ```
 
-Granting `voce_app_access` gives Base access.
+Granting `voce_app_access` alone gives Base access.
 Granting `voce_cloud_dictation` promotes the user to Pro and implicitly includes Base access.
+If only `voce_app_access` is granted, the entitlement check will return `planTier: "base"` even if Pro was the intent — use the `planTier` shorthand above to avoid that foot-gun.
 
 Environment variables to set in Convex:
 

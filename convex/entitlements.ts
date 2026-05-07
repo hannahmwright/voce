@@ -364,41 +364,91 @@ export const recordUsage = mutation({
   },
 });
 
+async function upsertManualEntitlement(
+  ctx: MutationCtx,
+  args: {
+    email: string;
+    feature: Feature;
+    expiresAt?: number;
+    note?: string;
+  },
+) {
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("manualEntitlements")
+    .withIndex("by_email_feature", (q) =>
+      q.eq("email", args.email).eq("feature", args.feature),
+    )
+    .unique();
+
+  if (existing) {
+    await ctx.db.patch(existing._id, {
+      expiresAt: args.expiresAt,
+      note: args.note,
+      updatedAt: now,
+    });
+    return existing._id;
+  }
+
+  return await ctx.db.insert("manualEntitlements", {
+    email: args.email,
+    feature: args.feature,
+    expiresAt: args.expiresAt,
+    note: args.note,
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+async function deleteManualEntitlement(
+  ctx: MutationCtx,
+  email: string,
+  feature: Feature,
+) {
+  const existing = await ctx.db
+    .query("manualEntitlements")
+    .withIndex("by_email_feature", (q) => q.eq("email", email).eq("feature", feature))
+    .unique();
+
+  if (!existing) return false;
+  await ctx.db.delete(existing._id);
+  return true;
+}
+
 export const grantManual = mutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
+    planTier: v.optional(v.union(v.literal("base"), v.literal("pro"))),
     expiresAt: v.optional(v.number()),
     note: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
-    const feature = args.feature ?? DEFAULT_FEATURE;
-    const now = Date.now();
 
-    const existing = await ctx.db
-      .query("manualEntitlements")
-      .withIndex("by_email_feature", (q) => q.eq("email", email).eq("feature", feature))
-      .unique();
-
-    const patch = {
-      expiresAt: args.expiresAt,
-      note: args.note,
-      updatedAt: now,
-    };
-
-    if (existing) {
-      await ctx.db.patch(existing._id, patch);
-      return existing._id;
+    if (args.planTier) {
+      // Tier shorthand grants every feature implied by the tier in one call so an admin
+      // who picks "pro" never accidentally leaves out cloud dictation.
+      const features = grantedFeaturesForPlanTier(args.planTier);
+      const ids: string[] = [];
+      for (const feature of features) {
+        const id = await upsertManualEntitlement(ctx, {
+          email,
+          feature,
+          expiresAt: args.expiresAt,
+          note: args.note,
+        });
+        ids.push(String(id));
+      }
+      return { planTier: args.planTier, features, ids };
     }
 
-    return await ctx.db.insert("manualEntitlements", {
+    const feature = (args.feature ?? DEFAULT_FEATURE) as Feature;
+    return await upsertManualEntitlement(ctx, {
       email,
       feature,
       expiresAt: args.expiresAt,
       note: args.note,
-      createdAt: now,
-      updatedAt: now,
     });
   },
 });
@@ -407,19 +457,29 @@ export const revokeManual = mutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
+    planTier: v.optional(v.union(v.literal("base"), v.literal("pro"), v.literal("all"))),
   },
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
-    const feature = args.feature ?? DEFAULT_FEATURE;
-    const existing = await ctx.db
-      .query("manualEntitlements")
-      .withIndex("by_email_feature", (q) => q.eq("email", email).eq("feature", feature))
-      .unique();
 
-    if (existing) {
-      await ctx.db.delete(existing._id);
-      return true;
+    if (args.planTier) {
+      // "base" revokes app access only; "pro" revokes cloud dictation only;
+      // "all" revokes everything so the admin can fully reset a manual grant.
+      const features: Feature[] =
+        args.planTier === "all"
+          ? [APP_ACCESS_FEATURE, CLOUD_DICTATION_FEATURE]
+          : args.planTier === "pro"
+            ? [CLOUD_DICTATION_FEATURE]
+            : [APP_ACCESS_FEATURE];
+      let removed = false;
+      for (const feature of features) {
+        const didDelete = await deleteManualEntitlement(ctx, email, feature);
+        removed = removed || didDelete;
+      }
+      return removed;
     }
-    return false;
+
+    const feature = (args.feature ?? DEFAULT_FEATURE) as Feature;
+    return await deleteManualEntitlement(ctx, email, feature);
   },
 });

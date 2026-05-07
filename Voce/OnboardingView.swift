@@ -1013,13 +1013,17 @@ struct OnboardingView: View {
                 }
                 .padding(.horizontal, VoceDesign.lg)
                 .padding(.vertical, VoceDesign.sm)
-                .background(
+                .background {
                     Capsule()
-                        .fill(VoceDesign.warning.opacity(0.20))
-                )
+                        .fill(VoceDesign.contentBackground)
+                        .overlay {
+                            Capsule()
+                                .fill(VoceDesign.warning.opacity(0.42))
+                        }
+                }
                 .overlay(
                     Capsule()
-                        .stroke(VoceDesign.warning.opacity(0.55), lineWidth: 1)
+                        .stroke(VoceDesign.warning, lineWidth: 1.4)
                 )
                 .accessibilityLabel(message)
             }
