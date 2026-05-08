@@ -11,6 +11,15 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
 
+    /// Free-floating panel that hosts the action picker, dictionary-fix, and
+    /// snippet-creation surfaces. We use an NSPanel rather than the shared
+    /// popover so these surfaces can appear at the dictation-bubble location
+    /// (bottom-center of the focused screen) instead of being anchored to a
+    /// Voce window the user often isn't looking at.
+    private var bubblePanel: NSPanel?
+    private var bubblePanelLocalMonitor: Any?
+    private var bubblePanelGlobalMonitor: Any?
+
     func setup(controller: DictationController) {
         self.controller = controller
         configureDefaultPopover(controller: controller)
@@ -123,37 +132,21 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     ) {
         guard let controller else { return }
 
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
-        if popover.isShown {
-            popover.performClose(nil)
-        }
-
-        popover.delegate = self
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = NSSize(width: 360, height: 292)
-        popover.contentViewController = NSHostingController(
+        presentBubblePanel(
+            size: NSSize(width: 360, height: 292),
             rootView: SelectionCorrectionPopoverView(
                 term: term,
                 sourceAppName: sourceAppName,
                 appearancePreference: controller.preferences.general.appearancePreference,
                 onCancel: { [weak self] in
-                    self?.closePopover()
+                    self?.closeBubblePanel()
                 },
                 onSave: { [weak self] replacement in
-                    self?.closePopover()
+                    self?.closeBubblePanel()
                     onSave(replacement)
                 }
             )
         )
-
-        showPopoverUsingBestAnchor()
-        installOutsideClickMonitors()
     }
 
     func showSelectionSnippet(
@@ -162,44 +155,33 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     ) {
         guard let controller else { return }
 
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
-        if popover.isShown {
-            popover.performClose(nil)
-        }
-
-        popover.delegate = self
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = NSSize(width: 360, height: 300)
-        popover.contentViewController = NSHostingController(
+        presentBubblePanel(
+            size: NSSize(width: 360, height: 300),
             rootView: SelectionSnippetPopoverView(
                 expansion: expansion,
                 appearancePreference: controller.preferences.general.appearancePreference,
                 onCancel: { [weak self] in
-                    self?.closePopover()
+                    self?.closeBubblePanel()
                 },
                 onSave: { [weak self] trigger in
-                    self?.closePopover()
+                    self?.closeBubblePanel()
                     onSave(trigger)
                 }
             )
         )
-
-        showPopoverUsingBestAnchor()
-        installOutsideClickMonitors()
     }
 
     /// Surface the action picker after the user taps Cmd+Option. The selected
     /// text has already been captured (we have to capture before showing the
-    /// popover, otherwise our window steals focus and the host app's selection
+    /// surface, otherwise our window steals focus and the host app's selection
     /// is no longer copyable). The picker's job is to disambiguate intent —
-    /// dictionary fix vs snippet creation — and then route to the existing
-    /// popover for that flow.
+    /// dictionary fix vs snippet creation — and then route to the matching
+    /// follow-up surface (correction or snippet).
+    ///
+    /// All three surfaces are rendered in the same free-floating NSPanel at
+    /// the dictation-bubble's home position (bottom-center of the focused
+    /// screen), so the user sees them where they're already looking — not
+    /// anchored to a Voce window in the background.
     func showVoceActionPicker(
         selection: String,
         sourceAppName: String?,
@@ -207,40 +189,138 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     ) {
         guard let controller else { return }
 
+        presentBubblePanel(
+            size: NSSize(width: 360, height: 320),
+            rootView: VoceActionPickerView(
+                selection: selection,
+                sourceAppName: sourceAppName,
+                appearancePreference: controller.preferences.general.appearancePreference,
+                onCancel: { [weak self] in
+                    self?.closeBubblePanel()
+                },
+                onPick: { [weak self] action in
+                    self?.closeBubblePanel()
+                    onPick(action)
+                }
+            )
+        )
+    }
+
+    /// Builds and shows a free-floating NSPanel at the dictation-bubble's
+    /// home position. Used by all three Voce-action surfaces (picker,
+    /// correction, snippet).
+    private func presentBubblePanel<Content: View>(
+        size: NSSize,
+        rootView: Content
+    ) {
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+        closeBubblePanel()
+
         if #available(macOS 14.0, *) {
             NSApp.activate()
         } else {
             NSApp.activate(ignoringOtherApps: true)
         }
 
-        if popover.isShown {
-            popover.performClose(nil)
+        let panel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.hidesOnDeactivate = false
+        panel.isFloatingPanel = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+
+        let hosting = NSHostingView(rootView: rootView)
+        hosting.frame = NSRect(origin: .zero, size: size)
+        hosting.autoresizingMask = [.width, .height]
+        panel.contentView = hosting
+
+        panel.setFrameOrigin(bubblePanelOrigin(for: size))
+        panel.orderFrontRegardless()
+        panel.makeKey()
+
+        bubblePanel = panel
+        installBubblePanelOutsideMonitors()
+    }
+
+    /// Computes the panel's origin to mirror the dictation bubble's default
+    /// resting position — bottom-center of the screen the user is looking at.
+    /// Multi-display setups land the panel on the display that contains the
+    /// cursor.
+    private func bubblePanelOrigin(for size: NSSize) -> NSPoint {
+        let mouseLocation = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+
+        guard let screen else { return .zero }
+        let visibleFrame = screen.visibleFrame
+        let margin: CGFloat = 12
+        let x = visibleFrame.origin.x + (visibleFrame.width - size.width) / 2
+        let y = visibleFrame.origin.y + margin
+        return NSPoint(x: x, y: y)
+    }
+
+    private func closeBubblePanel() {
+        if let panel = bubblePanel {
+            panel.orderOut(nil)
+            bubblePanel = nil
+        }
+        removeBubblePanelOutsideMonitors()
+    }
+
+    private func installBubblePanelOutsideMonitors() {
+        removeBubblePanelOutsideMonitors()
+
+        bubblePanelLocalMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            guard let self else { return event }
+            self.handleBubblePanelOutsideEvent(event)
+            return event
         }
 
-        popover.delegate = self
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentSize = NSSize(width: 360, height: 320)
-        popover.contentViewController = NSHostingController(
-            rootView: VoceActionPickerView(
-                selection: selection,
-                sourceAppName: sourceAppName,
-                appearancePreference: controller.preferences.general.appearancePreference,
-                onCancel: { [weak self] in
-                    self?.closePopover()
-                },
-                onPick: { [weak self] action in
-                    self?.closePopover()
-                    onPick(action)
-                }
-            )
-        )
+        bubblePanelGlobalMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.closeBubblePanel()
+            }
+        }
+    }
 
-        showPopoverUsingBestAnchor()
-        installOutsideClickMonitors()
+    private func removeBubblePanelOutsideMonitors() {
+        if let monitor = bubblePanelLocalMonitor {
+            NSEvent.removeMonitor(monitor)
+            bubblePanelLocalMonitor = nil
+        }
+        if let monitor = bubblePanelGlobalMonitor {
+            NSEvent.removeMonitor(monitor)
+            bubblePanelGlobalMonitor = nil
+        }
+    }
+
+    private func handleBubblePanelOutsideEvent(_ event: NSEvent) {
+        guard let panel = bubblePanel else { return }
+        if event.window === panel { return }
+        closeBubblePanel()
     }
 
     private func togglePopover(relativeTo button: NSStatusBarButton) {
+        // If a bubble-style surface (picker / correction / snippet) is up, the
+        // menu-bar button click should close it cleanly before we toggle the
+        // standard popover.
+        closeBubblePanel()
+
         if popover.isShown {
             popover.performClose(nil)
         } else {
