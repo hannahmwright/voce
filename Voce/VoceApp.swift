@@ -59,10 +59,6 @@ private extension AppAppearancePreference {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var suppressedInitialWindowForBackgroundLaunch = false
-    private var pendingBackgroundLaunchSuppression: DispatchWorkItem?
-    private lazy var launchPreferences = loadLaunchPreferences()
-
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -71,21 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Delay slightly so the window is fully created before configuring transparency
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.configureTransparentWindows()
-#if DEBUG
             self.showPrimaryWindowIfNeeded()
-#else
-            self.scheduleBackgroundLaunchSuppressionIfNeeded()
-#endif
         }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        pendingBackgroundLaunchSuppression?.cancel()
-        pendingBackgroundLaunchSuppression = nil
-
-        if suppressedInitialWindowForBackgroundLaunch || !hasVisiblePrimaryWindow() {
+        if !hasVisiblePrimaryWindow() {
             showPrimaryWindowIfNeeded()
-            suppressedInitialWindowForBackgroundLaunch = false
         } else {
             collapseDuplicatePrimaryWindows()
         }
@@ -99,7 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func showPrimaryWindow() {
         showPrimaryWindowIfNeeded()
-        suppressedInitialWindowForBackgroundLaunch = false
     }
 
     @MainActor
@@ -131,53 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func scheduleBackgroundLaunchSuppressionIfNeeded() {
-        guard !NSApp.isActive else {
-            return
-        }
-
-        guard launchPreferences.general.launchAtLoginEnabled else {
-            return
-        }
-
-        pendingBackgroundLaunchSuppression?.cancel()
-
-        let workItem = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                self?.suppressInitialWindowIfNeeded()
-            }
-        }
-        pendingBackgroundLaunchSuppression = workItem
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
-    }
-
-    @MainActor
     private func hasVisiblePrimaryWindow() -> Bool {
         NSApp.windows.contains { window in
             isPrimaryVoceWindow(window) && window.isVisible
         }
-    }
-
-    @MainActor
-    private func suppressInitialWindowIfNeeded() {
-        pendingBackgroundLaunchSuppression = nil
-
-        guard !NSApp.isActive else {
-            return
-        }
-
-        guard launchPreferences.general.launchAtLoginEnabled else {
-            return
-        }
-
-        let primaryWindows = NSApp.windows.filter(isPrimaryVoceWindow(_:))
-        guard !primaryWindows.isEmpty else {
-            return
-        }
-
-        primaryWindows.forEach { $0.orderOut(nil) }
-        suppressedInitialWindowForBackgroundLaunch = true
     }
 
     @MainActor
@@ -211,18 +155,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func loadLaunchPreferences() -> AppPreferences {
-        let storageURL = VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "preferences.json")
-
-        guard
-            let data = try? Data(contentsOf: storageURL),
-            let preferences = try? JSONDecoder().decode(AppPreferences.self, from: data)
-        else {
-            return .default
-        }
-
-        var normalized = preferences
-        normalized.normalize()
-        return normalized
-    }
 }
