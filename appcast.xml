@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.43</title>
+      <sparkle:version>46</sparkle:version>
+      <sparkle:shortVersionString>0.4.43</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.43</h2>
+        <ul>
+          <li>Restores direct Realtime Whisper transcription in production through short-lived Voce-authenticated OpenAI Realtime session tokens</li>
+          <li>Keeps permanent OpenAI API keys off user devices while preserving realtime partial transcript updates</li>
+          <li>Deploys the production backend endpoint needed to mint realtime transcription sessions for verified Pro users</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 08 May 2026 04:11:30 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.43/Voce-0.4.43.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="AICA5Wpa0js9R49CbonIvrxHsVOg6qO+SdDnQSvms2CDvIH/fCe3jmcLSv080OO+HOayen2/vDUHP71gMHO+CQ=="
+        length="18855851"
+      />
+    </item>
+    <item>
       <title>Version 0.4.42</title>
       <sparkle:version>45</sparkle:version>
       <sparkle:shortVersionString>0.4.42</sparkle:shortVersionString>
