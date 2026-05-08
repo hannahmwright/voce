@@ -229,7 +229,10 @@ struct ContentView: View {
                 StyleTab(preferences: $preferencesDraft)
                     .tabContentVisibility(selectedTab == .style)
 
-                ScratchPadTab(content: $preferencesDraft.scratchPadContent)
+                ScratchPadTab(
+                    content: $preferencesDraft.scratchPadContent,
+                    isActive: selectedTab == .scratchPad
+                )
                     .tabContentVisibility(selectedTab == .scratchPad)
 
                 SettingsView(

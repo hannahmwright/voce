@@ -305,6 +305,11 @@ actor VoceProEntitlementService {
         return verifiedSession
     }
 
+    func hasAccessSession(email: String) -> Bool {
+        guard let token = try? sessionStore.sessionToken(for: email) else { return false }
+        return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     #if DEBUG
     func clearSession(email: String) throws {
         try sessionStore.deleteSession(email: email)

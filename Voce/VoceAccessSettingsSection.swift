@@ -151,7 +151,7 @@ struct VoceAccessSettingsSection: View {
 
             if showsUpgradeToProCard {
                 VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                    Text("Keep local dictation and add cloud dictation, smarter cleanup, and structured refinement.")
+                    Text("Keep local dictation and add cloud dictation with smarter cleanup.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

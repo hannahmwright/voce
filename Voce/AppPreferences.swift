@@ -121,17 +121,6 @@ enum CloudDictationProvider: String, Codable, Sendable, Equatable, CaseIterable 
     }
 }
 
-enum CloudFormattingStyle: String, Codable, Sendable, Equatable, CaseIterable {
-    case structured
-
-    var title: String {
-        switch self {
-        case .structured:
-            return "Structured"
-        }
-    }
-}
-
 enum CloudAPIKeySource: String, Codable, Sendable, Equatable, CaseIterable {
     case keychain
     case environment
@@ -149,18 +138,15 @@ enum CloudAPIKeySource: String, Codable, Sendable, Equatable, CaseIterable {
 struct CloudDictationPreferences: Codable, Sendable, Equatable {
     var provider: CloudDictationProvider
     var refinementEnabled: Bool
-    var formattingStyle: CloudFormattingStyle
     var apiKeySource: CloudAPIKeySource
 
     init(
         provider: CloudDictationProvider = .openAI,
         refinementEnabled: Bool = true,
-        formattingStyle: CloudFormattingStyle = .structured,
         apiKeySource: CloudAPIKeySource = .keychain
     ) {
         self.provider = provider
         self.refinementEnabled = refinementEnabled
-        self.formattingStyle = formattingStyle
         self.apiKeySource = apiKeySource
     }
 
@@ -168,7 +154,6 @@ struct CloudDictationPreferences: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         provider = try container.decodeIfPresent(CloudDictationProvider.self, forKey: .provider) ?? .openAI
         refinementEnabled = try container.decodeIfPresent(Bool.self, forKey: .refinementEnabled) ?? true
-        formattingStyle = try container.decodeIfPresent(CloudFormattingStyle.self, forKey: .formattingStyle) ?? .structured
         apiKeySource = try container.decodeIfPresent(CloudAPIKeySource.self, forKey: .apiKeySource) ?? .keychain
     }
 }
@@ -550,7 +535,6 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 cloud: .init(
                     provider: .openAI,
                     refinementEnabled: true,
-                    formattingStyle: .structured,
                     apiKeySource: .keychain
                 )
             ),

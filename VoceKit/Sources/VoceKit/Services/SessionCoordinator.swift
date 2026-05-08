@@ -129,7 +129,9 @@ public actor SessionCoordinator {
     public func processStreamingTranscript(
         _ rawTranscript: RawTranscript,
         sessionID: SessionID,
-        processingNote: String? = nil
+        processingNote: String? = nil,
+        styleOverride: StyleProfile? = nil,
+        skipsCleanup: Bool = false
     ) async throws -> FinalizedTranscript {
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
             throw SessionCoordinatorError.sessionNotFound
@@ -141,6 +143,8 @@ public actor SessionCoordinator {
             active: active,
             engines: engines,
             processingNote: processingNote,
+            styleOverride: styleOverride,
+            skipsCleanup: skipsCleanup,
             sourceSessionID: sessionID
         )
     }
@@ -151,7 +155,9 @@ public actor SessionCoordinator {
         audioURL: URL,
         sessionID: SessionID,
         languageHints: [String] = ["en-US"],
-        processingNote: String? = nil
+        processingNote: String? = nil,
+        styleOverride: StyleProfile? = nil,
+        skipsCleanup: Bool = false
     ) async throws -> FinalizedTranscript {
         guard let active = activeSessions.removeValue(forKey: sessionID) else {
             throw SessionCoordinatorError.sessionNotFound
@@ -165,6 +171,8 @@ public actor SessionCoordinator {
             active: active,
             engines: engines,
             processingNote: processingNote,
+            styleOverride: styleOverride,
+            skipsCleanup: skipsCleanup,
             sourceSessionID: sessionID
         )
     }
@@ -174,6 +182,8 @@ public actor SessionCoordinator {
         active: ActiveSession,
         engines: SessionProcessingEngines,
         processingNote: String? = nil,
+        styleOverride: StyleProfile? = nil,
+        skipsCleanup: Bool = false,
         sourceSessionID: SessionID
     ) async throws -> FinalizedTranscript {
         let clock = ContinuousClock()
@@ -187,20 +197,32 @@ public actor SessionCoordinator {
         )
 
         let profileStartedAt = clock.now
-        let profile = await styleProfileService.resolve(for: active.appContext)
+        let profile = if let styleOverride {
+            styleOverride
+        } else {
+            await styleProfileService.resolve(for: active.appContext)
+        }
         let lexicon = await lexiconService.snapshot(for: active.appContext)
         Self.logger.notice(
             "Profile + lexicon resolution finished in \(self.secondsSince(profileStartedAt, clock: clock), format: .fixed(precision: 2))s"
         )
 
         let cleanupStartedAt = clock.now
-        let cleanupResult = try await prepareCleanTranscript(
-            raw: rawTranscript,
-            profile: profile,
-            lexicon: lexicon,
-            appContext: active.appContext,
-            engines: engines
-        )
+        let cleanupResult: CleanupExecutionResult
+        if skipsCleanup {
+            cleanupResult = CleanupExecutionResult(
+                transcript: CleanTranscript(text: rawTranscript.text),
+                outcome: CleanupOutcome(source: .localOnly)
+            )
+        } else {
+            cleanupResult = try await prepareCleanTranscript(
+                raw: rawTranscript,
+                profile: profile,
+                lexicon: lexicon,
+                appContext: active.appContext,
+                engines: engines
+            )
+        }
         Self.logger.notice(
             "Cleanup finished in \(self.secondsSince(cleanupStartedAt, clock: clock), format: .fixed(precision: 2))s"
         )

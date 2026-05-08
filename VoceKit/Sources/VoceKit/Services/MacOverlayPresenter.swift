@@ -319,8 +319,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
     }
     public var controlWorkflows: [AIWorkflow] = []
+    public var selectedControlStyle: StructureMode = .paragraph
     public var onStopRequested: (() -> Void)?
     public var onAIWorkflowRequested: ((UUID) -> Void)?
+    public var onStyleRequested: ((StructureMode) -> Void)?
 
     /// Called when the user finishes dragging the overlay to a new position.
     /// Provides the window origin so the caller can persist it per-app.
@@ -343,6 +345,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         dark
             ? NSColor(red: 0.93, green: 0.94, blue: 0.95, alpha: 1.0)
             : NSColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1.0)
+    }
+
+    private static func menuTextSecondaryColor(dark: Bool) -> NSColor {
+        menuTextPrimaryColor(dark: dark).withAlphaComponent(dark ? 0.66 : 0.58)
     }
 
     private static func menuSurfaceColor(dark: Bool) -> NSColor {
@@ -1388,6 +1394,12 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         onAIWorkflowRequested?(workflowID)
     }
 
+    private func handleStyleButton(mode: StructureMode) {
+        selectedControlStyle = mode
+        hideBubbleControlMenu(animated: true)
+        onStyleRequested?(mode)
+    }
+
     private var isDarkAppearance: Bool {
         if let override = prefersDarkAppearance {
             return override
@@ -1406,7 +1418,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         root.layer?.masksToBounds = true
         root.widthAnchor.constraint(equalToConstant: width).isActive = true
 
-        let menuSize = NSSize(width: width, height: 220)
+        let menuSize = NSSize(width: width, height: 320)
         let imageLayer = CALayer()
         if let cgImage = Self.loadBackgroundCGImage(isDark: dark) {
             imageLayer.contents = cgImage
@@ -1541,6 +1553,54 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             ])
         }
 
+        let styleStack = NSStackView()
+        styleStack.orientation = .vertical
+        styleStack.alignment = .leading
+        styleStack.distribution = .fill
+        styleStack.spacing = 6
+        styleStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let styleHeader = makeBubbleControlSectionLabel("Change style", dark: dark)
+        styleStack.addArrangedSubview(styleHeader)
+        NSLayoutConstraint.activate([
+            styleHeader.leadingAnchor.constraint(equalTo: styleStack.leadingAnchor, constant: 8),
+            styleHeader.trailingAnchor.constraint(equalTo: styleStack.trailingAnchor, constant: -8),
+        ])
+
+        let styleModes: [StructureMode] = [.natural, .paragraph, .bullets, .email, .command]
+        for mode in styleModes {
+            let selected = mode == selectedControlStyle
+            let button = makeBubbleControlButton(
+                title: Self.controlStyleTitle(for: mode),
+                symbolName: selected ? "checkmark.circle.fill" : "circle",
+                emphasized: selected,
+                dark: dark
+            ) { [weak self] in
+                self?.handleStyleButton(mode: mode)
+            }
+            styleStack.addArrangedSubview(button)
+            NSLayoutConstraint.activate([
+                button.leadingAnchor.constraint(equalTo: styleStack.leadingAnchor),
+                button.trailingAnchor.constraint(equalTo: styleStack.trailingAnchor),
+            ])
+        }
+
+        if !workflows.isEmpty {
+            let divider = makeBubbleControlDivider(dark: dark)
+            stack.addArrangedSubview(divider)
+            NSLayoutConstraint.activate([
+                divider.heightAnchor.constraint(equalToConstant: 1),
+                divider.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: 14),
+                divider.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -14),
+            ])
+        }
+
+        stack.addArrangedSubview(styleStack)
+        NSLayoutConstraint.activate([
+            styleStack.leadingAnchor.constraint(equalTo: stack.leadingAnchor),
+            styleStack.trailingAnchor.constraint(equalTo: stack.trailingAnchor),
+        ])
+
         let stopButton = makeBubbleControlButton(
             title: "Stop dictation",
             symbolName: "stop.circle.fill",
@@ -1556,6 +1616,30 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         ])
 
         return root
+    }
+
+    private static func controlStyleTitle(for mode: StructureMode) -> String {
+        switch mode {
+        case .natural:
+            return "Natural"
+        case .paragraph:
+            return "Paragraph"
+        case .bullets:
+            return "Bullets"
+        case .email:
+            return "Email"
+        case .command:
+            return "Command"
+        }
+    }
+
+    private func makeBubbleControlSectionLabel(_ title: String, dark: Bool) -> NSTextField {
+        let label = NSTextField(labelWithString: title)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = Self.controlMenuFont(size: 11, weight: .semibold)
+        label.textColor = Self.menuTextSecondaryColor(dark: dark)
+        label.alignment = .left
+        return label
     }
 
     private func makeBubbleControlButton(

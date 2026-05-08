@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 
 @MainActor
+private final class VoceBubblePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
 final class MenuBarController: NSObject, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private weak var controller: DictationController?
@@ -218,13 +224,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         closeBubblePanel()
 
-        if #available(macOS 14.0, *) {
-            NSApp.activate()
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
-
-        let panel = NSPanel(
+        let panel = VoceBubblePanel(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -247,6 +247,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         panel.setFrameOrigin(bubblePanelOrigin(for: size))
         panel.orderFrontRegardless()
         panel.makeKey()
+        panel.makeFirstResponder(hosting)
 
         bubblePanel = panel
         installBubblePanelOutsideMonitors()
@@ -265,8 +266,16 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         guard let screen else { return .zero }
         let visibleFrame = screen.visibleFrame
         let margin: CGFloat = 12
-        let x = visibleFrame.origin.x + (visibleFrame.width - size.width) / 2
-        let y = visibleFrame.origin.y + margin
+        let unclampedX = visibleFrame.origin.x + (visibleFrame.width - size.width) / 2
+        let unclampedY = visibleFrame.origin.y + margin
+        let x = min(
+            max(unclampedX, visibleFrame.minX + margin),
+            visibleFrame.maxX - size.width - margin
+        )
+        let y = min(
+            max(unclampedY, visibleFrame.minY + margin),
+            visibleFrame.maxY - size.height - margin
+        )
         return NSPoint(x: x, y: y)
     }
 
@@ -1199,7 +1208,7 @@ private struct VoceActionPickerView: View {
                     actionRow(.createSnippet)
                 }
 
-                Text("Return to confirm · ↑↓ or D/S to switch · Esc to cancel")
+                Text("Return to confirm · ↑↓ to switch · D/S to choose · Esc to cancel")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary.opacity(0.85))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1235,10 +1244,10 @@ private struct VoceActionPickerView: View {
         .onKeyPress { press in
             switch press.characters.lowercased() {
             case "d":
-                highlighted = .dictionaryFix
+                onPick(.dictionaryFix)
                 return .handled
             case "s":
-                highlighted = .createSnippet
+                onPick(.createSnippet)
                 return .handled
             default:
                 return .ignored

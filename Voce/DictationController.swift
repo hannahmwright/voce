@@ -241,6 +241,7 @@ final class DictationController: ObservableObject {
     private var activeAppContext: AppContext?
     private var activeRecordingMode: RecordingMode?
     private var pendingCompletionActionOverride: CompletionAction?
+    private var activeStyleOverride: StyleProfile?
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activeStartTaskID: UUID?
@@ -357,6 +358,9 @@ final class DictationController: ObservableObject {
         overlay.onAIWorkflowRequested = { [weak self] workflowID in
             self?.finishActiveRecordingWithAI(workflowID: workflowID)
         }
+        overlay.onStyleRequested = { [weak self] mode in
+            self?.applyActiveRecordingStyleOverride(mode)
+        }
         hotkey.onRegistrationStatusChanged = { [weak self] status in
             switch status {
             case .registered:
@@ -426,6 +430,21 @@ final class DictationController: ObservableObject {
     func bootstrap() async {
         var loaded = await preferencesStore.load()
         loaded.normalize()
+
+        // Email verification is required for every plan (free/base/pro). If a
+        // previous build let the user finish onboarding without a verified
+        // access session, force onboarding back on so they complete access.
+        let trimmedSubscriberEmail = loaded.billing.subscriberEmail
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasVerifiedAccessSession: Bool
+        if trimmedSubscriberEmail.isEmpty {
+            hasVerifiedAccessSession = false
+        } else {
+            hasVerifiedAccessSession = await entitlementService.hasAccessSession(email: trimmedSubscriberEmail)
+        }
+        if !loaded.general.showOnboarding && !hasVerifiedAccessSession {
+            loaded.general.showOnboarding = true
+        }
 
         applyPreferencesLocally(loaded)
         refreshPermissionStatuses()
@@ -786,6 +805,16 @@ final class DictationController: ObservableObject {
         }
     }
 
+    private func applyActiveRecordingStyleOverride(_ structureMode: StructureMode) {
+        guard isRecording, let activeAppContext else { return }
+        var profile = effectiveStyleProfile(for: activeAppContext)
+        profile.name = "This Dictation"
+        profile.structureMode = structureMode
+        activeStyleOverride = profile
+        overlay.selectedControlStyle = structureMode
+        status = "Style set to \(styleTitle(for: structureMode))."
+    }
+
     func captureSelectionForCorrection() {
         guard !isRecording else {
             status = "Finish recording before using dictionary quick fix."
@@ -1133,6 +1162,49 @@ final class DictationController: ObservableObject {
         voceProEntitlementStatus.isEntitled && aiRuntimeEnabled
     }
 
+    private func effectiveStyleProfile(for appContext: AppContext) -> StyleProfile {
+        if let appProfile = preferences.appStyleProfiles[appContext.bundleIdentifier] {
+            return appProfile
+        }
+
+        if appContext.isIDE {
+            return StyleProfile(
+                name: "IDE",
+                tone: .technical,
+                structureMode: .natural,
+                fillerPolicy: .balanced,
+                commandPolicy: .passthrough
+            )
+        }
+
+        if appContext.isRemoteDesktop {
+            return StyleProfile(
+                name: "Remote Desktop",
+                tone: .concise,
+                structureMode: .paragraph,
+                fillerPolicy: .aggressive,
+                commandPolicy: .transform
+            )
+        }
+
+        return preferences.globalStyleProfile
+    }
+
+    private func styleTitle(for mode: StructureMode) -> String {
+        switch mode {
+        case .natural:
+            return "Natural"
+        case .paragraph:
+            return "Paragraph"
+        case .bullets:
+            return "Bullets"
+        case .email:
+            return "Email"
+        case .command:
+            return "Command"
+        }
+    }
+
     var currentPlanTier: VocePlanTier? {
         guard case .entitled(let entitlement) = voceProEntitlementStatus else {
             return nil
@@ -1376,7 +1448,9 @@ final class DictationController: ObservableObject {
         activeAppContext = capturedContext
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
         pendingCompletionActionOverride = nil
+        activeStyleOverride = nil
         activeFreeUsageLimitSeconds = voceProEntitlementStatus.freeRecordingRemainingSeconds
+        overlay.selectedControlStyle = effectiveStyleProfile(for: capturedContext).structureMode
 
         // Restore per-app overlay position if the user previously dragged it,
         // otherwise fall back to accessibility-based anchoring.
@@ -1490,6 +1564,7 @@ final class DictationController: ObservableObject {
                 activeFreeUsageLimitSeconds = nil
                 overlayPersistenceBundleIdentifier = nil
                 pendingCompletionActionOverride = nil
+                activeStyleOverride = nil
                 updateActiveRecordingHotkeys()
                 activePreviewSession = nil
                 activeRealtimeWhisperSession = nil
@@ -1546,6 +1621,7 @@ final class DictationController: ObservableObject {
             activeAppContext = nil
             overlayPersistenceBundleIdentifier = nil
             pendingCompletionActionOverride = nil
+            activeStyleOverride = nil
 
             recordingStateMachine.markTranscriptionFailed()
             status = streamingFailureStatusMessage(for: error)
@@ -1584,12 +1660,14 @@ final class DictationController: ObservableObject {
         let readyCoordinator = coordinator
         let readySessionID = currentSessionID
         let readyPreferredCompletionAction = pendingCompletionActionOverride
+        let readyStyleOverride = activeStyleOverride
         let readyMediaToken = activeMediaToken
 
         if readySessionID != nil {
             currentSessionID = nil
             activeAppContext = nil
             pendingCompletionActionOverride = nil
+            activeStyleOverride = nil
             activeMediaToken = nil
             recordingStateMachine.markTranscriptionCompleted()
             startPendingRecordingAfterAudioSecuredIfNeeded()
@@ -1610,12 +1688,14 @@ final class DictationController: ObservableObject {
             let coordinator: SessionCoordinator?
             let sessionID: SessionID?
             let preferredCompletionAction: CompletionAction?
+            let styleOverride: StyleProfile?
             let mediaToken: MediaInterruptionToken?
 
             if let readyCoordinator, let readySessionID {
                 coordinator = readyCoordinator
                 sessionID = readySessionID
                 preferredCompletionAction = readyPreferredCompletionAction
+                styleOverride = readyStyleOverride
                 mediaToken = readyMediaToken
             } else {
                 // If stop happens while the microphone is still arming, wait
@@ -1624,11 +1704,13 @@ final class DictationController: ObservableObject {
                 coordinator = self.coordinator
                 sessionID = currentSessionID
                 preferredCompletionAction = pendingCompletionActionOverride
+                styleOverride = activeStyleOverride
                 mediaToken = activeMediaToken
 
                 currentSessionID = nil
                 activeAppContext = nil
                 pendingCompletionActionOverride = nil
+                activeStyleOverride = nil
                 activeMediaToken = nil
                 recordingStateMachine.markTranscriptionCompleted()
                 startPendingRecordingAfterAudioSecuredIfNeeded()
@@ -1660,6 +1742,12 @@ final class DictationController: ObservableObject {
                 let clock = ContinuousClock()
                 let stopBeganAt = clock.now
                 let finalizedTranscript: FinalizedTranscript
+                let skipsCleanupForAIWorkflow: Bool
+                if case .aiWorkflow = preferredCompletionAction {
+                    skipsCleanupForAIWorkflow = true
+                } else {
+                    skipsCleanupForAIWorkflow = false
+                }
 
                 if let realtimeSession {
                     let stopResult = try await realtimeSession.stop()
@@ -1676,7 +1764,9 @@ final class DictationController: ObservableObject {
                     finalizedTranscript = try await coordinator.processStreamingTranscript(
                         stopResult.rawTranscript,
                         sessionID: sessionID,
-                        processingNote: "Realtime Whisper"
+                        processingNote: "Realtime Whisper",
+                        styleOverride: styleOverride,
+                        skipsCleanup: skipsCleanupForAIWorkflow
                     )
                     let transcriptionElapsed = transcriptionBeganAt.duration(to: clock.now)
                     let transcriptionElapsedSeconds = Double(transcriptionElapsed.components.seconds)
@@ -1698,7 +1788,9 @@ final class DictationController: ObservableObject {
                     finalizedTranscript = try await coordinator.processStreamingAudio(
                         audioURL: stopResult.captureURL,
                         sessionID: sessionID,
-                        languageHints: [preferences.dictation.localeIdentifier]
+                        languageHints: [preferences.dictation.localeIdentifier],
+                        styleOverride: styleOverride,
+                        skipsCleanup: skipsCleanupForAIWorkflow
                     )
                     let transcriptionElapsed = transcriptionBeganAt.duration(to: clock.now)
                     let transcriptionElapsedSeconds = Double(transcriptionElapsed.components.seconds)
@@ -3037,7 +3129,6 @@ final class DictationController: ObservableObject {
             preferences.dictation.engineMode.rawValue,
             preferences.dictation.cloud.provider.rawValue,
             preferences.dictation.cloud.refinementEnabled ? "refine-on" : "refine-off",
-            preferences.dictation.cloud.formattingStyle.rawValue,
             preferences.dictation.cloud.apiKeySource.rawValue,
             overrideSignature,
             cloudValidationCredentialVersion.uuidString,
@@ -3204,7 +3295,7 @@ private struct DictationRuntimeFactory {
 
         if snapshot.dictation.engineMode == .cloud,
            !snapshot.appDictationEnginePreferences.values.contains(.local) {
-            return "Running OpenAI Realtime Whisper capture/transcription + structured cloud refinement."
+            return "Running OpenAI Realtime Whisper capture/transcription + cloud refinement."
         }
 
         return "Running Apple preview only for local apps; cloud apps use cloud transcription."

@@ -1051,12 +1051,10 @@ struct OnboardingView: View {
 
     private var skipButtonLabel: String? {
         switch currentStep {
-        case .welcome, .permissions, .ready:
+        case .welcome, .permissions, .ready, .access:
             return nil
         case .typingSpeed:
             return "Skip"
-        case .access:
-            return "Skip for now"
         case .walkthrough:
             return "Skip lesson"
         case .practice:
@@ -1068,13 +1066,11 @@ struct OnboardingView: View {
         switch currentStep {
         case .typingSpeed:
             return "Skip the typing speed test"
-        case .access:
-            return "Skip access setup for now"
         case .walkthrough:
             return "Skip the guided walkthrough lesson"
         case .practice:
             return "Skip the practice test and finish onboarding"
-        case .welcome, .permissions, .ready:
+        case .welcome, .permissions, .ready, .access:
             return nil
         }
     }
