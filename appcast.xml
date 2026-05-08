@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.42</title>
+      <sparkle:version>45</sparkle:version>
+      <sparkle:shortVersionString>0.4.42</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.42</h2>
+        <ul>
+          <li>Fixes production cloud dictation so it uses your verified Voce account instead of asking for a direct OpenAI API key</li>
+          <li>Keeps direct OpenAI credential controls limited to the dev build</li>
+          <li>Preserves cloud transcription and refinement through the Voce backend</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 08 May 2026 04:00:11 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.42/Voce-0.4.42.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="OZO0w8/NVT+JlwJOJl4q7hUyaYnDuebtSUkeiR1mLC6ZrVDFKwwgFkdIdLQL1E8GgsHkawFr0qZ0SJOO6PqhCw=="
+        length="18843831"
+      />
+    </item>
+    <item>
       <title>Version 0.4.41</title>
       <sparkle:version>44</sparkle:version>
       <sparkle:shortVersionString>0.4.41</sparkle:shortVersionString>
