@@ -3,6 +3,29 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.41</title>
+      <sparkle:version>44</sparkle:version>
+      <sparkle:shortVersionString>0.4.41</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.41</h2>
+        <ul>
+          <li>Adds realtime cloud transcription with a hover transcript view during dictation</li>
+          <li>Adds per-dictation cleanup style switching and keeps AI workflows focused on rewrite, summarize, and prompt preparation</li>
+          <li>Adds the Voce actions picker for dictionary fixes and snippets, with improved keyboard flow and popover placement</li>
+          <li>Requires email verification during setup so Base and Pro access can be resolved reliably</li>
+          <li>Improves dictionary editing, scratch pad focus, onboarding visuals, monthly metrics, and media playback diagnostics</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 08 May 2026 03:46:33 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.41/Voce-0.4.41.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="NgbNExfHYNfNy2NhOjj7lMofRvp3IZlVPcqmd9DKfZTbz/38DLaUXrx57I4v/jqZAi+w0tLe/fHmT8wkxVylCw=="
+        length="18808404"
+      />
+    </item>
+    <item>
       <title>Version 0.4.40</title>
       <sparkle:version>43</sparkle:version>
       <sparkle:shortVersionString>0.4.40</sparkle:shortVersionString>
