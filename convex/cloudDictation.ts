@@ -406,7 +406,6 @@ export async function createRealtimeTranscriptionSession(args: {
   model?: string;
 }) {
   const model = args.model?.trim() || realtimeTranscriptionModel();
-  const prompt = transcriptionPrompt(args.hints);
   const response = await openAIRealtimeTranscriptionSessionRequest({
     input_audio_format: "pcm16",
     input_audio_noise_reduction: {
@@ -415,7 +414,6 @@ export async function createRealtimeTranscriptionSession(args: {
     input_audio_transcription: {
       model,
       language: effectiveLanguageCode(args.localeIdentifier),
-      ...(prompt ? { prompt } : {}),
     },
     turn_detection: null,
   });
