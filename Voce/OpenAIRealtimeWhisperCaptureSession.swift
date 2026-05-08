@@ -12,7 +12,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "OpenAIRealtimeWhisperCapture")
 
     private let session: URLSession
-    private let apiKeyProvider: @Sendable () throws -> String
+    private let authTokenProvider: @Sendable () async throws -> String
     private let model: String
     private let localeIdentifier: String
     private let transcriptionHints: [LexiconEntry]
@@ -35,7 +35,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
     init(
         session: URLSession = .shared,
-        apiKeyProvider: @escaping @Sendable () throws -> String,
+        authTokenProvider: @escaping @Sendable () async throws -> String,
         model: String = "gpt-realtime-whisper",
         localeIdentifier: String,
         transcriptionHints: [LexiconEntry],
@@ -44,7 +44,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in }
     ) {
         self.session = session
-        self.apiKeyProvider = apiKeyProvider
+        self.authTokenProvider = authTokenProvider
         self.model = model
         self.localeIdentifier = localeIdentifier
         self.transcriptionHints = Array(transcriptionHints.prefix(200))
@@ -73,7 +73,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             throw AppleSpeechPreviewError.failedToCreateOutputFile
         }
 
-        let socket = try makeSocket()
+        let socket = try await makeSocket()
         let writer = RealtimeWebSocketWriter(socket: socket)
         let accumulator = RealtimeTranscriptAccumulator()
         self.socket = socket
@@ -209,7 +209,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         cleanupOutputFile(at: outputURL)
     }
 
-    private func makeSocket() throws -> URLSessionWebSocketTask {
+    private func makeSocket() async throws -> URLSessionWebSocketTask {
         var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!
         components.queryItems = [
             URLQueryItem(name: "intent", value: "transcription")
@@ -219,7 +219,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 90
-        request.setValue("Bearer \(try apiKeyProvider())", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(try await authTokenProvider())", forHTTPHeaderField: "Authorization")
         return session.webSocketTask(with: request)
     }
 

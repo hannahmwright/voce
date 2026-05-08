@@ -1309,7 +1309,6 @@ final class DictationController: ObservableObject {
 
     private func usesRealtimeWhisperCapture(for appContext: AppContext) -> Bool {
         dictationEngineModeResolver.resolve(for: appContext) == .cloud
-            && usesDirectCloudCredentials
     }
 
     private func makeRealtimeWhisperCaptureSession(
@@ -1317,7 +1316,6 @@ final class DictationController: ObservableObject {
         onTerminalError: @escaping @Sendable (Error) -> Void,
         onAudioLevel: @escaping @Sendable (Double) -> Void
     ) throws -> OpenAIRealtimeWhisperCaptureSession {
-        let apiKeySource = preferences.dictation.cloud.apiKeySource
         let localeIdentifier = preferences.dictation.localeIdentifier
         let transcriptionHints = preferences.visibleLexiconEntries
         let model = ProcessInfo.processInfo.environment["VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL"]?
@@ -1328,8 +1326,10 @@ final class DictationController: ObservableObject {
         } else {
             resolvedModel = "gpt-realtime-whisper"
         }
-        return OpenAIRealtimeWhisperCaptureSession(
-            apiKeyProvider: {
+        let authTokenProvider: @Sendable () async throws -> String
+        if usesDirectCloudCredentials {
+            let apiKeySource = preferences.dictation.cloud.apiKeySource
+            authTokenProvider = {
                 do {
                     return try CloudProviderCredentialStore.shared.resolveOpenAIAPIKey(
                         source: apiKeySource
@@ -1339,7 +1339,22 @@ final class DictationController: ObservableObject {
                 } catch {
                     throw error
                 }
-            },
+            }
+        } else {
+            let tokenProvider = VoceRealtimeTranscriptionTokenProvider(
+                subscriberEmail: normalizedSubscriberEmail
+            )
+            authTokenProvider = {
+                try await tokenProvider.clientSecret(
+                    localeIdentifier: localeIdentifier,
+                    hints: transcriptionHints,
+                    model: resolvedModel
+                )
+            }
+        }
+
+        return OpenAIRealtimeWhisperCaptureSession(
+            authTokenProvider: authTokenProvider,
             model: resolvedModel,
             localeIdentifier: localeIdentifier,
             transcriptionHints: transcriptionHints,

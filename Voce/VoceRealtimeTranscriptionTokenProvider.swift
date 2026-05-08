@@ -1,0 +1,98 @@
+import Foundation
+import VoceKit
+
+struct VoceRealtimeTranscriptionTokenProvider: Sendable {
+    private let subscriberEmail: String
+    private let sessionStore: VoceAccessSessionStore
+    private let session: URLSession
+    private let sessionURL: URL
+
+    init(
+        subscriberEmail: String,
+        sessionStore: VoceAccessSessionStore = .shared,
+        session: URLSession = .shared,
+        siteBaseURL: URL = VoceCloudSpeechProviderClient.siteBaseURL
+    ) {
+        self.subscriberEmail = subscriberEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.sessionStore = sessionStore
+        self.session = session
+        self.sessionURL = siteBaseURL.appendingPathComponent("cloud-dictation/realtime-session")
+    }
+
+    func clientSecret(
+        localeIdentifier: String,
+        hints: [LexiconEntry],
+        model: String
+    ) async throws -> String {
+        var request = try VoceCloudSpeechProviderClient.authorizedRequest(
+            url: sessionURL,
+            subscriberEmail: subscriberEmail,
+            sessionStore: sessionStore
+        )
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONEncoder().encode(
+            RealtimeSessionRequest(
+                localeIdentifier: localeIdentifier,
+                hints: hints.map(\.preferred),
+                model: model
+            )
+        )
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw CloudDictationError.invalidResponse
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw cloudError(status: httpResponse.statusCode, data: data)
+            }
+            let payload = try JSONDecoder().decode(RealtimeSessionResponse.self, from: data)
+            let value = payload.clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else {
+                throw CloudDictationError.invalidResponse
+            }
+            return value
+        } catch let error as CloudDictationError {
+            throw error
+        } catch {
+            if (error as NSError).code == NSURLErrorTimedOut {
+                throw CloudDictationError.timedOut
+            }
+            throw CloudDictationError.networkUnavailable
+        }
+    }
+
+    private func cloudError(status: Int, data: Data) -> CloudDictationError {
+        let message = (try? JSONDecoder().decode(RealtimeErrorResponse.self, from: data).error)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch status {
+        case 401:
+            return .authenticationRequired
+        case 403:
+            return .subscriptionRequired
+        case 408, 504:
+            return .timedOut
+        case 429:
+            return .rateLimited
+        default:
+            return .providerError(message ?? "Voce realtime dictation is unavailable.")
+        }
+    }
+}
+
+private struct RealtimeSessionRequest: Encodable {
+    var localeIdentifier: String
+    var hints: [String]
+    var model: String
+}
+
+private struct RealtimeSessionResponse: Decodable {
+    var clientSecret: String
+    var expiresAt: Int?
+}
+
+private struct RealtimeErrorResponse: Decodable {
+    var error: String
+}

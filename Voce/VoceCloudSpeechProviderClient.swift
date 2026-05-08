@@ -6,9 +6,9 @@ struct VoceCloudSpeechProviderClient: CloudSpeechProviderClient {
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "VoceCloudSpeech")
 
     #if DEBUG
-    private static let siteBaseURL = URL(string: "https://cheerful-raven-194.convex.site")!
+    static let siteBaseURL = URL(string: "https://cheerful-raven-194.convex.site")!
     #else
-    private static let siteBaseURL = URL(string: "https://combative-ant-133.convex.site")!
+    static let siteBaseURL = URL(string: "https://combative-ant-133.convex.site")!
     #endif
 
     private let subscriberEmail: String
@@ -30,6 +30,29 @@ struct VoceCloudSpeechProviderClient: CloudSpeechProviderClient {
         self.preflightURL = siteBaseURL.appendingPathComponent("cloud-dictation/preflight")
         self.transcribeURL = siteBaseURL.appendingPathComponent("cloud-dictation/transcribe")
         self.refineURL = siteBaseURL.appendingPathComponent("cloud-dictation/refine")
+    }
+
+    static func authorizedRequest(
+        url: URL,
+        subscriberEmail: String,
+        sessionStore: VoceAccessSessionStore = .shared
+    ) throws -> URLRequest {
+        let email = subscriberEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !email.isEmpty else {
+            throw CloudDictationError.authenticationRequired
+        }
+        guard let token = try sessionStore.sessionToken(for: email)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty
+        else {
+            throw CloudDictationError.authenticationRequired
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue(email, forHTTPHeaderField: "x-voce-email")
+        request.setValue(token, forHTTPHeaderField: "x-voce-session-token")
+        request.setValue("Voce macOS", forHTTPHeaderField: "user-agent")
+        return request
     }
 
     func preflightCheck(localeIdentifier: String) async throws {
@@ -114,21 +137,11 @@ struct VoceCloudSpeechProviderClient: CloudSpeechProviderClient {
     }
 
     private func authorizedRequest(url: URL) throws -> URLRequest {
-        guard !subscriberEmail.isEmpty else {
-            throw CloudDictationError.authenticationRequired
-        }
-        guard let token = try sessionStore.sessionToken(for: subscriberEmail)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !token.isEmpty
-        else {
-            throw CloudDictationError.authenticationRequired
-        }
-
-        var request = URLRequest(url: url)
-        request.setValue(subscriberEmail, forHTTPHeaderField: "x-voce-email")
-        request.setValue(token, forHTTPHeaderField: "x-voce-session-token")
-        request.setValue("Voce macOS", forHTTPHeaderField: "user-agent")
-        return request
+        try Self.authorizedRequest(
+            url: url,
+            subscriberEmail: subscriberEmail,
+            sessionStore: sessionStore
+        )
     }
 
     private func send(request: URLRequest, timeoutError: CloudDictationError) async throws -> Data {

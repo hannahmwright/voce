@@ -59,6 +59,13 @@ type AudioTranscriptionResponse = {
   text?: string;
 };
 
+type RealtimeTranscriptionSessionResponse = {
+  client_secret?: {
+    value?: string;
+    expires_at?: number;
+  } | null;
+};
+
 export class CloudDictationProviderError extends Error {
   readonly status: number;
 
@@ -84,6 +91,10 @@ function openAIAPIKey() {
 
 function transcriptionModel() {
   return process.env.VOCE_OPENAI_TRANSCRIPTION_MODEL ?? "gpt-4o-mini-transcribe";
+}
+
+function realtimeTranscriptionModel() {
+  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-realtime-whisper";
 }
 
 function refinementModel() {
@@ -217,6 +228,28 @@ async function openAIAudioTranscriptionRequest(formData: FormData, timeoutMs: nu
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function openAIRealtimeTranscriptionSessionRequest(body: Record<string, unknown>) {
+  const bodyJSON = JSON.stringify(body);
+  const response = await fetch(`${OPENAI_BASE_URL}/v1/realtime/transcription_sessions`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${openAIAPIKey()}`,
+      "content-type": "application/json",
+    },
+    body: bodyJSON,
+  });
+
+  const payload = await readJSONSafe(response);
+  if (!response.ok) {
+    throw new CloudDictationProviderError(
+      response.status === 429 ? 429 : response.status >= 500 ? 502 : 502,
+      providerFailureMessage(response.status, payload),
+    );
+  }
+
+  return payload as RealtimeTranscriptionSessionResponse;
 }
 
 function normalizedText(value: string | undefined | null) {
@@ -365,6 +398,40 @@ export async function transcribeWithCloudProvider(args: {
   }
 
   return { text };
+}
+
+export async function createRealtimeTranscriptionSession(args: {
+  localeIdentifier: string;
+  hints: string[];
+  model?: string;
+}) {
+  const model = args.model?.trim() || realtimeTranscriptionModel();
+  const prompt = transcriptionPrompt(args.hints);
+  const response = await openAIRealtimeTranscriptionSessionRequest({
+    input_audio_format: "pcm16",
+    input_audio_noise_reduction: {
+      type: "near_field",
+    },
+    input_audio_transcription: {
+      model,
+      language: effectiveLanguageCode(args.localeIdentifier),
+      ...(prompt ? { prompt } : {}),
+    },
+    turn_detection: null,
+  });
+
+  const value = response.client_secret?.value?.trim();
+  if (!value) {
+    throw new CloudDictationProviderError(
+      502,
+      "Cloud dictation provider did not return a realtime session token.",
+    );
+  }
+
+  return {
+    clientSecret: value,
+    expiresAt: response.client_secret?.expires_at,
+  };
 }
 
 export async function refineWithCloudProvider(args: {

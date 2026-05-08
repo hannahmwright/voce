@@ -109,6 +109,7 @@ Cloud dictation proxy endpoints are:
 
 ```txt
 https://<convex-deployment>.convex.site/cloud-dictation/preflight
+https://<convex-deployment>.convex.site/cloud-dictation/realtime-session
 https://<convex-deployment>.convex.site/cloud-dictation/transcribe
 https://<convex-deployment>.convex.site/cloud-dictation/refine
 ```
@@ -118,7 +119,7 @@ These endpoints require:
 - `x-voce-email`
 - `x-voce-session-token`
 
-The server verifies the saved Voce email session and enforces `voce_cloud_dictation` before proxying any audio or transcript content to OpenAI. Audio and transcript bodies are processed transiently and are not stored in Convex tables by default.
+The server verifies the saved Voce email session and enforces `voce_cloud_dictation` before creating realtime session tokens or proxying audio and transcript content to OpenAI. Realtime session tokens are short-lived OpenAI client secrets; audio and transcript bodies are processed transiently and are not stored in Convex tables by default.
 
 The app checkout endpoint is:
 

@@ -5,6 +5,7 @@ import Stripe from "stripe";
 import { APP_ACCESS_FEATURE, CLOUD_DICTATION_FEATURE } from "./entitlements";
 import {
   CloudDictationProviderError,
+  createRealtimeTranscriptionSession,
   refineWithCloudProvider,
   runCloudDictationPreflight,
   transcribeWithCloudProvider,
@@ -723,6 +724,44 @@ http.route({
       return jsonResponse(result);
     } catch (error) {
       console.error("cloud dictation transcription failed", {
+        emailDomain: verification.email.split("@")[1] ?? "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return cloudErrorResponse(error);
+    }
+  }),
+});
+
+http.route({
+  path: "/cloud-dictation/realtime-session",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const verification = await verifiedFeatureEmail(ctx, request, CLOUD_DICTATION_FEATURE);
+    if ("response" in verification) {
+      return verification.response;
+    }
+
+    try {
+      const body = (await request.json()) as {
+        localeIdentifier?: string;
+        hints?: string[];
+        model?: string;
+      };
+      const localeIdentifier = (body.localeIdentifier ?? "").trim() || "en-US";
+      const hints = Array.isArray(body.hints)
+        ? body.hints.filter((value): value is string => typeof value === "string")
+        : [];
+      const model = body.model?.trim() || undefined;
+
+      const result = await createRealtimeTranscriptionSession({
+        localeIdentifier,
+        hints,
+        model,
+      });
+
+      return jsonResponse(result);
+    } catch (error) {
+      console.error("cloud dictation realtime session failed", {
         emailDomain: verification.email.split("@")[1] ?? "",
         error: error instanceof Error ? error.message : String(error),
       });
