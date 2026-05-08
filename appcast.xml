@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.44</title>
+      <sparkle:version>47</sparkle:version>
+      <sparkle:shortVersionString>0.4.44</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.44</h2>
+        <ul>
+          <li>Fixes app reopen behavior so launching Voce from universal search brings the existing main window forward instead of creating duplicate windows</li>
+          <li>Keeps menu bar and action popovers unaffected while collapsing only duplicate primary Voce windows</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 08 May 2026 04:54:51 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.44/Voce-0.4.44.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="CByx1vC06Ml8GyjfDUFpSQq4oo91zF/bJW5ShAwSKdS51hgnEqiKxZWj6RuriaWfLpRkwmGTAUYTN8BxljrpDA=="
+        length="18856560"
+      />
+    </item>
+    <item>
       <title>Version 0.4.43</title>
       <sparkle:version>46</sparkle:version>
       <sparkle:shortVersionString>0.4.43</sparkle:shortVersionString>
