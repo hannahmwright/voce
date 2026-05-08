@@ -142,13 +142,6 @@ extension AIWorkflow {
 
     public static let builtIns: [AIWorkflow] = [
         AIWorkflow(
-            id: askID,
-            name: "Ask AI",
-            kind: .ask,
-            leadingPhrases: ["ask ai", "question for ai"],
-            isBuiltIn: true
-        ),
-        AIWorkflow(
             id: aiPromptID,
             name: "AI Prompt",
             kind: .customPrompt,

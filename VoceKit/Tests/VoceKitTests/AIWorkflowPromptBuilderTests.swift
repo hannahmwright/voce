@@ -4,9 +4,18 @@ import Testing
 
 @Test("AIWorkflowPromptBuilder includes transcript text for ask")
 func promptBuilderAskPromptIncludesInput() {
-    let workflow = AIWorkflow.builtIns.first { $0.id == AIWorkflow.askID }!
+    let workflow = AIWorkflow(
+        id: AIWorkflow.askID,
+        name: "Ask AI",
+        kind: .ask
+    )
     let prompt = AIWorkflowPromptBuilder.makePrompt(for: workflow, input: "How do I write this?")
     #expect(prompt.contains("How do I write this?"))
+}
+
+@Test("Ask AI is not exposed as a built-in workflow")
+func askAIWorkflowIsHiddenFromBuiltIns() {
+    #expect(!AIWorkflow.builtIns.contains { $0.id == AIWorkflow.askID })
 }
 
 @Test("AI workflow built-ins include AI Prompt with period finish key")

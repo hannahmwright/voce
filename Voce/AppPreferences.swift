@@ -384,7 +384,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(
             isEnabled: Bool = true,
-            defaultHandsFreeWorkflowID: UUID? = AIWorkflow.askID,
+            defaultHandsFreeWorkflowID: UUID? = AIWorkflow.aiPromptID,
             handsFreeFinishHotkey: HandsFreeHotkey? = nil,
             leadingPhraseSelectionEnabled: Bool = true,
             dictationPolishingEnabled: Bool = false,
@@ -401,7 +401,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
-            defaultHandsFreeWorkflowID = try container.decodeIfPresent(UUID.self, forKey: .defaultHandsFreeWorkflowID) ?? AIWorkflow.askID
+            defaultHandsFreeWorkflowID = try container.decodeIfPresent(UUID.self, forKey: .defaultHandsFreeWorkflowID) ?? AIWorkflow.aiPromptID
             handsFreeFinishHotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeFinishHotkey)
             leadingPhraseSelectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .leadingPhraseSelectionEnabled) ?? true
             dictationPolishingEnabled = try container.decodeIfPresent(Bool.self, forKey: .dictationPolishingEnabled) ?? false
@@ -585,6 +585,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             hotkeys.handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
         }
         var existingWorkflows = ai.workflows
+        existingWorkflows.removeAll { $0.id == AIWorkflow.askID }
 
         if let legacyIndex = existingWorkflows.firstIndex(where: { $0.id == AIWorkflow.legacyCustomPromptID }) {
             existingWorkflows[legacyIndex].isBuiltIn = false
@@ -618,7 +619,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
         if ai.defaultHandsFreeWorkflowID == nil
             || !ai.workflows.contains(where: { $0.id == ai.defaultHandsFreeWorkflowID })
         {
-            ai.defaultHandsFreeWorkflowID = AIWorkflow.askID
+            ai.defaultHandsFreeWorkflowID = AIWorkflow.aiPromptID
         }
         if case .modifier? = ai.handsFreeFinishHotkey {
             ai.handsFreeFinishHotkey = nil

@@ -36,14 +36,14 @@ func completionRoutingPrefersExplicitAIAction() throws {
 
     let routed = try service.route(
         finalizedTranscript: transcript,
-        preferredAction: .aiWorkflow(id: AIWorkflow.askID),
+        preferredAction: .aiWorkflow(id: AIWorkflow.aiPromptID),
         leadingPhraseSelectionEnabled: true,
         workflows: AIWorkflow.builtIns
     )
 
-    #expect(routed.action == .aiWorkflow(id: AIWorkflow.askID))
+    #expect(routed.action == .aiWorkflow(id: AIWorkflow.aiPromptID))
     #expect(routed.inputText == "summarize this quarterly update")
-    #expect(routed.selectedBy == .alternateFinishKey(workflowID: AIWorkflow.askID))
+    #expect(routed.selectedBy == .alternateFinishKey(workflowID: AIWorkflow.aiPromptID))
 }
 
 @Test("CompletionRoutingService throws when only an AI trigger phrase is present")
