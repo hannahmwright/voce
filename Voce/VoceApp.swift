@@ -60,6 +60,7 @@ private extension AppAppearancePreference {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var suppressedInitialWindowForBackgroundLaunch = false
+    private var pendingBackgroundLaunchSuppression: DispatchWorkItem?
     private lazy var launchPreferences = loadLaunchPreferences()
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -73,12 +74,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 #if DEBUG
             self.showPrimaryWindowIfNeeded()
 #else
-            self.suppressInitialWindowIfNeeded()
+            self.scheduleBackgroundLaunchSuppressionIfNeeded()
 #endif
         }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        pendingBackgroundLaunchSuppression?.cancel()
+        pendingBackgroundLaunchSuppression = nil
+
         if suppressedInitialWindowForBackgroundLaunch || !hasVisiblePrimaryWindow() {
             showPrimaryWindowIfNeeded()
             suppressedInitialWindowForBackgroundLaunch = false
@@ -127,6 +131,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
+    private func scheduleBackgroundLaunchSuppressionIfNeeded() {
+        guard !NSApp.isActive else {
+            return
+        }
+
+        guard launchPreferences.general.launchAtLoginEnabled else {
+            return
+        }
+
+        pendingBackgroundLaunchSuppression?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.suppressInitialWindowIfNeeded()
+            }
+        }
+        pendingBackgroundLaunchSuppression = workItem
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
+    }
+
+    @MainActor
     private func hasVisiblePrimaryWindow() -> Bool {
         NSApp.windows.contains { window in
             isPrimaryVoceWindow(window) && window.isVisible
@@ -135,6 +161,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func suppressInitialWindowIfNeeded() {
+        pendingBackgroundLaunchSuppression = nil
+
         guard !NSApp.isActive else {
             return
         }
