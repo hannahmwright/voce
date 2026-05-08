@@ -600,6 +600,25 @@ struct OnboardingView: View {
                             .opacity(onboardingTapToTalkEnabled ? 1 : 0.45)
                     }
                 )
+
+                onboardingReadyModeRow(
+                    toggle: {
+                        Toggle(isOn: $onboardingPreferences.hotkeys.voceActionsTapEnabled) {
+                            settingInlineLabel(
+                                "Voce actions",
+                                systemImage: "command",
+                                help: "Highlight text in any app, then tap Command+Option together. Voce asks whether to save the selection as a dictionary fix or a spoken snippet."
+                            )
+                        }
+                        .frame(width: onboardingModeColumnWidth, alignment: .leading)
+                    },
+                    recorder: {
+                        VoceActionsTapBadge(
+                            isEnabled: onboardingPreferences.hotkeys.voceActionsTapEnabled
+                        )
+                        .frame(width: onboardingRecorderColumnWidth, alignment: .leading)
+                    }
+                )
             }
             .frame(maxWidth: onboardingReadyCardWidth)
             .padding(.horizontal, VoceDesign.sm)
@@ -1380,7 +1399,15 @@ struct OnboardingView: View {
         if onboardingPreferences.hotkeys.optionPressToTalkEnabled {
             steps.append(.holdToRecord)
         }
-        steps.append(.dictionaryFix)
+        // The dictionary practice card relies on intercepting a bound
+        // single-press shortcut to swap "Kodex" -> "Codex" inside the practice
+        // pad. New installs ship with the legacy direct shortcut disabled
+        // (Cmd+Option tap is the primary surface), so showing the lesson
+        // would leave it permanently unfinishable. Only include it when the
+        // shortcut is actually bound — upgraders see it, fresh users skip it.
+        if onboardingPreferences.hotkeys.dictionaryCorrectionHotkey.isBound {
+            steps.append(.dictionaryFix)
+        }
         return steps
     }
 
@@ -1562,7 +1589,13 @@ struct OnboardingView: View {
         guard currentStep == .walkthrough else { return event }
         guard practicePadFocused else { return event }
         guard walkthroughPracticeStep == .dictionaryFix else { return event }
-        guard matches(shortcut: onboardingPreferences.hotkeys.dictionaryCorrectionHotkey, event: event) else {
+        // Don't intercept anything when the legacy direct shortcut is in its
+        // disabled-sentinel state (empty modifiers + keyCode 0). Without this
+        // guard the matcher would accept any plain "A" keypress because
+        // keyCode 0 == "A" with no modifiers required.
+        let dictionaryShortcut = onboardingPreferences.hotkeys.dictionaryCorrectionHotkey
+        guard dictionaryShortcut.isBound else { return event }
+        guard matches(shortcut: dictionaryShortcut, event: event) else {
             return event
         }
 
@@ -1818,5 +1851,44 @@ private enum OnboardingPracticeMode: Int, CaseIterable, Hashable {
         case .tapToTalk:
             return "Tap \(hotkeyLabel) to start. Tap it again to stop."
         }
+    }
+}
+
+/// Static "⌘ ⌥ tap" indicator. The Voce actions trigger is a modifier-only
+/// tap (not a remappable keyCode), so this view replaces the recorder field
+/// in the row layout — it just declares the gesture without offering edit.
+struct VoceActionsTapBadge: View {
+    let isEnabled: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            keycap("⌘")
+            keycap("⌥")
+            Text("tap")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(VoceDesign.textSecondary)
+                .padding(.leading, 2)
+        }
+        .opacity(isEnabled ? 1 : 0.45)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Voce actions trigger")
+        .accessibilityValue(isEnabled ? "Tap Command Option" : "Disabled")
+    }
+
+    private func keycap(_ glyph: String) -> some View {
+        Text(glyph)
+            .font(.system(size: 13, weight: .semibold, design: .rounded))
+            .foregroundStyle(VoceDesign.textPrimary)
+            .frame(minWidth: 28, minHeight: 26)
+            .padding(.horizontal, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(VoceDesign.surface.opacity(0.95))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(VoceDesign.border, lineWidth: 1)
+                    )
+                    .shadow(color: Color.black.opacity(0.05), radius: 0.5, x: 0, y: 0.5)
+            )
     }
 }

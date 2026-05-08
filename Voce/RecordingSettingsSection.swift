@@ -100,34 +100,63 @@ struct RecordingSettingsSection: View {
             }
 
             HStack(alignment: .top, spacing: VoceDesign.md) {
-                settingInlineLabel(
-                    "Dictionary quick fix",
-                    systemImage: "text.badge.checkmark",
-                    help: "Highlight text in any app, press this shortcut, then add a dictionary correction from the menu bar."
-                )
+                Toggle(isOn: $preferences.hotkeys.voceActionsTapEnabled) {
+                    settingInlineLabel(
+                        "Voce actions",
+                        systemImage: "command",
+                        help: "Highlight text in any app, then tap Command+Option together. Voce asks whether to save the selection as a dictionary fix or a spoken snippet."
+                    )
+                }
                 .frame(width: modeColumnWidth, alignment: .leading)
 
-                KeyboardShortcutRecorderField(
-                    shortcut: $preferences.hotkeys.dictionaryCorrectionHotkey,
-                    defaultShortcut: .dictionaryCorrectionDefault,
-                    accessibilityLabel: "Dictionary quick fix hotkey"
+                VoceActionsTapBadge(
+                    isEnabled: preferences.hotkeys.voceActionsTapEnabled
                 )
             }
 
-            HStack(alignment: .top, spacing: VoceDesign.md) {
-                settingInlineLabel(
-                    "Create shortcut",
-                    systemImage: "text.quote",
-                    help: "Highlight text in any app, press this shortcut, then save it as a spoken shortcut from the menu bar."
-                )
-                .frame(width: modeColumnWidth, alignment: .leading)
+            // Power-user escape hatch: the picker (above) is the primary
+            // surface, but some users want a single-press shortcut that skips
+            // the picker entirely. Hidden by default — empty modifiers means
+            // the monitor leaves these dormant.
+            DisclosureGroup("Direct shortcuts (advanced)") {
+                VStack(alignment: .leading, spacing: VoceDesign.md) {
+                    Text("Optional one-press shortcuts that skip the action picker. Leave blank to use the Voce actions tap above.")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
 
-                KeyboardShortcutRecorderField(
-                    shortcut: $preferences.hotkeys.snippetCreationHotkey,
-                    defaultShortcut: .snippetCreationDefault,
-                    accessibilityLabel: "Create shortcut hotkey"
-                )
+                    HStack(alignment: .top, spacing: VoceDesign.md) {
+                        settingInlineLabel(
+                            "Dictionary quick fix",
+                            systemImage: "text.badge.checkmark",
+                            help: "Direct shortcut that captures the selection and opens the dictionary popover without the picker."
+                        )
+                        .frame(width: modeColumnWidth, alignment: .leading)
+
+                        KeyboardShortcutRecorderField(
+                            shortcut: $preferences.hotkeys.dictionaryCorrectionHotkey,
+                            defaultShortcut: .dictionaryCorrectionDefault,
+                            accessibilityLabel: "Dictionary quick fix hotkey"
+                        )
+                    }
+
+                    HStack(alignment: .top, spacing: VoceDesign.md) {
+                        settingInlineLabel(
+                            "Create snippet",
+                            systemImage: "text.quote",
+                            help: "Direct shortcut that captures the selection and opens the snippet popover without the picker."
+                        )
+                        .frame(width: modeColumnWidth, alignment: .leading)
+
+                        KeyboardShortcutRecorderField(
+                            shortcut: $preferences.hotkeys.snippetCreationHotkey,
+                            defaultShortcut: .snippetCreationDefault,
+                            accessibilityLabel: "Create snippet hotkey"
+                        )
+                    }
+                }
+                .padding(.top, VoceDesign.sm)
             }
+            .font(VoceDesign.caption())
 
             if shouldShowHotkeyRegistrationMessage {
                 Text(hotkeyRegistrationMessage)

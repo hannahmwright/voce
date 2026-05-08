@@ -481,7 +481,7 @@ struct DictionaryFixDemo: View {
                     cursorView
                         .position(
                             x: proxy.size.width * (1 - selectionProgress) + 6,
-                            y: -10
+                            y: -3
                         )
                         .opacity(cursorOpacity)
                 }
@@ -1036,6 +1036,11 @@ private struct GuidedWalkthroughModal: View {
     private func handleWalkthroughShortcut(_ event: NSEvent) -> NSEvent? {
         guard practicePadFocused else { return event }
         guard selectedStep == .dictionaryFix else { return event }
+        // Skip the matcher entirely when the legacy direct shortcut is in
+        // its disabled-sentinel state — otherwise plain "A" (keyCode 0 with
+        // no modifiers) would satisfy the bit-for-bit comparison below and
+        // hijack typing in the practice pad.
+        guard dictionaryCorrectionHotkey.isBound else { return event }
         guard matches(shortcut: dictionaryCorrectionHotkey, event: event) else { return event }
 
         let term = "Kodex"

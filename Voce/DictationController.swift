@@ -345,6 +345,9 @@ final class DictationController: ObservableObject {
         hotkey.onCaptureSelectionSnippet = { [weak self] in
             self?.captureSelectionForSnippet()
         }
+        hotkey.onVoceActionsTap = { [weak self] in
+            self?.showVoceActionsPicker()
+        }
         overlay.onUserDraggedToPosition = { [weak self] position in
             self?.saveOverlayDragPosition(position)
         }
@@ -667,6 +670,7 @@ final class DictationController: ObservableObject {
             hotkey.globalToggleHotkey = preferences.hotkeys.handsFreeGlobalHotkey
             hotkey.selectionCorrectionHotkey = preferences.hotkeys.dictionaryCorrectionHotkey
             hotkey.selectionSnippetHotkey = preferences.hotkeys.snippetCreationHotkey
+            hotkey.isVoceActionsTapEnabled = preferences.hotkeys.voceActionsTapEnabled
             hotkey.isSubmitActiveRecordingEnabled = false
             hotkey.aiFinishHotkey = preferences.ai.handsFreeFinishHotkey
             hotkey.aiWorkflowFinishHotkeys = preferences.ai.workflows.compactMap(\.handsFreeFinishHotkey)
@@ -796,15 +800,7 @@ final class DictationController: ObservableObject {
                 lastError = status
                 return
             }
-
-            menuBar.showSelectionCorrection(
-                term: capture.text,
-                sourceAppName: capture.appContext.appName
-            ) { [weak self] replacement in
-                Task { @MainActor [weak self] in
-                    await self?.saveSelectionCorrection(capture: capture, replacement: replacement)
-                }
-            }
+            self.presentDictionaryCorrectionPopover(for: capture)
         }
     }
 
@@ -818,15 +814,70 @@ final class DictationController: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             guard let capture = await captureFrontmostSelection() else {
-                status = "Select text first, then press the create shortcut shortcut."
+                status = "Select text first, then press the create snippet shortcut."
+                lastError = status
+                return
+            }
+            self.presentSnippetCreationPopover(for: capture)
+        }
+    }
+
+    /// Entry point for the Cmd+Option tap. Captures the frontmost selection
+    /// before showing any UI (otherwise the popover steals focus and we can't
+    /// copy from the host app), then offers the user a choice between
+    /// dictionary fix and snippet creation. Both branches reuse the existing
+    /// per-action popover presenters.
+    func showVoceActionsPicker() {
+        guard !isRecording else {
+            status = "Finish recording before using Voce actions."
+            lastError = status
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard let capture = await self.captureFrontmostSelection() else {
+                status = "Select text first, then tap ⌘⌥ for Voce actions."
                 lastError = status
                 return
             }
 
-            menuBar.showSelectionSnippet(expansion: capture.text) { [weak self] trigger in
-                Task { @MainActor [weak self] in
-                    await self?.saveSelectionSnippet(capture: capture, trigger: trigger)
+            self.menuBar.showVoceActionPicker(
+                selection: capture.text,
+                sourceAppName: capture.appContext.appName
+            ) { [weak self] action in
+                guard let self else { return }
+                switch action {
+                case .dictionaryFix:
+                    self.presentDictionaryCorrectionPopover(for: capture)
+                case .createSnippet:
+                    self.presentSnippetCreationPopover(for: capture)
                 }
+            }
+        }
+    }
+
+    /// Hand a captured selection to the dictionary-correction popover. Pulled
+    /// out of `captureSelectionForCorrection` so the Voce action picker can
+    /// reuse the same flow without re-capturing (the picker has already taken
+    /// the selection up-front).
+    private func presentDictionaryCorrectionPopover(for capture: SelectionCapture) {
+        menuBar.showSelectionCorrection(
+            term: capture.text,
+            sourceAppName: capture.appContext.appName
+        ) { [weak self] replacement in
+            Task { @MainActor [weak self] in
+                await self?.saveSelectionCorrection(capture: capture, replacement: replacement)
+            }
+        }
+    }
+
+    /// Hand a captured selection to the snippet-creation popover. See
+    /// `presentDictionaryCorrectionPopover` for the rationale on the split.
+    private func presentSnippetCreationPopover(for capture: SelectionCapture) {
+        menuBar.showSelectionSnippet(expansion: capture.text) { [weak self] trigger in
+            Task { @MainActor [weak self] in
+                await self?.saveSelectionSnippet(capture: capture, trigger: trigger)
             }
         }
     }
@@ -2174,6 +2225,7 @@ final class DictationController: ObservableObject {
         hotkey.globalToggleHotkey = newValue.hotkeys.handsFreeGlobalHotkey
         hotkey.selectionCorrectionHotkey = newValue.hotkeys.dictionaryCorrectionHotkey
         hotkey.selectionSnippetHotkey = newValue.hotkeys.snippetCreationHotkey
+        hotkey.isVoceActionsTapEnabled = newValue.hotkeys.voceActionsTapEnabled
         hotkey.aiFinishHotkey = newValue.ai.handsFreeFinishHotkey
         hotkey.aiWorkflowFinishHotkeys = newValue.ai.workflows.compactMap(\.handsFreeFinishHotkey)
         overlay.controlWorkflows = enabledAIWorkflows

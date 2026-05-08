@@ -534,6 +534,11 @@ func hotkeyDisplayName(for hotkey: PressToTalkHotkey) -> String {
 }
 
 func keyboardShortcutDisplayName(for shortcut: VoceKeyboardShortcut) -> String {
+    // The disabled sentinel (empty modifier set) represents an unbound
+    // shortcut — historically this fell through to "A" because keyCode 0 is
+    // "A". Render it explicitly instead so neither settings rows nor
+    // walkthrough copy ever mistakes the dormant state for the literal A key.
+    guard shortcut.isBound else { return "Unassigned" }
     let modifierNames = shortcut.modifiers.map(\.displayName)
     return (modifierNames + [hotkeyDisplayName(for: shortcut.keyCode)]).joined(separator: " + ")
 }
@@ -1233,6 +1238,20 @@ struct KeyboardShortcutRecorderField: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(accessibilityLabel)
                 .accessibilityValue(fieldTitle)
+
+                Button("Clear") {
+                    shortcut = .disabledSentinel
+                    coordinator.stopCapture()
+                }
+                .buttonStyle(.plain)
+                .font(VoceDesign.captionEmphasis())
+                .foregroundStyle(
+                    shortcut.isBound
+                    ? VoceDesign.textSecondary
+                    : VoceDesign.textSecondary.opacity(0.5)
+                )
+                .disabled(!shortcut.isBound)
+                .help("Disable this direct shortcut. The Voce-actions tap above stays available.")
 
                 Button("Reset") {
                     shortcut = defaultShortcut

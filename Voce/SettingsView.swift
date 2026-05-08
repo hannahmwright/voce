@@ -409,7 +409,15 @@ struct SettingsView: View {
                     if preferencesDraft.hotkeys.optionPressToTalkEnabled {
                         steps.append(.holdToRecord)
                     }
-                    steps.append(.dictionaryFix)
+                    // Only surface the dictionary lesson when the legacy
+                    // direct shortcut is bound. New installs use the
+                    // Cmd+Option Voce-actions tap (taught in Recording
+                    // Settings) and showing the lesson would leave it
+                    // unfinishable since the tap path doesn't route through
+                    // the practice pad's intercept.
+                    if preferencesDraft.hotkeys.dictionaryCorrectionHotkey.isBound {
+                        steps.append(.dictionaryFix)
+                    }
                     return steps
                 }()
             )
@@ -428,7 +436,9 @@ struct SettingsView: View {
             HelpFAQSection(
                 tapHotkeyLabel: settingsTapToTalkLabel,
                 holdHotkeyLabel: settingsHoldToTalkLabel,
-                dictionaryHotkeyLabel: keyboardShortcutDisplayName(for: preferencesDraft.hotkeys.dictionaryCorrectionHotkey)
+                dictionaryHotkeyLabel: keyboardShortcutDisplayName(for: preferencesDraft.hotkeys.dictionaryCorrectionHotkey),
+                dictionaryShortcutIsBound: preferencesDraft.hotkeys.dictionaryCorrectionHotkey.isBound,
+                voceActionsTapEnabled: preferencesDraft.hotkeys.voceActionsTapEnabled
             )
         }
     }
@@ -708,6 +718,8 @@ private struct HelpFAQSection: View {
     let tapHotkeyLabel: String
     let holdHotkeyLabel: String
     let dictionaryHotkeyLabel: String
+    let dictionaryShortcutIsBound: Bool
+    let voceActionsTapEnabled: Bool
 
     var body: some View {
         settingsCardWithSubtitle(
@@ -721,7 +733,7 @@ private struct HelpFAQSection: View {
                 )
                 faqRow(
                     question: "How do I fix a word Voce gets wrong?",
-                    answer: "Highlight the wrong word, press \(dictionaryHotkeyLabel), then enter the correct replacement in the Teach Voce popover."
+                    answer: dictionaryFixAnswer
                 )
                 faqRow(
                     question: "Why did my transcript copy instead of pasting?",
@@ -747,6 +759,24 @@ private struct HelpFAQSection: View {
                     .foregroundStyle(VoceDesign.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Compose the dictionary-fix answer based on which surface(s) are
+    /// available. New installs use the Cmd+Option tap; upgraders may still
+    /// have the legacy direct shortcut bound. If both are off the legacy
+    /// "press Unassigned" string would be nonsense, so steer the user to
+    /// re-enable the tap.
+    private var dictionaryFixAnswer: String {
+        switch (voceActionsTapEnabled, dictionaryShortcutIsBound) {
+        case (true, true):
+            return "Highlight the wrong word, then either tap \u{2318}\u{2325} together (Voce actions) or press \(dictionaryHotkeyLabel) for a direct fix."
+        case (true, false):
+            return "Highlight the wrong word, tap \u{2318}\u{2325} together, and pick Dictionary fix in the action picker."
+        case (false, true):
+            return "Highlight the wrong word, press \(dictionaryHotkeyLabel), then enter the correct replacement in the Teach Voce popover."
+        case (false, false):
+            return "Turn on Voce actions in Recording Settings, then highlight the wrong word and tap \u{2318}\u{2325} together to fix it."
         }
     }
 }

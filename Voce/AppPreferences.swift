@@ -220,6 +220,13 @@ struct AppPreferences: Codable, Sendable, Equatable {
         var pressToTalkHotkey: PressToTalkHotkey
         var handsFreeGlobalHotkey: HandsFreeToggleHotkey?
         var enterFinishesHandsFreeAndSubmits: Bool
+        /// When true, tapping Cmd+Option (both pressed and released within
+        /// ~300ms with no other key in between) opens the Voce action picker
+        /// — a single discoverable entry point for dictionary fix and
+        /// snippet creation. New installs ship with this on; the keyCode
+        /// shortcuts below stay dormant unless the user sets them in
+        /// Advanced Settings.
+        var voceActionsTapEnabled: Bool
         var dictionaryCorrectionHotkey: VoceKeyboardShortcut
         var snippetCreationHotkey: VoceKeyboardShortcut
 
@@ -230,6 +237,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             case handsFreeGlobalHotkey
             case handsFreeGlobalKeyCode
             case enterFinishesHandsFreeAndSubmits
+            case voceActionsTapEnabled
             case dictionaryCorrectionHotkey
             case snippetCreationHotkey
         }
@@ -238,14 +246,16 @@ struct AppPreferences: Codable, Sendable, Equatable {
             optionPressToTalkEnabled: Bool,
             pressToTalkHotkey: PressToTalkHotkey = .default,
             handsFreeGlobalHotkey: HandsFreeToggleHotkey? = .init(hotkey: .keyCode(79)),
-            enterFinishesHandsFreeAndSubmits: Bool = false,
-            dictionaryCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault,
-            snippetCreationHotkey: VoceKeyboardShortcut = .snippetCreationDefault
+            enterFinishesHandsFreeAndSubmits: Bool = true,
+            voceActionsTapEnabled: Bool = true,
+            dictionaryCorrectionHotkey: VoceKeyboardShortcut = .disabledSentinel,
+            snippetCreationHotkey: VoceKeyboardShortcut = .disabledSentinel
         ) {
             self.optionPressToTalkEnabled = optionPressToTalkEnabled
             self.pressToTalkHotkey = pressToTalkHotkey
             self.handsFreeGlobalHotkey = handsFreeGlobalHotkey
             self.enterFinishesHandsFreeAndSubmits = enterFinishesHandsFreeAndSubmits
+            self.voceActionsTapEnabled = voceActionsTapEnabled
             self.dictionaryCorrectionHotkey = dictionaryCorrectionHotkey
             self.snippetCreationHotkey = snippetCreationHotkey
         }
@@ -272,11 +282,28 @@ struct AppPreferences: Codable, Sendable, Equatable {
             } else {
                 handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
             }
+            // Decoder fallback stays false so upgraded installs keep their historical
+            // press-to-talk-release behaviour. New installs flip it on via the explicit
+            // `Hotkeys.init(...)` default and the `.default` AppPreferences below.
+            // Note: this flag is consulted in BOTH `submitActiveRecording` (hands-free
+            // Enter) and `pressToTalkStop` (release-to-submit), so silently flipping it
+            // for upgraders would change their press-to-talk flow, not just hands-free.
             enterFinishesHandsFreeAndSubmits = try container.decodeIfPresent(Bool.self, forKey: .enterFinishesHandsFreeAndSubmits) ?? false
+            // Voce action picker: additive feature — surface to upgraders too.
+            // They get the new tap-Cmd+Option entry point alongside any
+            // legacy shortcut they had previously customised.
+            voceActionsTapEnabled = try container.decodeIfPresent(Bool.self, forKey: .voceActionsTapEnabled) ?? true
+            // Decoder fallback is `.disabledSentinel` so an upgrade from a
+            // pre-shortcut version doesn't silently install global shortcuts
+            // (Ctrl+Option+F/S would be swallowed system-wide). Users who
+            // previously customised these shortcuts have their value encoded
+            // in JSON and will keep it. Users who used the prior built-in
+            // default also have it encoded (it was always written via
+            // `encode(to:)` below) so they keep it too.
             dictionaryCorrectionHotkey = try container.decodeIfPresent(VoceKeyboardShortcut.self, forKey: .dictionaryCorrectionHotkey)
-                ?? .dictionaryCorrectionDefault
+                ?? .disabledSentinel
             snippetCreationHotkey = try container.decodeIfPresent(VoceKeyboardShortcut.self, forKey: .snippetCreationHotkey)
-                ?? .snippetCreationDefault
+                ?? .disabledSentinel
         }
 
         func encode(to encoder: Encoder) throws {
@@ -285,6 +312,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             try container.encode(pressToTalkHotkey, forKey: .pressToTalkHotkey)
             try container.encodeIfPresent(handsFreeGlobalHotkey, forKey: .handsFreeGlobalHotkey)
             try container.encode(enterFinishesHandsFreeAndSubmits, forKey: .enterFinishesHandsFreeAndSubmits)
+            try container.encode(voceActionsTapEnabled, forKey: .voceActionsTapEnabled)
             try container.encode(dictionaryCorrectionHotkey, forKey: .dictionaryCorrectionHotkey)
             try container.encode(snippetCreationHotkey, forKey: .snippetCreationHotkey)
         }
@@ -511,9 +539,10 @@ struct AppPreferences: Codable, Sendable, Equatable {
                 optionPressToTalkEnabled: false,
                 pressToTalkHotkey: .default,
                 handsFreeGlobalHotkey: .init(hotkey: .keyCode(79)),
-                enterFinishesHandsFreeAndSubmits: false,
-                dictionaryCorrectionHotkey: .dictionaryCorrectionDefault,
-                snippetCreationHotkey: .snippetCreationDefault
+                enterFinishesHandsFreeAndSubmits: true,
+                voceActionsTapEnabled: true,
+                dictionaryCorrectionHotkey: .disabledSentinel,
+                snippetCreationHotkey: .disabledSentinel
             ),
             dictation: .init(
                 localeIdentifier: "en-US",

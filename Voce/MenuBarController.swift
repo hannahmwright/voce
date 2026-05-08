@@ -194,6 +194,52 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         installOutsideClickMonitors()
     }
 
+    /// Surface the action picker after the user taps Cmd+Option. The selected
+    /// text has already been captured (we have to capture before showing the
+    /// popover, otherwise our window steals focus and the host app's selection
+    /// is no longer copyable). The picker's job is to disambiguate intent —
+    /// dictionary fix vs snippet creation — and then route to the existing
+    /// popover for that flow.
+    func showVoceActionPicker(
+        selection: String,
+        sourceAppName: String?,
+        onPick: @escaping (VoceAction) -> Void
+    ) {
+        guard let controller else { return }
+
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        if popover.isShown {
+            popover.performClose(nil)
+        }
+
+        popover.delegate = self
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 360, height: 320)
+        popover.contentViewController = NSHostingController(
+            rootView: VoceActionPickerView(
+                selection: selection,
+                sourceAppName: sourceAppName,
+                appearancePreference: controller.preferences.general.appearancePreference,
+                onCancel: { [weak self] in
+                    self?.closePopover()
+                },
+                onPick: { [weak self] action in
+                    self?.closePopover()
+                    onPick(action)
+                }
+            )
+        )
+
+        showPopoverUsingBestAnchor()
+        installOutsideClickMonitors()
+    }
+
     private func togglePopover(relativeTo button: NSStatusBarButton) {
         if popover.isShown {
             popover.performClose(nil)
@@ -540,7 +586,7 @@ private struct SelectionSnippetPopoverView: View {
                         )
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Create shortcut")
+                        Text("Create snippet")
                             .font(VoceDesign.bodyEmphasis())
                             .foregroundStyle(VoceDesign.textPrimary)
                         Text("Give selected text a spoken trigger")
@@ -975,5 +1021,267 @@ private struct MenuBarIconButtonStyle: ButtonStyle {
                             .stroke(VoceDesign.border, lineWidth: 1)
                     )
             )
+    }
+}
+
+// MARK: - Voce Action Picker
+
+/// What the user picks after tapping Cmd+Option. The picker captures the
+/// frontmost selection up-front and then routes to the matching flow.
+enum VoceAction: Hashable, CaseIterable {
+    case dictionaryFix
+    case createSnippet
+
+    var title: String {
+        switch self {
+        case .dictionaryFix: return "Dictionary fix"
+        case .createSnippet: return "Create snippet"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .dictionaryFix: return "Teach Voce a replacement for this text"
+        case .createSnippet: return "Save this text as a spoken trigger"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .dictionaryFix: return "text.badge.checkmark"
+        case .createSnippet: return "text.quote"
+        }
+    }
+
+    /// Single-letter shortcut shown next to the action and accepted as a
+    /// keypress to jump-select.
+    var letterShortcut: Character {
+        switch self {
+        case .dictionaryFix: return "D"
+        case .createSnippet: return "S"
+        }
+    }
+}
+
+private struct VoceActionPickerView: View {
+    let selection: String
+    let sourceAppName: String?
+    let appearancePreference: AppAppearancePreference
+    let onCancel: () -> Void
+    let onPick: (VoceAction) -> Void
+
+    @State private var highlighted: VoceAction = .dictionaryFix
+    @FocusState private var isFocused: Bool
+
+    private var preferredColorScheme: ColorScheme? {
+        switch appearancePreference {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    private var subtitle: String {
+        if let sourceAppName, !sourceAppName.isEmpty {
+            return "Selected from \(sourceAppName)"
+        } else {
+            return "Pick what to do with the selection"
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Image("RecordBackground")
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .saturation(0.94)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.10))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial.opacity(0.72))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(VoceDesign.border.opacity(0.9), lineWidth: 1)
+                )
+                .padding(10)
+
+            VStack(alignment: .leading, spacing: VoceDesign.md) {
+                header
+
+                selectionPreview
+
+                VStack(spacing: VoceDesign.xs) {
+                    actionRow(.dictionaryFix)
+                    actionRow(.createSnippet)
+                }
+
+                Text("Return to confirm · ↑↓ or D/S to switch · Esc to cancel")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary.opacity(0.85))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(VoceDesign.lg)
+        }
+        .preferredColorScheme(preferredColorScheme)
+        .focusable()
+        .focused($isFocused)
+        .onAppear {
+            // Defer focus until the popover finishes its present animation —
+            // otherwise the focus state can be discarded.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                isFocused = true
+            }
+        }
+        .onKeyPress(.return) {
+            onPick(highlighted)
+            return .handled
+        }
+        .onKeyPress(.escape) {
+            onCancel()
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            highlighted = .dictionaryFix
+            return .handled
+        }
+        .onKeyPress(.downArrow) {
+            highlighted = .createSnippet
+            return .handled
+        }
+        .onKeyPress { press in
+            switch press.characters.lowercased() {
+            case "d":
+                highlighted = .dictionaryFix
+                return .handled
+            case "s":
+                highlighted = .createSnippet
+                return .handled
+            default:
+                return .ignored
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: VoceDesign.sm) {
+            Image(systemName: "command")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(VoceDesign.warmAccentText)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(VoceDesign.warmAccentFill)
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Voce action")
+                    .font(VoceDesign.bodyEmphasis())
+                    .foregroundStyle(VoceDesign.textPrimary)
+                Text(subtitle)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Button(action: onCancel) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(MenuBarIconButtonStyle())
+            .help("Cancel")
+        }
+    }
+
+    private var selectionPreview: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.xs) {
+            Text("Selected")
+                .font(VoceDesign.labelEmphasis())
+                .foregroundStyle(VoceDesign.textSecondary)
+
+            Text(selection)
+                .font(VoceDesign.bodyEmphasis())
+                .foregroundStyle(VoceDesign.textPrimary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(VoceDesign.md)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                .fill(VoceDesign.surfaceSecondary.opacity(0.88))
+                .overlay(
+                    RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                        .stroke(VoceDesign.border, lineWidth: 1)
+                )
+        )
+    }
+
+    private func actionRow(_ action: VoceAction) -> some View {
+        let isHighlighted = highlighted == action
+        return Button {
+            onPick(action)
+        } label: {
+            HStack(spacing: VoceDesign.sm) {
+                Image(systemName: action.systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isHighlighted ? VoceDesign.warmAccentText : VoceDesign.textPrimary)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(isHighlighted ? VoceDesign.warmAccentFill : VoceDesign.surfaceSecondary.opacity(0.6))
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(action.title)
+                        .font(VoceDesign.bodyEmphasis())
+                        .foregroundStyle(VoceDesign.textPrimary)
+                    Text(action.description)
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(String(action.letterShortcut))
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(VoceDesign.textSecondary)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(VoceDesign.surface.opacity(0.92))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(VoceDesign.border, lineWidth: 1)
+                            )
+                    )
+            }
+            .padding(.vertical, VoceDesign.sm)
+            .padding(.horizontal, VoceDesign.md)
+            .background(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                    .fill(isHighlighted ? VoceDesign.warmAccentFill.opacity(0.4) : VoceDesign.surfaceSecondary.opacity(0.5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium, style: .continuous)
+                            .stroke(
+                                isHighlighted ? VoceDesign.warmAccentText.opacity(0.32) : VoceDesign.border,
+                                lineWidth: isHighlighted ? 1.5 : 1
+                            )
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(action.title))
+        .accessibilityHint(Text(action.description))
+        .onHover { hovering in
+            if hovering {
+                highlighted = action
+            }
+        }
     }
 }

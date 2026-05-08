@@ -51,6 +51,37 @@ public final class MacHotkeyMonitor: HotkeyService {
             updateHandsFreeStatus()
         }
     }
+    /// Fired when the user taps Cmd+Option together (both pressed and released
+    /// within `voceActionsTapMaxDuration`, no other key or modifier in between).
+    /// Used to surface the Voce action picker (dictionary fix / snippet creation).
+    public var onVoceActionsTap: (() -> Void)?
+    /// Gate for the Cmd+Option-tap detector. When false the detector is fully
+    /// dormant and incurs no per-event cost beyond the existing flagsChanged
+    /// dispatch.
+    public var isVoceActionsTapEnabled: Bool = false {
+        didSet {
+            if !isVoceActionsTapEnabled {
+                voceActionsTapStartedAt = nil
+                voceActionsTapInterrupted = false
+                // If the user just disabled the gate while a PTT start was
+                // being held back to disambiguate, fire it immediately so we
+                // don't strand the modifier in a perpetually-deferred state.
+                if pendingPressToTalkStartTask != nil, isPressToTalkHeld {
+                    cancelPendingPressToTalkStart()
+                    didEmitPressToTalkStart = true
+                    let generation = callbackGeneration
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.hasStarted,
+                              self.callbackGeneration == generation else {
+                            return
+                        }
+                        self.onPressToTalkStart?()
+                    }
+                }
+            }
+        }
+    }
     public var onRegistrationStatusChanged: ((HotkeyRegistrationStatus) -> Void)?
     public var selectionCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault {
         didSet {
@@ -71,6 +102,9 @@ public final class MacHotkeyMonitor: HotkeyService {
     public var pressToTalkHotkey: PressToTalkHotkey = .default {
         didSet {
             isPressToTalkHeld = false
+            cancelPendingPressToTalkStart()
+            didEmitPressToTalkStart = false
+            pressToTalkEmittedThisGesture = false
             toggleModifierGate.reset()
             toggleDoubleTapGate.reset()
             isGlobalToggleModifierHeld = false
@@ -119,13 +153,69 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var localFlagsMonitor: Any?
     private var globalKeyDownMonitor: Any?
     private var localKeyDownMonitor: Any?
+    /// Tracks the *intent* state (the configured modifier set is currently
+    /// pressed). May be true even when no `onPressToTalkStart` has fired yet,
+    /// because the deferral path waits for the Voce-actions-tap window to
+    /// resolve before emitting start. Pair with `didEmitPressToTalkStart` to
+    /// know whether a stop should fire on release.
     private var isPressToTalkHeld = false
+    /// True between an actually-emitted `onPressToTalkStart` and the matching
+    /// `onPressToTalkStop`. The deferred-start path only flips this once the
+    /// timer fires, so a user who taps Cmd+Option (cancelling the deferral)
+    /// never sees a phantom stop.
+    private var didEmitPressToTalkStart = false
+    /// Live timer for a deferred PTT start. Cancelled if the modifier set
+    /// changes (user added Cmd, released Option, etc) before the deferral
+    /// elapses.
+    private var pendingPressToTalkStartTask: Task<Void, Never>?
+    /// True when `onPressToTalkStart` has actually emitted somewhere inside
+    /// the current modifier gesture (the span between modifiers transitioning
+    /// from empty → non-empty and returning to empty). Used by the Voce-
+    /// actions tap detector to suppress its fire if the slow-tap race
+    /// produced a phantom PTT cycle — otherwise the picker would race the
+    /// controller's transcription/finalisation of the just-stopped recording
+    /// and could insert a stale transcript over the user's selection.
+    /// Cleared at every gesture boundary (see `handleFlagsChanged`) so it
+    /// can't leak across an unrelated PTT session into a later tap.
+    private var pressToTalkEmittedThisGesture: Bool = false
+    /// Snapshot of the modifier flags from the previous `flagsChanged`, used
+    /// to detect the empty → non-empty transition that marks the start of a
+    /// fresh modifier gesture.
+    private var previousModifierFlags: NSEvent.ModifierFlags = []
     private var isGlobalToggleModifierHeld = false
     private var toggleModifierGate = HotkeyToggleGate()
     private var toggleDoubleTapGate = HotkeyDoubleTapGate()
     private var callbackGeneration: UInt64 = 0
     private var lastActiveRecordingKeyCode: UInt16?
     private var lastActiveRecordingKeyTime: CFAbsoluteTime = 0
+
+    // MARK: - Cmd+Option Tap (Voce Actions Picker)
+    /// Timestamp at which the user transitioned to *exactly* Cmd+Option held
+    /// (no other modifiers, no other keys). Cleared when the window resolves
+    /// (fire / abort) or when the gate is disabled.
+    private var voceActionsTapStartedAt: CFAbsoluteTime?
+    /// Set when any keyDown arrives while the tap window is open — kills the
+    /// fire so chords like Cmd+Option+T stay normal chords.
+    private var voceActionsTapInterrupted: Bool = false
+    /// Maximum elapsed time from "both pressed" to "both released" that still
+    /// counts as a tap. Past this, the user is *holding* Cmd+Option (likely
+    /// for some other purpose) and we don't fire.
+    private static let voceActionsTapMaxDuration: CFAbsoluteTime = 0.3
+    /// Delay before emitting `onPressToTalkStart` when the configured PTT
+    /// modifier set overlaps with Cmd+Option (the Voce-actions tap chord).
+    ///
+    /// Tuned to be just long enough to catch a fast same-frame Cmd+Option
+    /// press — empirically the gap between two simultaneous-feeling modifier
+    /// presses is 30–80 ms — but short enough that hold-to-talk on the
+    /// default Option chord still feels instant. ~70 ms is below the human
+    /// perception threshold for press latency.
+    ///
+    /// A "slow tap" with a gap >70 ms will briefly start PTT then stop it
+    /// when Cmd joins; the resulting recording is too short to produce a
+    /// useful transcript and the empty/no-speech path swallows it. Users
+    /// who can't tolerate any phantom recordings can disable Voce actions
+    /// in Recording Settings, which removes the deferral entirely.
+    private static let pressToTalkVoceTapDeferral: TimeInterval = 0.07
 
     private var hasStarted = false
 
@@ -161,9 +251,15 @@ public final class MacHotkeyMonitor: HotkeyService {
         uninstallPressToTalkMonitors()
         uninstallActiveRecordingKeyMonitors()
         isPressToTalkHeld = false
+        cancelPendingPressToTalkStart()
+        didEmitPressToTalkStart = false
+        pressToTalkEmittedThisGesture = false
+        previousModifierFlags = []
         isGlobalToggleModifierHeld = false
         toggleModifierGate.reset()
         toggleDoubleTapGate.reset()
+        voceActionsTapStartedAt = nil
+        voceActionsTapInterrupted = false
     }
 
     // MARK: - Press-to-Talk Monitors
@@ -219,6 +315,15 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     @discardableResult
     private func handleActiveRecordingKeyDown(_ event: NSEvent, canSuppress: Bool) -> Bool {
+        // Any keyDown during an open Cmd+Option tap window means the user is
+        // building a chord (Cmd+Option+T, etc.), not tapping. Mark interrupted
+        // so the upcoming release won't fire the picker. This runs regardless
+        // of modifier state because the pure modifiers-only release path is
+        // what the tap detector cares about, not the keyDown's own modifiers.
+        if voceActionsTapStartedAt != nil {
+            voceActionsTapInterrupted = true
+        }
+
         let keyCode = event.keyCode
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard modifiers.subtracting(.capsLock).isEmpty, !event.isARepeat else {
@@ -270,8 +375,106 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     private func handleFlagsChanged(_ event: NSEvent) {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        // Gesture boundary: every time the *user-pressed* modifiers go from
+        // fully empty to any held state, a brand-new physical gesture is
+        // beginning. Clear any gesture-scoped flags so state from a prior PTT
+        // session can't leak into the new gesture's tap evaluation.
+        //
+        // Caps Lock has to be stripped here — PTT matching ignores it (see
+        // `handlePressToTalkFlagsChanged`), so leaving it in would mean a
+        // user with Caps Lock on never returns to "empty" between gestures
+        // and the boundary reset never fires. (Reading `previousModifier-
+        // Flags` before the per-handler dispatch keeps the boundary stable
+        // across all three handlers in this tick.)
+        let effectiveModifiers = modifiers.subtracting(.capsLock)
+        if previousModifierFlags.isEmpty && !effectiveModifiers.isEmpty {
+            pressToTalkEmittedThisGesture = false
+        }
+        previousModifierFlags = effectiveModifiers
+
         handlePressToTalkFlagsChanged(modifiers)
         handleModifierToggleFlagsChanged(modifiers)
+        handleVoceActionsTapFlagsChanged(modifiers)
+    }
+
+    /// Detect a deliberate "tap Cmd+Option" gesture: both modifiers pressed,
+    /// then both released, within ~300ms, with no other key or modifier in
+    /// between. Fires `onVoceActionsTap` once on the second-modifier release.
+    ///
+    /// Why a release-driven detector and not Carbon RegisterEventHotKey:
+    /// Carbon hotkeys require a non-modifier key. We watch flagsChanged
+    /// instead so the modifier-only chord doesn't shadow normal usage of Cmd
+    /// or Option as prefixes — chords like Cmd+Option+T abort via the keyDown
+    /// hook in `handleActiveRecordingKeyDown`.
+    private func handleVoceActionsTapFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
+        guard isVoceActionsTapEnabled else {
+            voceActionsTapStartedAt = nil
+            voceActionsTapInterrupted = false
+            return
+        }
+
+        let cmdHeld = modifiers.contains(.command)
+        let optionHeld = modifiers.contains(.option)
+        // Anything outside the Cmd+Option pair disqualifies the tap. capsLock
+        // is already stripped upstream; .numericPad/.help can transient-fire
+        // on some keyboards so we ignore them.
+        let extraModsHeld = !modifiers
+            .intersection([.control, .shift, .function])
+            .isEmpty
+
+        if voceActionsTapStartedAt == nil {
+            // Idle: open a tap window the moment the user enters *exactly*
+            // Cmd+Option with nothing else held.
+            if cmdHeld, optionHeld, !extraModsHeld {
+                voceActionsTapStartedAt = CFAbsoluteTimeGetCurrent()
+                voceActionsTapInterrupted = false
+            }
+            return
+        }
+
+        // Tap window is open.
+        if extraModsHeld {
+            // User added Shift/Control/etc — they're starting a real chord,
+            // not tapping. Abort cleanly.
+            voceActionsTapStartedAt = nil
+            voceActionsTapInterrupted = false
+            return
+        }
+
+        if !cmdHeld, !optionHeld {
+            // Both released — terminal state. Decide whether to fire.
+            let started = voceActionsTapStartedAt ?? CFAbsoluteTimeGetCurrent()
+            let duration = CFAbsoluteTimeGetCurrent() - started
+            // Slow-tap safety: if PTT actually emitted during this gesture,
+            // a recording was started and stopped while the tap window was
+            // open. The controller is now mid-finalise/transcribe of that
+            // phantom clip; presenting the picker on top of that races
+            // selection capture against the in-flight transcript and can
+            // insert it over the user's selection. Suppress the picker —
+            // the user can re-tap once the phantom clip clears (it's too
+            // short to produce a useful transcript anyway).
+            let shouldFire = !voceActionsTapInterrupted
+                && !pressToTalkEmittedThisGesture
+                && duration <= Self.voceActionsTapMaxDuration
+            voceActionsTapStartedAt = nil
+            voceActionsTapInterrupted = false
+
+            guard shouldFire else { return }
+            let generation = callbackGeneration
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.hasStarted,
+                      self.callbackGeneration == generation else {
+                    return
+                }
+                self.onVoceActionsTap?()
+            }
+            return
+        }
+
+        // Partial release (one of Cmd/Option still held) — keep waiting.
+        // The tap can still complete when the second modifier releases, as
+        // long as the cumulative duration stays under the threshold.
     }
 
     private func handlePressToTalkFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
@@ -285,15 +488,56 @@ public final class MacHotkeyMonitor: HotkeyService {
         let generation = callbackGeneration
 
         if hotkeyIsNowHeld {
-            Task { @MainActor [weak self] in
-                guard let self,
-                      self.hasStarted,
-                      self.callbackGeneration == generation else {
-                    return
+            // Modifier set just became the configured PTT chord. If it
+            // overlaps with Cmd+Option we have to wait out the tap window
+            // before emitting start — otherwise tapping Cmd+Option to open
+            // the action picker would briefly start (and then stop) PTT
+            // dictation as the second modifier joins the first.
+            cancelPendingPressToTalkStart()
+            // Fresh PTT engagement — reset the gesture-scoped "did we emit"
+            // flag so the upcoming voce-tap evaluation only sees emits from
+            // *this* press cycle.
+            pressToTalkEmittedThisGesture = false
+
+            if shouldDeferPressToTalkForVoceTap {
+                let task = Task { @MainActor [weak self] in
+                    let nanoseconds = UInt64(Self.pressToTalkVoceTapDeferral * 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: nanoseconds)
+                    guard !Task.isCancelled,
+                          let self,
+                          self.hasStarted,
+                          self.callbackGeneration == generation,
+                          self.isPressToTalkHeld,
+                          self.pendingPressToTalkStartTask != nil else {
+                        return
+                    }
+                    self.pendingPressToTalkStartTask = nil
+                    self.didEmitPressToTalkStart = true
+                    self.pressToTalkEmittedThisGesture = true
+                    self.onPressToTalkStart?()
                 }
-                self.onPressToTalkStart?()
+                pendingPressToTalkStartTask = task
+            } else {
+                didEmitPressToTalkStart = true
+                pressToTalkEmittedThisGesture = true
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.hasStarted,
+                          self.callbackGeneration == generation else {
+                        return
+                    }
+                    self.onPressToTalkStart?()
+                }
             }
         } else {
+            // Modifier set fell off the PTT chord. If we never actually
+            // emitted start (deferral timer was still pending), suppress the
+            // matching stop so callers don't see a phantom toggle pair.
+            cancelPendingPressToTalkStart()
+
+            guard didEmitPressToTalkStart else { return }
+            didEmitPressToTalkStart = false
+
             Task { @MainActor [weak self] in
                 guard let self,
                       self.hasStarted,
@@ -303,6 +547,22 @@ public final class MacHotkeyMonitor: HotkeyService {
                 self.onPressToTalkStop?()
             }
         }
+    }
+
+    /// True when the configured PTT chord is non-empty and is a subset of
+    /// `[.command, .option]` — exactly the cases where engaging part of the
+    /// chord is indistinguishable from the user beginning a Voce-actions tap.
+    private var shouldDeferPressToTalkForVoceTap: Bool {
+        guard isVoceActionsTapEnabled else { return false }
+        let pttFlags = pressToTalkHotkey.eventFlags
+        guard !pttFlags.isEmpty else { return false }
+        let voceTapFlags: NSEvent.ModifierFlags = [.command, .option]
+        return pttFlags.isSubset(of: voceTapFlags)
+    }
+
+    private func cancelPendingPressToTalkStart() {
+        pendingPressToTalkStartTask?.cancel()
+        pendingPressToTalkStartTask = nil
     }
 
     private func handleModifierToggleFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
@@ -646,6 +906,10 @@ public final class MacHotkeyMonitor: HotkeyService {
         flags: CGEventFlags,
         shortcut: VoceKeyboardShortcut
     ) -> Bool {
+        // Empty modifier set is the `disabledSentinel` — guard against falling
+        // through to "matches any plain `keyCode` press with no mods", which
+        // would fire on every typed `A` (keyCode 0) etc.
+        guard shortcut.isBound else { return false }
         let userMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
         return keyCode == shortcut.keyCode
             && flags.intersection(userMods) == cgFlags(for: shortcut.modifiers)
