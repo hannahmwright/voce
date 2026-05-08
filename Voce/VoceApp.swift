@@ -79,19 +79,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        guard suppressedInitialWindowForBackgroundLaunch else {
-            return
+        if suppressedInitialWindowForBackgroundLaunch || !hasVisiblePrimaryWindow() {
+            showPrimaryWindowIfNeeded()
+            suppressedInitialWindowForBackgroundLaunch = false
+        } else {
+            collapseDuplicatePrimaryWindows()
         }
-
-        showPrimaryWindowIfNeeded()
-        suppressedInitialWindowForBackgroundLaunch = false
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            showPrimaryWindowIfNeeded()
-        }
-        return true
+        showPrimaryWindowIfNeeded()
+        return false
     }
 
     @MainActor
@@ -129,6 +127,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
+    private func hasVisiblePrimaryWindow() -> Bool {
+        NSApp.windows.contains { window in
+            isPrimaryVoceWindow(window) && window.isVisible
+        }
+    }
+
+    @MainActor
     private func suppressInitialWindowIfNeeded() {
         guard !NSApp.isActive else {
             return
@@ -149,12 +154,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func showPrimaryWindowIfNeeded() {
-        guard let window = NSApp.windows.first(where: isPrimaryVoceWindow(_:)) else {
+        guard let window = preferredPrimaryWindow() else {
             return
         }
 
         window.makeKeyAndOrderFront(nil)
         configureTransparentWindows()
+        collapseDuplicatePrimaryWindows(keeping: window)
+    }
+
+    @MainActor
+    private func preferredPrimaryWindow() -> NSWindow? {
+        let windows = NSApp.windows.filter(isPrimaryVoceWindow(_:))
+        return windows.first(where: \.isKeyWindow)
+            ?? windows.first(where: \.isMainWindow)
+            ?? windows.first(where: \.isVisible)
+            ?? windows.first
+    }
+
+    @MainActor
+    private func collapseDuplicatePrimaryWindows(keeping keptWindow: NSWindow? = nil) {
+        guard let keptWindow = keptWindow ?? preferredPrimaryWindow() else {
+            return
+        }
+
+        for window in NSApp.windows where isPrimaryVoceWindow(window) && window !== keptWindow {
+            window.close()
+        }
     }
 
     private func loadLaunchPreferences() -> AppPreferences {
