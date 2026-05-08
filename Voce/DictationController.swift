@@ -202,9 +202,13 @@ final class DictationController: ObservableObject {
     @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail {
         didSet {
             guard hasBootstrapped else { return }
-            guard cloudAccessEnabled(for: oldValue) != cloudAccessEnabled(for: voceProEntitlementStatus) else { return }
-            Task { @MainActor [weak self] in
-                await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
+            if voceProEntitlementStatus.isEntitled {
+                prefetchRealtimeWhisperClientSecretIfNeeded()
+            }
+            if cloudAccessEnabled(for: oldValue) != cloudAccessEnabled(for: voceProEntitlementStatus) {
+                Task { @MainActor [weak self] in
+                    await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
+                }
             }
         }
     }
@@ -253,6 +257,7 @@ final class DictationController: ObservableObject {
     private var recordingTimer: Timer?
     private var overlayDismissTask: Task<Void, Never>?
     private var entitlementRefreshTask: Task<Void, Never>?
+    private var realtimeWhisperClientSecretPrefetchTask: Task<Void, Never>?
     private var terminationObserver: Any?
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
@@ -1318,14 +1323,7 @@ final class DictationController: ObservableObject {
     ) throws -> OpenAIRealtimeWhisperCaptureSession {
         let localeIdentifier = preferences.dictation.localeIdentifier
         let transcriptionHints = preferences.visibleLexiconEntries
-        let model = ProcessInfo.processInfo.environment["VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedModel: String
-        if let model, !model.isEmpty {
-            resolvedModel = model
-        } else {
-            resolvedModel = "gpt-realtime-whisper"
-        }
+        let resolvedModel = realtimeWhisperTranscriptionModel
         let authTokenProvider: @Sendable () async throws -> String
         if usesDirectCloudCredentials {
             let apiKeySource = preferences.dictation.cloud.apiKeySource
@@ -1362,6 +1360,56 @@ final class DictationController: ObservableObject {
             onTerminalError: onTerminalError,
             onAudioLevel: onAudioLevel
         )
+    }
+
+    private var realtimeWhisperTranscriptionModel: String {
+        let model = ProcessInfo.processInfo.environment["VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let model, !model.isEmpty {
+            return model
+        }
+        return "gpt-realtime-whisper"
+    }
+
+    private func prefetchRealtimeWhisperClientSecretIfNeeded() {
+        guard hasBootstrapped,
+              !usesDirectCloudCredentials,
+              canUseCloudDictation,
+              preferences.usesCloudDictationConfiguration
+        else {
+            realtimeWhisperClientSecretPrefetchTask?.cancel()
+            realtimeWhisperClientSecretPrefetchTask = nil
+            return
+        }
+
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else { return }
+
+        let localeIdentifier = preferences.dictation.localeIdentifier
+        let transcriptionHints = preferences.visibleLexiconEntries
+        let model = realtimeWhisperTranscriptionModel
+        realtimeWhisperClientSecretPrefetchTask?.cancel()
+        realtimeWhisperClientSecretPrefetchTask = Task { [weak self] in
+            do {
+                let tokenProvider = VoceRealtimeTranscriptionTokenProvider(
+                    subscriberEmail: email
+                )
+                try await tokenProvider.prefetchClientSecret(
+                    localeIdentifier: localeIdentifier,
+                    hints: transcriptionHints,
+                    model: model
+                )
+            } catch {
+                // Prefetch is opportunistic. Recording startup still reports
+                // actionable cloud errors if fetching a token fails there.
+                return
+            }
+
+            await MainActor.run {
+                guard self?.normalizedSubscriberEmail == email else { return }
+                self?.realtimeWhisperClientSecretPrefetchTask = nil
+            }
+        }
     }
 
     func saveCloudAPIKey(_ apiKey: String) throws {
@@ -1513,6 +1561,15 @@ final class DictationController: ObservableObject {
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
 
                 status = "Arming microphone..."
+                // Show the bubble immediately with a spinner (no audio glyph)
+                // so the user sees feedback right away but doesn't start
+                // speaking before audio capture is actually live. For cloud
+                // sessions this covers the worst-case window where the
+                // session token wasn't prefetched or has expired.
+                overlay.setAnchorSnapshot(overlayAnchorSnapshot)
+                overlay.controlWorkflows = enabledAIWorkflows
+                overlay.show(state: .preparing(handsFree: mode == .handsFree))
+
                 if usesRealtimeWhisperCapture(for: capturedContext) {
                     let session = try makeRealtimeWhisperCaptureSession(
                         onPartialText: { [weak overlay] text in
@@ -1570,8 +1627,6 @@ final class DictationController: ObservableObject {
                         self?.stopIfFreeUsageLimitReached()
                     }
                 }
-                overlay.setAnchorSnapshot(overlayAnchorSnapshot)
-                overlay.controlWorkflows = enabledAIWorkflows
                 overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
 
                 if shouldPauseMedia {
@@ -2437,6 +2492,7 @@ final class DictationController: ObservableObject {
 
         status = runtimeFactory.runtimeStatusText()
         refreshCloudValidationIfNeeded(force: false)
+        prefetchRealtimeWhisperClientSecretIfNeeded()
     }
 
     private func fallbackWarningText(from outcome: CleanupOutcome?) -> String? {

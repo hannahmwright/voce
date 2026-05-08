@@ -75,6 +75,95 @@ private final class OverlayBubbleView: NSView {
     }
 }
 
+/// Hosts the frosted-glass painting + scrim sublayers. CALayer
+/// `autoresizingMask` does not reliably resize sublayers on macOS view-backed
+/// layers (unlike UIKit), so we drive sublayer frames from every available
+/// resize hook: `layout()`, `setFrameSize`, `setBoundsSize`, AppKit's
+/// `frameDidChangeNotification`, and `viewDidEndLiveResize`. Without this,
+/// the painting and scrim layers stayed at the bubble's initial compactSize
+/// bounds while the bubble itself was actually wider — which made the
+/// painting only render across the left half of the bubble.
+@MainActor
+private final class GlassHostView: NSView {
+    var onLayoutChanged: ((CGSize) -> Void)?
+    private var lastReportedSize: CGSize = .zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureFrameObservation()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureFrameObservation()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override var isFlipped: Bool { false }
+
+    override func layout() {
+        super.layout()
+        notifyLayoutIfNeeded()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        notifyLayoutIfNeeded()
+    }
+
+    override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        notifyLayoutIfNeeded()
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        notifyLayoutIfNeeded()
+    }
+
+    private func configureFrameObservation() {
+        postsFrameChangedNotifications = true
+        postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleFrameChange),
+            name: NSView.frameDidChangeNotification,
+            object: self
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleFrameChange),
+            name: NSView.boundsDidChangeNotification,
+            object: self
+        )
+    }
+
+    @objc private func handleFrameChange() {
+        notifyLayoutIfNeeded()
+    }
+
+    /// Reports the current bounds even if they match the last cached size.
+    /// Useful when the bubble appears for the first time and we want to
+    /// guarantee the sublayer frames are explicitly synced.
+    func forceSync() {
+        let size = bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        lastReportedSize = size
+        onLayoutChanged?(size)
+    }
+
+    private func notifyLayoutIfNeeded() {
+        let size = bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        guard size != lastReportedSize else { return }
+        lastReportedSize = size
+        onLayoutChanged?(size)
+    }
+}
+
 @MainActor
 private final class BubbleControlMenuButton: NSButton {
     private let normalBackgroundColor: NSColor
@@ -270,6 +359,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var processingRunnerLayer: CALayer?
     private var latestAudioLevel: Double = 0.18
     private var statusTextField: NSTextField?
+    private var preparingIndicator: NSProgressIndicator?
     private var transcriptBackdropView: NSView?
     private var transcriptScrollView: NSScrollView?
     private var transcriptTextView: NSTextView?
@@ -444,6 +534,17 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         wasHidden = false
 
         switch state {
+        case .preparing(let handsFree):
+            // Bubble visible immediately, but no audio glyph — capture has not
+            // started yet (we're still acquiring a token).
+            setBubbleControlsEnabled(false)
+            listeningHandsFree = handsFree
+            listeningStartDate = nil
+            lastLiveTranscriptText = ""
+            hasShownLiveTranscriptInSession = false
+            resetTranscriptBubbleGrowth()
+            showCompactPreparingBadge()
+
         case .listening(let handsFree, _):
             setBubbleControlsEnabled(true)
             listeningHandsFree = handsFree
@@ -451,12 +552,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             lastLiveTranscriptText = ""
             hasShownLiveTranscriptInSession = false
             resetTranscriptBubbleGrowth()
+            setPreparingIndicatorVisible(false)
             showCompactListeningBadge()
 
         case .liveTranscript(let text, _):
             setBubbleControlsEnabled(true)
             lastLiveTranscriptText = text
             hasShownLiveTranscriptInSession = true
+            setPreparingIndicatorVisible(false)
             let shouldExpand = isBubbleHovered && isMouseCurrentlyInsideBubble()
             isBubbleHovered = shouldExpand
             if shouldExpand {
@@ -467,11 +570,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .transcribing:
             setBubbleControlsEnabled(false)
+            setPreparingIndicatorVisible(false)
             stopTimer()
             showCompactProcessingBadge()
 
         case .inserted:
             setBubbleControlsEnabled(false)
+            setPreparingIndicatorVisible(false)
             applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
@@ -482,6 +587,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .copiedOnly:
             setBubbleControlsEnabled(false)
+            setPreparingIndicatorVisible(false)
             applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
@@ -491,6 +597,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         case .failure:
             setBubbleControlsEnabled(false)
+            setPreparingIndicatorVisible(false)
             applyDefaultSurfaceAppearance()
             applyLayout(.compact)
             stopTimer()
@@ -533,6 +640,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     public func popAndHide() {
         stopTimer()
         stopDotPulse()
+        setPreparingIndicatorVisible(false)
         wasHidden = true
         anchorSnapshot = nil
         lastLiveTranscriptText = ""
@@ -573,6 +681,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     public func hide() {
         stopTimer()
         stopDotPulse()
+        setPreparingIndicatorVisible(false)
         wasHidden = true
         anchorSnapshot = nil
         lastLiveTranscriptText = ""
@@ -633,6 +742,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         let canvas = OverlayPassThroughView(frame: contentRect)
         canvas.wantsLayer = true
         canvas.layer?.backgroundColor = NSColor.clear.cgColor
+        // Defensive: ensure the canvas resizes with the window so that
+        // setContentSize propagates to container/glassHost via Auto Layout.
+        canvas.autoresizingMask = [.width, .height]
         self.hitTestCanvasView = canvas
 
         let bubbleRect = CGRect(
@@ -663,7 +775,12 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         auraPrimary.locations = [0, 0.55, 1]
         auraPrimary.startPoint = CGPoint(x: 0.5, y: 0.5)
         auraPrimary.endPoint = CGPoint(x: 1, y: 1)
-        auraPrimary.frame = CGRect(x: -44, y: -22, width: bubbleRect.width + 88, height: bubbleRect.height + 62)
+        auraPrimary.frame = CGRect(
+            x: -36,
+            y: -18,
+            width: bubbleRect.width + 72,
+            height: bubbleRect.height + 54
+        )
         auraPrimary.opacity = 0.70
         container.layer?.addSublayer(auraPrimary)
         self.auraPrimaryLayer = auraPrimary
@@ -678,18 +795,26 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         auraSecondary.locations = [0, 0.5, 1]
         auraSecondary.startPoint = CGPoint(x: 0.5, y: 0.5)
         auraSecondary.endPoint = CGPoint(x: 1, y: 1)
-        auraSecondary.frame = CGRect(x: 12, y: -36, width: bubbleRect.width * 0.78, height: bubbleRect.height + 74)
+        auraSecondary.frame = CGRect(
+            x: -24,
+            y: -32,
+            width: bubbleRect.width + 48,
+            height: bubbleRect.height + 64
+        )
         auraSecondary.opacity = 0.60
         container.layer?.addSublayer(auraSecondary)
         self.auraSecondaryLayer = auraSecondary
 
         // Glass surface: frosted background image + translucent tint.
-        let glassHost = NSView(frame: NSRect(origin: .zero, size: Self.compactSize))
+        let glassHost = GlassHostView(frame: NSRect(origin: .zero, size: Self.compactSize))
         glassHost.wantsLayer = true
         glassHost.layer?.cornerRadius = Self.compactCornerRadius
         glassHost.layer?.masksToBounds = true
         glassHost.layer?.borderWidth = 0.5
         glassHost.layer?.borderColor = NSColor.white.withAlphaComponent(0.50).cgColor
+        glassHost.onLayoutChanged = { [weak self] size in
+            self?.syncOverlaySublayerFrames(to: size)
+        }
         let clickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(handleBubbleControlClick(_:)))
         clickRecognizer.buttonMask = 0x1
         glassHost.addGestureRecognizer(clickRecognizer)
@@ -831,6 +956,19 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassHost.addSubview(label)
         self.statusTextField = label
 
+        // Centered spinner shown while we're acquiring a session token but
+        // before audio capture has started — so users don't begin speaking
+        // before the mic is actually live.
+        let spinner = NSProgressIndicator(frame: .zero)
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        spinner.isIndeterminate = true
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.isHidden = true
+        glassHost.addSubview(spinner)
+        self.preparingIndicator = spinner
+
         // Transcript preview sits above the listening meter so hover keeps the speech animation visible.
         let transcriptBackdropView = NSView(frame: .zero)
         transcriptBackdropView.wantsLayer = true
@@ -877,6 +1015,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             label.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -20),
             label.centerYAnchor.constraint(equalTo: glassHost.centerYAnchor),
 
+            spinner.centerXAnchor.constraint(equalTo: glassHost.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: glassHost.centerYAnchor),
+
             transcriptBackdropView.leadingAnchor.constraint(equalTo: glassHost.leadingAnchor, constant: 12),
             transcriptBackdropView.trailingAnchor.constraint(equalTo: glassHost.trailingAnchor, constant: -12),
             transcriptBackdropView.topAnchor.constraint(equalTo: glassHost.topAnchor, constant: 10),
@@ -907,6 +1048,11 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             object: panel
         )
 
+        // Pre-warm the AVPlayer so the first transcription doesn't show a
+        // blank frame while the asset loads. Without this, the moment after
+        // the user hits stop can briefly fall back to the listening painting
+        // before the video's first frame renders.
+        preloadProcessingVideo()
     }
 
     @objc private func windowDidMove(_ notification: Notification) {
@@ -1020,10 +1166,15 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         processingRunnerLayer.position = CGPoint(x: hostSize.width / 2, y: hostSize.height / 2)
     }
 
-    private func setMeterVisible(_ visible: Bool) {
+    private func setMeterVisible(_ visible: Bool, animated: Bool = true) {
+        CATransaction.begin()
+        if !animated {
+            CATransaction.setDisableActions(true)
+        }
         for layer in meterBarLayers {
             layer.opacity = visible ? max(layer.opacity, 0.24) : 0.0
         }
+        CATransaction.commit()
     }
 
     private func startMeterBars() {
@@ -1162,7 +1313,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         setMeterVisible(activePulseMode == .listening)
     }
 
-    private func applyTranscribingSurfaceAppearance() {
+    private func applyTranscribingSurfaceAppearance(animated: Bool = true) {
         if bubbleAppearance == .techMeter {
             stopProcessingVideo()
             applyTechSurfaceAppearance(isProcessing: true)
@@ -1170,6 +1321,16 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
 
         playProcessingVideoIfNeeded()
+        // When called from the listening → processing handoff (animated: false),
+        // we want the video and dark scrim to swap in *instantly* so the user
+        // sees the processing video — not lingering audio glyphs or a half-faded
+        // listening surface — the moment they hit stop. CALayer's default
+        // implicit animation would otherwise crossfade these properties over
+        // ~0.25s, leaving the old listening visuals on screen during the swap.
+        CATransaction.begin()
+        if !animated {
+            CATransaction.setDisableActions(true)
+        }
         backgroundImageLayer?.opacity = 0.0
         revealedBackgroundImageLayer?.opacity = 0.0
         processingVideoLayer?.opacity = 1.0
@@ -1188,9 +1349,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         sheenLayer?.opacity = 0.42
         glassHostView?.layer?.backgroundColor = NSColor.clear.cgColor
         glassHostView?.layer?.borderColor = bubbleBorderColor.cgColor
+        CATransaction.commit()
         statusTextField?.textColor = bubbleTextColor
         statusTextField?.shadow = resolvedTextShadow
-        setMeterVisible(false)
+        setMeterVisible(false, animated: animated)
     }
 
     private func applyTechSurfaceAppearance(isProcessing: Bool) {
@@ -1226,24 +1388,30 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private func applyLayout(_ newLayout: LayoutMode, bubbleSize requestedSize: NSSize? = nil) {
         guard let window else { return }
         let targetSize = requestedSize ?? (newLayout == .transcript ? Self.transcriptSize : Self.compactSize)
-        guard layoutMode != newLayout || currentBubbleSize != targetSize else {
-            if newLayout == .transcript {
-                statusTextField?.isHidden = true
-                transcriptBackdropView?.isHidden = false
-                transcriptScrollView?.isHidden = false
-            } else {
-                statusTextField?.isHidden = false
-                transcriptBackdropView?.isHidden = true
-                transcriptScrollView?.isHidden = true
-            }
-            return
-        }
+        let sizeUnchanged = layoutMode == newLayout && currentBubbleSize == targetSize
 
         layoutMode = newLayout
         currentBubbleSize = targetSize
-        window.setContentSize(windowSize(for: targetSize))
+        if !sizeUnchanged {
+            window.setContentSize(windowSize(for: targetSize))
+        }
+        // Force Auto Layout to resolve immediately so glassHost's bounds reflect
+        // the new bubble size before we sync sublayer frames. Without this, the
+        // constraint pass can be deferred to the next runloop, leaving sublayers
+        // sized to the old bounds — which produced the half-rendered painting.
+        // We run this on every applyLayout (even when size is unchanged) so the
+        // very first show, where defaults already match, still gets a sync.
+        window.contentView?.layoutSubtreeIfNeeded()
         updateOverlayFrames(for: targetSize, audioLevel: 0.18)
-        positionWindow()
+        // Belt-and-suspenders: explicitly sync sublayer frames against the host
+        // view's *actual* bounds, not the requested size, in case Auto Layout
+        // produced a slightly different frame.
+        if let glassHost = glassHostView as? GlassHostView {
+            glassHost.forceSync()
+        }
+        if !sizeUnchanged {
+            positionWindow()
+        }
         let cornerRadius = newLayout == .transcript ? Self.transcriptCornerRadius : Self.compactCornerRadius
         containerView?.layer?.cornerRadius = cornerRadius
         glassHostView?.layer?.cornerRadius = cornerRadius
@@ -1267,6 +1435,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         transcriptBackdropView?.isHidden = true
         transcriptScrollView?.isHidden = true
         statusTextField?.isHidden = true
+        setPreparingIndicatorVisible(false)
         resetBorderToAccent()
         applyDefaultSurfaceAppearance()
         startDotPulse()
@@ -1275,13 +1444,47 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         updateListeningText()
     }
 
+    /// Compact bubble while we're preparing to record (e.g. fetching a session
+    /// token). Shows a spinner instead of the audio level bars so the user
+    /// doesn't start speaking before capture is live.
+    private func showCompactPreparingBadge() {
+        applyLayout(.compact)
+        transcriptBackdropView?.isHidden = true
+        transcriptScrollView?.isHidden = true
+        statusTextField?.isHidden = true
+        stopTimer()
+        stopDotPulse()
+        resetBorderToAccent()
+        applyDefaultSurfaceAppearance()
+        // applyDefaultSurfaceAppearance leaves the meter visible if pulse mode
+        // was previously listening — force it off here so no audio glyph is
+        // shown while we wait for the session to start.
+        setMeterVisible(false)
+        setPreparingIndicatorVisible(true)
+    }
+
+    private func setPreparingIndicatorVisible(_ visible: Bool) {
+        guard let preparingIndicator else { return }
+        if visible {
+            preparingIndicator.isHidden = false
+            preparingIndicator.startAnimation(nil)
+        } else {
+            preparingIndicator.stopAnimation(nil)
+            preparingIndicator.isHidden = true
+        }
+    }
+
     private func showCompactProcessingBadge() {
         applyLayout(.compact)
         transcriptBackdropView?.isHidden = true
         transcriptScrollView?.isHidden = true
         statusTextField?.isHidden = true
         resetBorderToAccent()
-        applyTranscribingSurfaceAppearance()
+        // Pass `animated: false` so the video / dark scrim / hidden meter all
+        // snap into place the moment the user hits stop. Otherwise CALayer
+        // implicit animations would crossfade the listening surface and audio
+        // glyphs over ~0.25s, leaving them visible during the handoff.
+        applyTranscribingSurfaceAppearance(animated: false)
         startTranscribingPulse()
     }
 
@@ -1829,8 +2032,24 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let rect = NSRect(origin: .zero, size: size)
-        auraPrimaryLayer?.frame = CGRect(x: -36, y: -18, width: rect.width + 72, height: rect.height + 54)
-        auraSecondaryLayer?.frame = CGRect(x: rect.width * 0.08, y: -32, width: rect.width * 0.82, height: rect.height + 64)
+        // Auras sit on the container layer behind the glass and are sized
+        // symmetrically so the soft glow extends evenly past every edge.
+        let primaryHorizontalInset: CGFloat = 36
+        let primaryVerticalInset: CGFloat = 18
+        auraPrimaryLayer?.frame = CGRect(
+            x: -primaryHorizontalInset,
+            y: -primaryVerticalInset,
+            width: rect.width + (primaryHorizontalInset * 2),
+            height: rect.height + (primaryVerticalInset * 2) + 18
+        )
+        let secondaryHorizontalInset: CGFloat = 24
+        let secondaryVerticalInset: CGFloat = 32
+        auraSecondaryLayer?.frame = CGRect(
+            x: -secondaryHorizontalInset,
+            y: -secondaryVerticalInset,
+            width: rect.width + (secondaryHorizontalInset * 2),
+            height: rect.height + (secondaryVerticalInset * 2)
+        )
         backgroundImageLayer?.frame = rect
         revealedBackgroundImageLayer?.frame = rect
         processingVideoLayer?.frame = rect
@@ -1838,6 +2057,29 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         glassTintLayer?.frame = rect
         sheenLayer?.frame = rect
         CATransaction.commit()
+    }
+
+    /// Mirrors the inner sublayer frames whenever the glass host view's
+    /// bounds change. CALayer `autoresizingMask` is unreliable on macOS
+    /// view-backed layers, so we explicitly drive the layout from the host
+    /// view's `layout()` callback. Skips bubble-relative layers (auras,
+    /// processing indicators, meter bars) — those are owned by the container
+    /// view's coordinate space, not the glass host's.
+    private func syncOverlaySublayerFrames(to size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let rect = CGRect(origin: .zero, size: size)
+        backgroundImageLayer?.frame = rect
+        revealedBackgroundImageLayer?.frame = rect
+        processingVideoLayer?.frame = rect
+        scrimLayer?.frame = rect
+        glassTintLayer?.frame = rect
+        sheenLayer?.frame = rect
+        CATransaction.commit()
+        updateMeterBarFrames(level: latestAudioLevel, in: rect)
+        updateProcessingIndicatorFrame(in: size)
+        updateProcessingRunnerFrame(in: size)
     }
 
     private func updateOverlayFrames(for bubbleSize: NSSize, audioLevel: Double) {
@@ -1926,6 +2168,33 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         processingPlayer?.rate = 1.0
         processingPlayer?.seek(to: .zero)
         processingPlayer?.play()
+    }
+
+    /// Pre-warms the processing video so the first transcription doesn't show
+    /// a blank frame while AVPlayer loads the asset. Called once at window
+    /// setup; the player is cached and ready when the user hits stop.
+    private func preloadProcessingVideo() {
+        guard let videoLayer = processingVideoLayer else { return }
+        guard let url = Self.loadProcessingVideoURL(isDark: prefersDarkProcessingVideo) else {
+            return
+        }
+        guard processingPlayer == nil || processingPlayerURL != url else { return }
+
+        removeProcessingObservers()
+        processingPlayer?.pause()
+
+        let asset = AVAsset(url: url)
+        let item = AVPlayerItem(asset: asset)
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = true
+        player.actionAtItemEnd = .pause
+        processingPlayer = player
+        processingPlayerURL = url
+        videoLayer.player = player
+        installProcessingBoundaryObserver()
+        // Seek to frame 0 so the layer renders the first frame, then leave
+        // the player paused. Subsequent `play()` calls are instantaneous.
+        player.seek(to: .zero)
     }
 
     private func stopProcessingVideo() {

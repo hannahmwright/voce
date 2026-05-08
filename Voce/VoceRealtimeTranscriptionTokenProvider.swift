@@ -2,6 +2,8 @@ import Foundation
 import VoceKit
 
 struct VoceRealtimeTranscriptionTokenProvider: Sendable {
+    private static let cache = RealtimeTranscriptionClientSecretCache()
+
     private let subscriberEmail: String
     private let sessionStore: VoceAccessSessionStore
     private let session: URLSession
@@ -24,6 +26,38 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
         hints: [LexiconEntry],
         model: String
     ) async throws -> String {
+        let key = RealtimeTranscriptionClientSecretCache.Key(
+            subscriberEmail: subscriberEmail,
+            localeIdentifier: localeIdentifier,
+            model: model,
+            hints: hints.map(\.preferred)
+        )
+        return try await Self.cache.clientSecret(for: key) {
+            try await requestClientSecret(
+                localeIdentifier: localeIdentifier,
+                hints: hints,
+                model: model
+            )
+        }
+    }
+
+    func prefetchClientSecret(
+        localeIdentifier: String,
+        hints: [LexiconEntry],
+        model: String
+    ) async throws {
+        _ = try await clientSecret(
+            localeIdentifier: localeIdentifier,
+            hints: hints,
+            model: model
+        )
+    }
+
+    private func requestClientSecret(
+        localeIdentifier: String,
+        hints: [LexiconEntry],
+        model: String
+    ) async throws -> RealtimeTranscriptionClientSecretCache.CachedSecret {
         var request = try VoceCloudSpeechProviderClient.authorizedRequest(
             url: sessionURL,
             subscriberEmail: subscriberEmail,
@@ -53,7 +87,10 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
             guard !value.isEmpty else {
                 throw CloudDictationError.invalidResponse
             }
-            return value
+            return RealtimeTranscriptionClientSecretCache.CachedSecret(
+                value: value,
+                expiresAt: payload.expiresAt
+            )
         } catch let error as CloudDictationError {
             throw error
         } catch {
@@ -78,6 +115,81 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
             return .rateLimited
         default:
             return .providerError(message ?? "Voce realtime dictation is unavailable.")
+        }
+    }
+}
+
+private actor RealtimeTranscriptionClientSecretCache {
+    struct Key: Hashable {
+        var subscriberEmail: String
+        var localeIdentifier: String
+        var model: String
+        var hints: [String]
+
+        init(
+            subscriberEmail: String,
+            localeIdentifier: String,
+            model: String,
+            hints: [String]
+        ) {
+            self.subscriberEmail = subscriberEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            self.localeIdentifier = localeIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.hints = hints.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter {
+                !$0.isEmpty
+            }
+        }
+    }
+
+    struct CachedSecret: Sendable {
+        var value: String
+        var expiresAt: Int?
+
+        func isFresh(now: Date, refreshLeadTime: TimeInterval) -> Bool {
+            guard let expiresAt else { return false }
+            return Date(timeIntervalSince1970: TimeInterval(expiresAt))
+                .timeIntervalSince(now) > refreshLeadTime
+        }
+    }
+
+    private static let refreshLeadTime: TimeInterval = 5 * 60
+
+    private var cachedSecrets: [Key: CachedSecret] = [:]
+    private var inFlightRequests: [Key: Task<CachedSecret, Error>] = [:]
+
+    func clientSecret(
+        for key: Key,
+        fetch: @escaping @Sendable () async throws -> CachedSecret
+    ) async throws -> String {
+        let now = Date()
+        if let cached = cachedSecrets[key],
+           cached.isFresh(now: now, refreshLeadTime: Self.refreshLeadTime) {
+            return cached.value
+        }
+
+        if let existing = inFlightRequests[key] {
+            return try await existing.value.value
+        }
+
+        let task = Task {
+            try await fetch()
+        }
+        inFlightRequests[key] = task
+
+        do {
+            let secret = try await task.value
+            if secret.isFresh(now: Date(), refreshLeadTime: Self.refreshLeadTime) {
+                cachedSecrets[key] = secret
+            } else {
+                cachedSecrets[key] = nil
+            }
+            inFlightRequests[key] = nil
+            return secret.value
+        } catch {
+            inFlightRequests[key] = nil
+            throw error
         }
     }
 }

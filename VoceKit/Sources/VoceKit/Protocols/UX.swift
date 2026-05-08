@@ -8,6 +8,10 @@ public enum HotkeyRegistrationStatus: Sendable, Equatable {
 
 /// The current state displayed in the floating status overlay.
 public enum OverlayState: Sendable, Equatable {
+    /// Bubble is visible but audio capture has not yet started — e.g., a
+    /// session token is still being fetched. Shows a spinner instead of the
+    /// audio level glyph so users don't begin speaking before capture is live.
+    case preparing(handsFree: Bool)
     case listening(handsFree: Bool, elapsedSeconds: Int)
     case liveTranscript(text: String, handsFree: Bool)
     case transcribing

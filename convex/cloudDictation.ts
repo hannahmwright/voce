@@ -407,7 +407,7 @@ export async function createRealtimeTranscriptionSession(args: {
   const response = await openAIRealtimeTranscriptionSessionRequest({
     expires_after: {
       anchor: "created_at",
-      seconds: 600,
+      seconds: 7200,
     },
     session: {
       type: "transcription",
