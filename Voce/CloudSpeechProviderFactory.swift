@@ -5,7 +5,9 @@ enum CloudSpeechProviderFactory {
     static func makeProvider(
         dictation: AppPreferences.Dictation,
         useDirectCredentials: Bool,
+        subscriberEmail: String,
         credentialStore: CloudProviderCredentialStore = .shared,
+        accessSessionStore: VoceAccessSessionStore = .shared,
         session: URLSession = .shared
     ) -> any CloudSpeechProviderClient {
         if useDirectCredentials {
@@ -27,8 +29,10 @@ enum CloudSpeechProviderFactory {
             )
         }
 
-        return UnavailableCloudSpeechProviderClient(
-            message: "Realtime Whisper requires direct OpenAI credentials in this build."
+        return VoceCloudSpeechProviderClient(
+            subscriberEmail: subscriberEmail,
+            sessionStore: accessSessionStore,
+            session: session
         )
     }
 
@@ -37,27 +41,5 @@ enum CloudSpeechProviderFactory {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value, !value.isEmpty else { return nil }
         return value
-    }
-}
-
-private struct UnavailableCloudSpeechProviderClient: CloudSpeechProviderClient {
-    let message: String
-
-    func preflightCheck(localeIdentifier: String) async throws {
-        throw CloudDictationError.providerError(message)
-    }
-
-    func transcribe(audioURL: URL, localeIdentifier: String, hints: [String]) async throws -> RawTranscript {
-        throw CloudDictationError.providerError(message)
-    }
-
-    func refine(
-        transcript: String,
-        localeIdentifier: String,
-        dictionary: [LexiconEntry],
-        profile: StyleProfile,
-        appContext: AppContext?
-    ) async throws -> String {
-        throw CloudDictationError.providerError(message)
     }
 }

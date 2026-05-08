@@ -1273,9 +1273,27 @@ final class DictationController: ObservableObject {
             return cloudDictationAvailabilityService.directCredentialStatus(for: preferences.dictation)
         }
 
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else {
+            return CloudDictationAvailabilityStatus(
+                message: "Cloud dictation unavailable: verify your email to use cloud dictation.",
+                isError: true
+            )
+        }
+
+        let sessionToken = (try? VoceAccessSessionStore.shared.sessionToken(for: email)) ?? nil
+        guard let sessionToken,
+              !sessionToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return CloudDictationAvailabilityStatus(
+                message: "Cloud dictation unavailable: verify your email to use cloud dictation.",
+                isError: true
+            )
+        }
+
         return CloudDictationAvailabilityStatus(
-            message: "Realtime Whisper requires direct OpenAI credentials in this build.",
-            isError: true
+            message: "Ready. Authenticated through your Voce account.",
+            isError: false
         )
     }
 
@@ -1284,7 +1302,8 @@ final class DictationController: ObservableObject {
     ) -> any CloudSpeechProviderClient {
         return CloudSpeechProviderFactory.makeProvider(
             dictation: dictation,
-            useDirectCredentials: usesDirectCloudCredentials
+            useDirectCredentials: usesDirectCloudCredentials,
+            subscriberEmail: normalizedSubscriberEmail
         )
     }
 
@@ -3331,7 +3350,8 @@ private struct DictationRuntimeFactory {
     private func makeCloudSpeechProviderClient() -> any CloudSpeechProviderClient {
         CloudSpeechProviderFactory.makeProvider(
             dictation: snapshot.dictation,
-            useDirectCredentials: useDirectCloudCredentials
+            useDirectCredentials: useDirectCloudCredentials,
+            subscriberEmail: subscriberEmail
         )
     }
 
