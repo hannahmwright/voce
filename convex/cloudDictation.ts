@@ -59,11 +59,9 @@ type AudioTranscriptionResponse = {
   text?: string;
 };
 
-type RealtimeTranscriptionSessionResponse = {
-  client_secret?: {
-    value?: string;
-    expires_at?: number;
-  } | null;
+type RealtimeClientSecretResponse = {
+  value?: string;
+  expires_at?: number;
 };
 
 export class CloudDictationProviderError extends Error {
@@ -232,7 +230,7 @@ async function openAIAudioTranscriptionRequest(formData: FormData, timeoutMs: nu
 
 async function openAIRealtimeTranscriptionSessionRequest(body: Record<string, unknown>) {
   const bodyJSON = JSON.stringify(body);
-  const response = await fetch(`${OPENAI_BASE_URL}/v1/realtime/transcription_sessions`, {
+  const response = await fetch(`${OPENAI_BASE_URL}/v1/realtime/client_secrets`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${openAIAPIKey()}`,
@@ -249,7 +247,7 @@ async function openAIRealtimeTranscriptionSessionRequest(body: Record<string, un
     );
   }
 
-  return payload as RealtimeTranscriptionSessionResponse;
+  return payload as RealtimeClientSecretResponse;
 }
 
 function normalizedText(value: string | undefined | null) {
@@ -407,18 +405,32 @@ export async function createRealtimeTranscriptionSession(args: {
 }) {
   const model = args.model?.trim() || realtimeTranscriptionModel();
   const response = await openAIRealtimeTranscriptionSessionRequest({
-    input_audio_format: "pcm16",
-    input_audio_noise_reduction: {
-      type: "near_field",
+    expires_after: {
+      anchor: "created_at",
+      seconds: 600,
     },
-    input_audio_transcription: {
-      model,
-      language: effectiveLanguageCode(args.localeIdentifier),
+    session: {
+      type: "transcription",
+      audio: {
+        input: {
+          format: {
+            type: "audio/pcm",
+            rate: 24000,
+          },
+          noise_reduction: {
+            type: "near_field",
+          },
+          transcription: {
+            model,
+            language: effectiveLanguageCode(args.localeIdentifier),
+          },
+          turn_detection: null,
+        },
+      },
     },
-    turn_detection: null,
   });
 
-  const value = response.client_secret?.value?.trim();
+  const value = response.value?.trim();
   if (!value) {
     throw new CloudDictationProviderError(
       502,
@@ -428,7 +440,7 @@ export async function createRealtimeTranscriptionSession(args: {
 
   return {
     clientSecret: value,
-    expiresAt: response.client_secret?.expires_at,
+    expiresAt: response.expires_at,
   };
 }
 
