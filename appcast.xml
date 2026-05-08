@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.46</title>
+      <sparkle:version>49</sparkle:version>
+      <sparkle:shortVersionString>0.4.46</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.46</h2>
+        <ul>
+          <li>Fixes Sparkle relaunch after installing an update by keeping Voce's main window visible on startup</li>
+          <li>Launch at login now opens the main window instead of silently hiding it, avoiding the update flash-and-disappear behavior</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 08 May 2026 05:14:50 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.46/Voce-0.4.46.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="rOoaOi2+kX5N/MwwECvmG/pFa+90BstLmzl8w3v6RdqM/KgJL9KOjKba6zmXKFz1jQ3IWyNyQSswZH6gw86VCw=="
+        length="18854276"
+      />
+    </item>
+    <item>
       <title>Version 0.4.45</title>
       <sparkle:version>48</sparkle:version>
       <sparkle:shortVersionString>0.4.45</sparkle:shortVersionString>
