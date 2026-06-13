@@ -258,6 +258,7 @@ final class DictationController: ObservableObject {
     private var overlayDismissTask: Task<Void, Never>?
     private var entitlementRefreshTask: Task<Void, Never>?
     private var realtimeWhisperClientSecretPrefetchTask: Task<Void, Never>?
+    private var realtimeWhisperClientSecretRefreshTask: Task<Void, Never>?
     private var terminationObserver: Any?
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
@@ -404,6 +405,10 @@ final class DictationController: ObservableObject {
         overlayDismissTask = nil
         entitlementRefreshTask?.cancel()
         entitlementRefreshTask = nil
+        realtimeWhisperClientSecretPrefetchTask?.cancel()
+        realtimeWhisperClientSecretPrefetchTask = nil
+        realtimeWhisperClientSecretRefreshTask?.cancel()
+        realtimeWhisperClientSecretRefreshTask = nil
         overlay.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
@@ -461,6 +466,7 @@ final class DictationController: ObservableObject {
         overlay.prepareWindow()
         hasBootstrapped = true
         scheduleVoceProEntitlementRefresh(immediate: true)
+        prefetchRealtimeWhisperClientSecretIfNeeded()
     }
 
     func savePreferences(announceImmediateSave: Bool = true) {
@@ -1377,24 +1383,29 @@ final class DictationController: ObservableObject {
               canUseCloudDictation,
               preferences.usesCloudDictationConfiguration
         else {
-            realtimeWhisperClientSecretPrefetchTask?.cancel()
-            realtimeWhisperClientSecretPrefetchTask = nil
+            cancelRealtimeWhisperClientSecretWarmup()
             return
         }
 
         let email = normalizedSubscriberEmail
-        guard !email.isEmpty else { return }
+        guard !email.isEmpty else {
+            cancelRealtimeWhisperClientSecretWarmup()
+            return
+        }
 
         let localeIdentifier = preferences.dictation.localeIdentifier
         let transcriptionHints = preferences.visibleLexiconEntries
         let model = realtimeWhisperTranscriptionModel
         realtimeWhisperClientSecretPrefetchTask?.cancel()
+        realtimeWhisperClientSecretRefreshTask?.cancel()
+        realtimeWhisperClientSecretRefreshTask = nil
         realtimeWhisperClientSecretPrefetchTask = Task { [weak self] in
+            let secret: RealtimeTranscriptionClientSecret
             do {
                 let tokenProvider = VoceRealtimeTranscriptionTokenProvider(
                     subscriberEmail: email
                 )
-                try await tokenProvider.prefetchClientSecret(
+                secret = try await tokenProvider.prefetchClientSecret(
                     localeIdentifier: localeIdentifier,
                     hints: transcriptionHints,
                     model: model
@@ -1408,6 +1419,71 @@ final class DictationController: ObservableObject {
             await MainActor.run {
                 guard self?.normalizedSubscriberEmail == email else { return }
                 self?.realtimeWhisperClientSecretPrefetchTask = nil
+                self?.scheduleRealtimeWhisperClientSecretRefresh(
+                    expiresAt: secret.expiresAt,
+                    email: email,
+                    localeIdentifier: localeIdentifier,
+                    hints: transcriptionHints,
+                    model: model
+                )
+            }
+        }
+    }
+
+    private func cancelRealtimeWhisperClientSecretWarmup() {
+        realtimeWhisperClientSecretPrefetchTask?.cancel()
+        realtimeWhisperClientSecretPrefetchTask = nil
+        realtimeWhisperClientSecretRefreshTask?.cancel()
+        realtimeWhisperClientSecretRefreshTask = nil
+    }
+
+    private func scheduleRealtimeWhisperClientSecretRefresh(
+        expiresAt: Int?,
+        email: String,
+        localeIdentifier: String,
+        hints: [LexiconEntry],
+        model: String
+    ) {
+        realtimeWhisperClientSecretRefreshTask?.cancel()
+        realtimeWhisperClientSecretRefreshTask = nil
+
+        guard let expiresAt else { return }
+        let refreshLeadTime: TimeInterval = 5 * 60
+        let refreshAt = Date(timeIntervalSince1970: TimeInterval(expiresAt))
+            .addingTimeInterval(-refreshLeadTime)
+        let delay = max(refreshAt.timeIntervalSinceNow, 0)
+
+        realtimeWhisperClientSecretRefreshTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+
+            do {
+                let tokenProvider = VoceRealtimeTranscriptionTokenProvider(
+                    subscriberEmail: email
+                )
+                _ = try await tokenProvider.prefetchClientSecret(
+                    localeIdentifier: localeIdentifier,
+                    hints: hints,
+                    model: model
+                )
+            } catch {
+                return
+            }
+
+            await MainActor.run {
+                guard let self,
+                      self.normalizedSubscriberEmail == email,
+                      self.preferences.dictation.localeIdentifier == localeIdentifier,
+                      self.realtimeWhisperTranscriptionModel == model,
+                      self.preferences.usesCloudDictationConfiguration,
+                      self.canUseCloudDictation,
+                      !self.usesDirectCloudCredentials
+                else { return }
+
+                self.realtimeWhisperClientSecretRefreshTask = nil
+                self.prefetchRealtimeWhisperClientSecretIfNeeded()
             }
         }
     }
@@ -1572,8 +1648,9 @@ final class DictationController: ObservableObject {
 
                 if usesRealtimeWhisperCapture(for: capturedContext) {
                     let session = try makeRealtimeWhisperCaptureSession(
-                        onPartialText: { [weak overlay] text in
-                            Task { @MainActor [weak overlay] in
+                        onPartialText: { [weak self, weak overlay] text in
+                            Task { @MainActor [weak self, weak overlay] in
+                                guard self?.shouldDisplayStreamingCaptureFeedback(for: mode) == true else { return }
                                 overlay?.show(state: .liveTranscript(text: text, handsFree: mode == .handsFree))
                             }
                         },
@@ -1582,8 +1659,9 @@ final class DictationController: ObservableObject {
                                 self?.handleStreamingFailure(error)
                             }
                         },
-                        onAudioLevel: { [weak overlay] level in
-                            Task { @MainActor [weak overlay] in
+                        onAudioLevel: { [weak self, weak overlay] level in
+                            Task { @MainActor [weak self, weak overlay] in
+                                guard self?.shouldDisplayStreamingCaptureFeedback(for: mode) == true else { return }
                                 overlay?.updateAudioLevel(level)
                             }
                         }
@@ -1600,8 +1678,9 @@ final class DictationController: ObservableObject {
                                 self?.handleStreamingFailure(error)
                             }
                         },
-                        onAudioLevel: { [weak overlay] level in
-                            Task { @MainActor [weak overlay] in
+                        onAudioLevel: { [weak self, weak overlay] level in
+                            Task { @MainActor [weak self, weak overlay] in
+                                guard self?.shouldDisplayStreamingCaptureFeedback(for: mode) == true else { return }
                                 overlay?.updateAudioLevel(level)
                             }
                         }
@@ -1668,6 +1747,10 @@ final class DictationController: ObservableObject {
                 activeStartTaskID = nil
             }
         }
+    }
+
+    private func shouldDisplayStreamingCaptureFeedback(for mode: RecordingMode) -> Bool {
+        isRecording && activeRecordingMode == mode
     }
 
     private func handleStreamingFailure(_ error: Error) {
@@ -3371,7 +3454,7 @@ private struct DictationRuntimeFactory {
                         refinementEngine: cloudRefinementEngine,
                         currentAppContextProvider: { appContext }
                     ),
-                    fallbackCleanupEngine: FailingCleanupEngine()
+                    fallbackCleanupEngine: localFallback
                 )
             }
         }

@@ -1,6 +1,11 @@
 import Foundation
 import VoceKit
 
+struct RealtimeTranscriptionClientSecret: Sendable {
+    var value: String
+    var expiresAt: Int?
+}
+
 struct VoceRealtimeTranscriptionTokenProvider: Sendable {
     private static let cache = RealtimeTranscriptionClientSecretCache()
 
@@ -26,27 +31,44 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
         hints: [LexiconEntry],
         model: String
     ) async throws -> String {
+        try await clientSecretInfo(
+            localeIdentifier: localeIdentifier,
+            hints: hints,
+            model: model
+        ).value
+    }
+
+    func clientSecretInfo(
+        localeIdentifier: String,
+        hints: [LexiconEntry],
+        model: String
+    ) async throws -> RealtimeTranscriptionClientSecret {
         let key = RealtimeTranscriptionClientSecretCache.Key(
             subscriberEmail: subscriberEmail,
             localeIdentifier: localeIdentifier,
             model: model,
             hints: hints.map(\.preferred)
         )
-        return try await Self.cache.clientSecret(for: key) {
+        let secret = try await Self.cache.clientSecret(for: key) {
             try await requestClientSecret(
                 localeIdentifier: localeIdentifier,
                 hints: hints,
                 model: model
             )
         }
+        return RealtimeTranscriptionClientSecret(
+            value: secret.value,
+            expiresAt: secret.expiresAt
+        )
     }
 
+    @discardableResult
     func prefetchClientSecret(
         localeIdentifier: String,
         hints: [LexiconEntry],
         model: String
-    ) async throws {
-        _ = try await clientSecret(
+    ) async throws -> RealtimeTranscriptionClientSecret {
+        try await clientSecretInfo(
             localeIdentifier: localeIdentifier,
             hints: hints,
             model: model
@@ -162,15 +184,15 @@ private actor RealtimeTranscriptionClientSecretCache {
     func clientSecret(
         for key: Key,
         fetch: @escaping @Sendable () async throws -> CachedSecret
-    ) async throws -> String {
+    ) async throws -> CachedSecret {
         let now = Date()
         if let cached = cachedSecrets[key],
            cached.isFresh(now: now, refreshLeadTime: Self.refreshLeadTime) {
-            return cached.value
+            return cached
         }
 
         if let existing = inFlightRequests[key] {
-            return try await existing.value.value
+            return try await existing.value
         }
 
         let task = Task {
@@ -186,7 +208,7 @@ private actor RealtimeTranscriptionClientSecretCache {
                 cachedSecrets[key] = nil
             }
             inFlightRequests[key] = nil
-            return secret.value
+            return secret
         } catch {
             inFlightRequests[key] = nil
             throw error

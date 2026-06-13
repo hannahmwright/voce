@@ -577,10 +577,10 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         case .inserted:
             setBubbleControlsEnabled(false)
             setPreparingIndicatorVisible(false)
-            applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
+            applyDefaultSurfaceAppearance()
+            applyLayout(.compact)
             hideContent()
             resetBorderToAccent()
             playSuccessBounce()
@@ -588,20 +588,20 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         case .copiedOnly:
             setBubbleControlsEnabled(false)
             setPreparingIndicatorVisible(false)
-            applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
+            applyDefaultSurfaceAppearance()
+            applyLayout(.compact)
             hideContent()
             resetBorderToAccent()
 
         case .failure:
             setBubbleControlsEnabled(false)
             setPreparingIndicatorVisible(false)
-            applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
+            applyDefaultSurfaceAppearance()
+            applyLayout(.compact)
             hideContent()
             animateAura(color: .systemRed)
             updateBorderColors(for: .systemRed)
@@ -1121,6 +1121,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         let baseLevel = pow(min(max(level, 0), 1), 0.52)
         let minHeight: CGFloat = 5
         let maxHeight: CGFloat = 25
+        // Only modulate opacity from the audio level when meters are actively
+        // meant to be visible (listening). During transcribing/.inserted/etc.
+        // the meter bars are intentionally hidden and we must NOT reset their
+        // opacity here — otherwise resize-triggered calls (e.g. via
+        // `updateOverlayFrames` during `applyLayout`) would flash the audio
+        // glyphs back on screen for a frame at the end of processing.
+        let shouldDriveOpacity = activePulseMode == .listening
 
         CATransaction.begin()
         CATransaction.setDisableActions(false)
@@ -1136,7 +1143,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
                 width: barWidth,
                 height: max(minHeight, height)
             )
-            layer.opacity = Float(0.30 + (baseLevel * 0.54))
+            if shouldDriveOpacity {
+                layer.opacity = Float(0.30 + (baseLevel * 0.54))
+            }
         }
         CATransaction.commit()
     }
@@ -1168,10 +1177,22 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func setMeterVisible(_ visible: Bool, animated: Bool = true) {
         CATransaction.begin()
-        if !animated {
+        let shouldDisableActions = !animated || !visible
+        if shouldDisableActions {
             CATransaction.setDisableActions(true)
         }
         for layer in meterBarLayers {
+            if !visible {
+                // `setDisableActions(true)` only suppresses *new* implicit
+                // animations for this set — it doesn't cancel ones already
+                // queued from a previous opacity write (e.g. from
+                // `updateMeterBarFrames` earlier in the same runloop). Without
+                // this, an in-flight 0 → 0.52 animation can still play after
+                // we set the model to 0, briefly flashing the audio glyphs.
+                layer.removeAllAnimations()
+            } else if !animated {
+                layer.removeAnimation(forKey: "opacity")
+            }
             layer.opacity = visible ? max(layer.opacity, 0.24) : 0.0
         }
         CATransaction.commit()
@@ -1382,7 +1403,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         containerView?.layer?.shadowColor = Self.techAccent.withAlphaComponent(0.16).cgColor
         statusTextField?.textColor = NSColor(red: 0.80, green: 1.0, blue: 0.94, alpha: 0.92)
         statusTextField?.shadow = nil
-        setMeterVisible(!isProcessing)
+        setMeterVisible(!isProcessing && activePulseMode == .listening)
     }
 
     private func applyLayout(_ newLayout: LayoutMode, bubbleSize requestedSize: NSSize? = nil) {
@@ -2112,7 +2133,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func startTranscribingPulse() {
         guard activePulseMode != .transcribing else { return }
-        stopDotPulse()
+        stopDotPulse(stoppingProcessingVideo: false)
         activePulseMode = .transcribing
         if bubbleAppearance != .techMeter {
             playProcessingVideoIfNeeded()
@@ -2120,12 +2141,14 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         addProcessingIndicatorAnimation()
     }
 
-    private func stopDotPulse() {
-        stopProcessingVideo()
+    private func stopDotPulse(stoppingProcessingVideo: Bool = true) {
+        if stoppingProcessingVideo {
+            stopProcessingVideo()
+        }
         processingIndicatorLayer?.removeAllAnimations()
         processingIndicatorLayer?.opacity = 0.0
         stopTechProcessingRunnerAnimation()
-        setMeterVisible(false)
+        setMeterVisible(false, animated: false)
         activePulseMode = .none
         auraPrimaryLayer?.removeAllAnimations()
         auraSecondaryLayer?.removeAllAnimations()

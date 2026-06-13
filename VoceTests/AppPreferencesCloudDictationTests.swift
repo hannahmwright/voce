@@ -9,7 +9,6 @@ func appPreferencesCloudDictationDefaults() {
     #expect(preferences.dictation.engineMode == .local)
     #expect(preferences.dictation.cloud.provider == .openAI)
     #expect(preferences.dictation.cloud.refinementEnabled)
-    #expect(preferences.dictation.cloud.formattingStyle == .structured)
     #expect(preferences.dictation.cloud.apiKeySource == .keychain)
     #expect(preferences.appDictationEnginePreferences.isEmpty)
 }

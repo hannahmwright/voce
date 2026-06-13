@@ -50,6 +50,7 @@
 		508BFDAD31925683D3E840E7 /* VoiceCommandsSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1D6F6F334166FF103AACA28 /* VoiceCommandsSettingsSection.swift */; };
 		50BCC87176F6578B8C0E4CFE /* CompletionExecutionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */; };
 		542AFA53B072C7B9DACA15EC /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3E2FC96193616902F7C0568 /* OnboardingView.swift */; };
+		55A2B36AD63CA62AA7CA5523 /* OpenAIRealtimeWhisperConverterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 971EF335C2B9B796BA0F8BD6 /* OpenAIRealtimeWhisperConverterTests.swift */; };
 		567E04D17365F2FF4AF15568 /* GeneralSettingsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D587D107389F4EA940AA188 /* GeneralSettingsSection.swift */; };
 		5B862B039A99EF62E79306A2 /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBE5EAD5ECFA2403433B65F5 /* LaunchAtLoginService.swift */; };
 		5BAA839E86E7873F77D7DD4E /* VoceKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2BEFC4EBAAE42E87937FEF83 /* VoceKit */; };
@@ -185,6 +186,7 @@
 		8653A2F7F6DFCAD624F89990 /* SettingsViewHelpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewHelpers.swift; sourceTree = "<group>"; };
 		911C21B21664F69036B1443E /* processing-background.mp4 */ = {isa = PBXFileReference; path = "processing-background.mp4"; sourceTree = "<group>"; };
 		968D3C25FB9F0571247545BA /* OpenAIRealtimeWhisperCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIRealtimeWhisperCaptureSession.swift; sourceTree = "<group>"; };
+		971EF335C2B9B796BA0F8BD6 /* OpenAIRealtimeWhisperConverterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIRealtimeWhisperConverterTests.swift; sourceTree = "<group>"; };
 		9A178BD7B0458512D74DB9F7 /* PermissionStatusCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionStatusCard.swift; sourceTree = "<group>"; };
 		9C1BDC25CA2F91ABB6CEAB83 /* SnippetsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnippetsTab.swift; sourceTree = "<group>"; };
 		9DA8DBB014F3CD82D09D9DA8 /* AppleFoundationModelsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleFoundationModelsService.swift; sourceTree = "<group>"; };
@@ -248,6 +250,7 @@
 			children = (
 				17D413FBD4DC4BEAECF088ED /* AppPreferencesCloudDictationTests.swift */,
 				A9CE7D3C70D77C2E91691C18 /* OpenAICloudSpeechProviderClientPromptTests.swift */,
+				971EF335C2B9B796BA0F8BD6 /* OpenAIRealtimeWhisperConverterTests.swift */,
 			);
 			path = VoceTests;
 			sourceTree = "<group>";
@@ -564,6 +567,7 @@
 			files = (
 				80B0AD66C040E7528402F625 /* AppPreferencesCloudDictationTests.swift in Sources */,
 				B7D175531847C879DD254844 /* OpenAICloudSpeechProviderClientPromptTests.swift in Sources */,
+				55A2B36AD63CA62AA7CA5523 /* OpenAIRealtimeWhisperConverterTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -648,7 +652,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 50;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
@@ -656,7 +660,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.46;
+				MARKETING_VERSION = 0.4.47;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				PRODUCT_NAME = Voce;
 				SDKROOT = macosx;
@@ -743,14 +747,14 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 50;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.46;
+				MARKETING_VERSION = 0.4.47;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				PRODUCT_NAME = Voce;
 				SDKROOT = macosx;
@@ -829,14 +833,14 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 50;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Voce/Info-Dev.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.46;
+				MARKETING_VERSION = 0.4.47;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce.dev;
 				PRODUCT_NAME = "Voce Dev";
 				SDKROOT = macosx;
@@ -852,7 +856,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 49;
+				CURRENT_PROJECT_VERSION = 50;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Voce/Info-Dev.plist";
@@ -860,7 +864,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.46;
+				MARKETING_VERSION = 0.4.47;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce.dev;
 				PRODUCT_NAME = "Voce Dev";
 				SDKROOT = macosx;

@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.47</title>
+      <sparkle:version>50</sparkle:version>
+      <sparkle:shortVersionString>0.4.47</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.47</h2>
+        <ul>
+          <li>Improves realtime dictation reliability so longer passages keep their beginning and ending audio</li>
+          <li>Refreshes realtime session tokens in the background to reduce startup delay before recording</li>
+          <li>Keeps the processing overlay on the grass animation after recording ends</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sat, 13 Jun 2026 02:59:23 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.47/Voce-0.4.47.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="nakuKkAA9gHCdW5lIkkrvmCTFijslghIouF/yB0KlggHbGruYx8L+CoI/sPZE8EN8QhJJd5wPc02TiHmK5I/AQ=="
+        length="18222245"
+      />
+    </item>
+    <item>
       <title>Version 0.4.46</title>
       <sparkle:version>49</sparkle:version>
       <sparkle:shortVersionString>0.4.46</sparkle:shortVersionString>
