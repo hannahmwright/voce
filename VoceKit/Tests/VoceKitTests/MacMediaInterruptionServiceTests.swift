@@ -139,11 +139,18 @@ private final class MediaKeySendRecorder {
 private actor FakeSpotifyPlaybackController: SpotifyPlaybackControlling {
     private var states: [SpotifyPlaybackState]
     private let fallbackState: SpotifyPlaybackState
+    private let pauseSucceeds: Bool
+    private(set) var pauseCalls = 0
     private(set) var playCalls = 0
 
-    init(_ states: [SpotifyPlaybackState], fallbackState: SpotifyPlaybackState = .unknown) {
+    init(
+        _ states: [SpotifyPlaybackState],
+        fallbackState: SpotifyPlaybackState = .unknown,
+        pauseSucceeds: Bool = true
+    ) {
         self.states = states
         self.fallbackState = fallbackState
+        self.pauseSucceeds = pauseSucceeds
     }
 
     func playerState() async -> SpotifyPlaybackState {
@@ -151,6 +158,11 @@ private actor FakeSpotifyPlaybackController: SpotifyPlaybackControlling {
             return states.removeFirst()
         }
         return fallbackState
+    }
+
+    func pause() async -> Bool {
+        pauseCalls += 1
+        return pauseSucceeds
     }
 
     func play() async -> Bool {
@@ -194,8 +206,8 @@ func mediaKeyTapLocationFallsBackToHIDForInvalidOverride() {
 }
 
 @MainActor
-@Test("Media interruption pauses when playback is likely active")
-func mediaInterruptionPausesWhenPlaybackIsLikelyActive() async {
+@Test("Media interruption skips generic weak playback detection")
+func mediaInterruptionSkipsGenericWeakPlaybackDetection() async {
     let recorder = MediaKeySendRecorder()
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector([.likelyPlaying, .notPlaying]),
@@ -205,8 +217,27 @@ func mediaInterruptionPausesWhenPlaybackIsLikelyActive() async {
 
     let token = await service.beginInterruption()
 
+    #expect(token == nil)
+    #expect(recorder.sendCalls == 0, "Weak MediaRemote evidence must not send a global media key.")
+}
+
+@MainActor
+@Test("Media interruption uses app-specific pause for likely Spotify playback")
+func mediaInterruptionUsesSpotifyPauseForLikelySpotifyPlayback() async {
+    let recorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([.playing])
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.likelyPlaying, .notPlaying]),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { recorder.send() },
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
     #expect(token != nil)
-    #expect(recorder.sendCalls == 1)
+    #expect(recorder.sendCalls == 0)
+    #expect(await spotify.pauseCalls == 1)
 }
 
 @MainActor
@@ -476,7 +507,8 @@ func mediaInterruptionResumesOnUnresolvedUnknownForSpotify() async {
     service.endInterruption(token: token)
     try? await Task.sleep(nanoseconds: 20_000_000)
 
-    #expect(recorder.sendCalls == 1)
+    #expect(recorder.sendCalls == 0)
+    #expect(await spotify.pauseCalls == 1)
     #expect(await spotify.playCalls == 1)
 }
 
@@ -505,7 +537,8 @@ func mediaInterruptionSkipsSpotifyResumeWhenSpotifyAlreadyPlaying() async {
     service.endInterruption(token: token)
     try? await Task.sleep(nanoseconds: 20_000_000)
 
-    #expect(recorder.sendCalls == 1)
+    #expect(recorder.sendCalls == 0)
+    #expect(await spotify.pauseCalls == 1)
     #expect(await spotify.playCalls == 0)
 }
 

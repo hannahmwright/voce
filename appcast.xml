@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.48</title>
+      <sparkle:version>51</sparkle:version>
+      <sparkle:shortVersionString>0.4.48</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.48</h2>
+        <ul>
+          <li>Fixes media pause and resume so Spotify uses app-specific controls instead of a global play/pause key</li>
+          <li>Avoids sending global media keys for weak or ambiguous playback signals that could launch Apple Music</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 18 Jun 2026 17:17:51 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.48/Voce-0.4.48.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="qi+bwxpI/reAG2gvgapSk4rGhnM6uSiQpHef4/hE9LOBmz46RXZDGA7h5U4nqeuoplNiM05oYfJlOs5FczsyCg=="
+        length="18223854"
+      />
+    </item>
+    <item>
       <title>Version 0.4.47</title>
       <sparkle:version>50</sparkle:version>
       <sparkle:shortVersionString>0.4.47</sparkle:shortVersionString>

@@ -197,14 +197,24 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         }
 
         switch detection {
-        case .playing, .likelyPlaying:
+        case .playing:
             if Task.isCancelled {
                 Self.logger.debug("Skipping media interruption because task is cancelled before key send.")
                 return nil
             }
-            let didSend = sendPlayPauseKey()
-            Self.logger.debug("Media interruption pause key send attempted: \(didSend, privacy: .public)")
-            guard didSend else { return nil }
+            let didPause: Bool
+            if interruptedPlaybackOwner == .spotify {
+                didPause = await spotifyPlaybackController.pause()
+                Self.logger.notice("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
+                Self.logger.debug("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
+            } else {
+                didPause = false
+            }
+            if !didPause {
+                let didSend = sendPlayPauseKey()
+                Self.logger.debug("Media interruption pause key send attempted: \(didSend, privacy: .public)")
+                guard didSend else { return nil }
+            }
 
             if pauseConfirmationDelayNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
@@ -237,6 +247,34 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     """
                 )
             }
+
+            activeTokens.insert(token.id)
+            self.interruptedPlaybackOwner = interruptedPlaybackOwner
+            pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+            Self.logger.notice(
+                """
+                Media interruption token activated. \
+                Active tokens: \(self.activeTokens.count, privacy: .public) \
+                interruptedApp=\(interruptedApplicationDisplayID ?? "nil", privacy: .public) \
+                interruptedOwner=\(interruptedPlaybackOwner?.logValue ?? "nil", privacy: .public)
+                """
+            )
+            Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
+            return token
+        case .likelyPlaying:
+            guard interruptedPlaybackOwner == .spotify else {
+                Self.logger.notice("Media interruption skipped weak playback detection to avoid phantom media launch.")
+                Self.logger.debug("Skipping media interruption for likelyPlaying without app-specific pause control.")
+                return nil
+            }
+            if Task.isCancelled {
+                Self.logger.debug("Skipping media interruption because task is cancelled before Spotify pause.")
+                return nil
+            }
+            let didPause = await spotifyPlaybackController.pause()
+            Self.logger.notice("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
+            Self.logger.debug("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
+            guard didPause else { return nil }
 
             activeTokens.insert(token.id)
             self.interruptedPlaybackOwner = interruptedPlaybackOwner
@@ -969,11 +1007,13 @@ struct MediaRemoteAsyncProbeRunner {
 
 protocol SpotifyPlaybackControlling: Sendable {
     func playerState() async -> SpotifyPlaybackState
+    func pause() async -> Bool
     func play() async -> Bool
 }
 
 struct UnavailableSpotifyPlaybackController: SpotifyPlaybackControlling {
     func playerState() async -> SpotifyPlaybackState { .unknown }
+    func pause() async -> Bool { false }
     func play() async -> Bool { false }
 }
 
@@ -1010,6 +1050,27 @@ struct SpotifyPlaybackController: SpotifyPlaybackControlling {
         """
         guard let output = await runAppleScript(script) else { return false }
         return output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "playing"
+    }
+
+    func pause() async -> Bool {
+        let script = """
+        tell application id "com.spotify.client"
+            pause
+        end tell
+        """
+        guard await runAppleScript(script) != nil else { return false }
+
+        // Spotify applies AppleScript playback commands asynchronously. A
+        // same-script `return player state` can still report "playing" even
+        // though the pause lands a fraction of a second later; poll the direct
+        // Spotify state so we only keep a resume token after pause is real.
+        for _ in 0..<5 {
+            if await playerState() == .paused {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
     }
 
     private func runAppleScript(_ script: String) async -> String? {
