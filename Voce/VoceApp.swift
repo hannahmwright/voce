@@ -59,6 +59,8 @@ private extension AppAppearancePreference {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private static let primaryWindowAutosaveName = "VocePrimaryWindow"
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
@@ -130,9 +132,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        restorePrimaryWindowFromLegacyFrameIfNeeded(window)
+        restorePrimaryWindowToVisibleScreenIfNeeded(window)
+        window.setFrameAutosaveName(Self.primaryWindowAutosaveName)
+        window.saveFrame(usingName: Self.primaryWindowAutosaveName)
         window.makeKeyAndOrderFront(nil)
         configureTransparentWindows()
         collapseDuplicatePrimaryWindows(keeping: window)
+    }
+
+    @MainActor
+    private func restorePrimaryWindowFromLegacyFrameIfNeeded(_ window: NSWindow) {
+        let defaults = UserDefaults.standard
+        let stableFrameKey = "NSWindow Frame \(Self.primaryWindowAutosaveName)"
+        guard defaults.string(forKey: stableFrameKey) == nil else { return }
+
+        guard let mainVisibleFrame = NSScreen.main?.visibleFrame else { return }
+        let legacyFrames = defaults.dictionaryRepresentation().compactMap { key, value -> NSRect? in
+            guard key.hasPrefix("NSWindow Frame SwiftUI."),
+                  key.contains("AppWindow"),
+                  let frameString = value as? String else {
+                return nil
+            }
+            return Self.windowFrame(from: frameString)
+        }
+
+        guard let bestMainFrame = legacyFrames
+            .filter({ Self.hasUsableIntersection($0, with: mainVisibleFrame) })
+            .max(by: {
+                Self.visibleArea(of: $0, in: mainVisibleFrame) < Self.visibleArea(of: $1, in: mainVisibleFrame)
+            }) else {
+            return
+        }
+
+        guard !Self.hasUsableIntersection(window.frame, with: mainVisibleFrame) else { return }
+        window.setFrame(bestMainFrame, display: false)
+    }
+
+    @MainActor
+    private func restorePrimaryWindowToVisibleScreenIfNeeded(_ window: NSWindow) {
+        let visibleFrames = NSScreen.screens.map(\.visibleFrame)
+        guard !visibleFrames.isEmpty else { return }
+
+        let hasUsableVisibleArea = visibleFrames.contains { visibleFrame in
+            Self.hasUsableIntersection(window.frame, with: visibleFrame)
+        }
+        guard !hasUsableVisibleArea else { return }
+
+        let targetFrame = NSScreen.main?.visibleFrame ?? visibleFrames[0]
+        var windowFrame = window.frame
+        windowFrame.size.width = min(windowFrame.width, max(targetFrame.width - 40, VoceDesign.windowMinWidth))
+        windowFrame.size.height = min(windowFrame.height, max(targetFrame.height - 40, VoceDesign.windowMinHeight))
+        windowFrame.origin.x = targetFrame.midX - (windowFrame.width / 2)
+        windowFrame.origin.y = targetFrame.midY - (windowFrame.height / 2)
+        window.setFrame(windowFrame, display: false)
+    }
+
+    private static func windowFrame(from autosaveFrameString: String) -> NSRect? {
+        let values = autosaveFrameString
+            .split(separator: " ")
+            .prefix(4)
+            .compactMap { Double($0) }
+        guard values.count == 4 else { return nil }
+        return NSRect(x: values[0], y: values[1], width: values[2], height: values[3])
+    }
+
+    private static func hasUsableIntersection(_ frame: NSRect, with visibleFrame: NSRect) -> Bool {
+        let intersection = frame.intersection(visibleFrame)
+        return intersection.width >= 160 && intersection.height >= 120
+    }
+
+    private static func visibleArea(of frame: NSRect, in visibleFrame: NSRect) -> CGFloat {
+        let intersection = frame.intersection(visibleFrame)
+        guard !intersection.isNull else { return 0 }
+        return intersection.width * intersection.height
     }
 
     @MainActor

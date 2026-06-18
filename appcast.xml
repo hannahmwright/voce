@@ -3,6 +3,26 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.49</title>
+      <sparkle:version>52</sparkle:version>
+      <sparkle:shortVersionString>0.4.49</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.49</h2>
+        <ul>
+          <li>Fixes main window restoration so Voce reopens on the current main display instead of relying on changing SwiftUI-generated frame keys</li>
+          <li>Adds a stable primary window autosave frame and recovers usable legacy window positions after updates</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 18 Jun 2026 18:05:48 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.49/Voce-0.4.49.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="g1ghL8yRRlbW5II7Osb3WGiCo5/PqYCILsMYYiofMO7RW5vHYOatjK1z4fIlQsgH8/LRcxIfm1htjhl73kPDCA=="
+        length="18231034"
+      />
+    </item>
+    <item>
       <title>Version 0.4.48</title>
       <sparkle:version>51</sparkle:version>
       <sparkle:shortVersionString>0.4.48</sparkle:shortVersionString>
