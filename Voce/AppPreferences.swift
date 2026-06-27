@@ -139,15 +139,24 @@ struct CloudDictationPreferences: Codable, Sendable, Equatable {
     var provider: CloudDictationProvider
     var refinementEnabled: Bool
     var apiKeySource: CloudAPIKeySource
+    var openAIKeyFallbackEnabled: Bool
+    var directUsagePeriodKey: String
+    var directUsageSeconds: Int
 
     init(
         provider: CloudDictationProvider = .openAI,
         refinementEnabled: Bool = true,
-        apiKeySource: CloudAPIKeySource = .keychain
+        apiKeySource: CloudAPIKeySource = .keychain,
+        openAIKeyFallbackEnabled: Bool = false,
+        directUsagePeriodKey: String = "",
+        directUsageSeconds: Int = 0
     ) {
         self.provider = provider
         self.refinementEnabled = refinementEnabled
         self.apiKeySource = apiKeySource
+        self.openAIKeyFallbackEnabled = openAIKeyFallbackEnabled
+        self.directUsagePeriodKey = directUsagePeriodKey
+        self.directUsageSeconds = directUsageSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -155,6 +164,9 @@ struct CloudDictationPreferences: Codable, Sendable, Equatable {
         provider = try container.decodeIfPresent(CloudDictationProvider.self, forKey: .provider) ?? .openAI
         refinementEnabled = try container.decodeIfPresent(Bool.self, forKey: .refinementEnabled) ?? true
         apiKeySource = try container.decodeIfPresent(CloudAPIKeySource.self, forKey: .apiKeySource) ?? .keychain
+        openAIKeyFallbackEnabled = try container.decodeIfPresent(Bool.self, forKey: .openAIKeyFallbackEnabled) ?? false
+        directUsagePeriodKey = try container.decodeIfPresent(String.self, forKey: .directUsagePeriodKey) ?? ""
+        directUsageSeconds = try container.decodeIfPresent(Int.self, forKey: .directUsageSeconds) ?? 0
     }
 }
 
@@ -630,6 +642,9 @@ struct AppPreferences: Codable, Sendable, Equatable {
         if dictation.localeIdentifier.isEmpty {
             dictation.localeIdentifier = "en-US"
         }
+        dictation.cloud.directUsagePeriodKey = dictation.cloud.directUsagePeriodKey
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        dictation.cloud.directUsageSeconds = max(0, dictation.cloud.directUsageSeconds)
         appDictationEnginePreferences = appDictationEnginePreferences.reduce(into: [:]) { partialResult, entry in
             let bundleID = entry.key.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !bundleID.isEmpty, entry.value != .followGlobal else {
@@ -652,6 +667,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
         snapshot.metricsLifetimeTrackingStartedAt = nil
         snapshot.metricsLastRecordingDate = ""
         snapshot.metricsBestTypingWordsPerMinute = 0
+        snapshot.dictation.cloud.directUsagePeriodKey = ""
+        snapshot.dictation.cloud.directUsageSeconds = 0
         snapshot.general.userName = ""
         snapshot.general.appearancePreference = .currentSystemDefault
         snapshot.billing.subscriberEmail = ""

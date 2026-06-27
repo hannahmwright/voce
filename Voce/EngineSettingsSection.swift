@@ -58,7 +58,7 @@ struct EngineSettingsSection: View {
                 }
 
                 if !cloudControlsUnlocked {
-                    Text("Apple Speech only. Cloud transcription is part of Voce Pro.")
+                    Text("Apple Speech only. 300 minutes/month of Voce Cloud is part of Voce Pro.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                 }
@@ -99,7 +99,7 @@ struct EngineSettingsSection: View {
             )
         }
         .buttonStyle(.plain)
-        .help("Open the Voce Pro checkout to enable cloud transcription.")
+        .help("Open the Voce Pro checkout to enable 300 minutes/month of Voce Cloud.")
     }
 
     // MARK: - Cloud configuration
@@ -110,7 +110,19 @@ struct EngineSettingsSection: View {
                 .tint(VoceDesign.warmAccentText)
                 .disabled(!cloudControlsUnlocked)
 
-            if controller.usesDirectCloudCredentials {
+            if !controller.usesDirectCloudCredentials {
+                Text("Authenticated through your Voce account.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            hostedCloudUsageRow
+
+            Toggle("Use my OpenAI key after Voce Cloud minutes run out", isOn: $preferences.dictation.cloud.openAIKeyFallbackEnabled)
+                .tint(VoceDesign.warmAccentText)
+                .disabled(!cloudControlsUnlocked)
+
+            if preferences.dictation.cloud.openAIKeyFallbackEnabled || controller.usesDirectCloudCredentials {
                 Picker("API Key Source", selection: $preferences.dictation.cloud.apiKeySource) {
                     ForEach(CloudAPIKeySource.allCases, id: \.self) { source in
                         Text(source.title).tag(source)
@@ -129,13 +141,33 @@ struct EngineSettingsSection: View {
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                 }
-            } else {
-                Text("Authenticated through your Voce account.")
+
+                Text(controller.directOpenAIUsageSummary)
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
 
             resultBanner(cloudStatus.message, isError: cloudStatus.isError)
+        }
+    }
+
+    @ViewBuilder
+    private var hostedCloudUsageRow: some View {
+        if let summary = controller.hostedCloudUsageSummary {
+            VStack(alignment: .leading, spacing: VoceDesign.xs) {
+                if let fraction = controller.hostedCloudUsageFraction {
+                    ProgressView(value: fraction)
+                        .tint(VoceDesign.warmAccentText)
+                }
+                Text(summary)
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+                if let warning = controller.hostedCloudUsageWarning {
+                    Text(warning)
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.error)
+                }
+            }
         }
     }
 

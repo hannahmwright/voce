@@ -130,6 +130,9 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
         case 401:
             return .authenticationRequired
         case 403:
+            if message?.localizedCaseInsensitiveContains("monthly minutes") == true {
+                return .hostedCloudMinutesExhausted
+            }
             return .subscriptionRequired
         case 408, 504:
             return .timedOut

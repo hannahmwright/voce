@@ -11,6 +11,9 @@ Feature flags:
 
 - `voce_app_access`: Base access and the default feature checked by the Mac app.
 - `voce_cloud_dictation`: Pro-only cloud dictation.
+- `voce_dictation_total`: audit-only total dictation seconds.
+- `voce_dictation_local`: audit-only local dictation seconds.
+- `voce_dictation_byok`: audit-only BYOK cloud dictation seconds.
 
 Manual grant examples:
 
@@ -47,6 +50,7 @@ Environment variables to set in Convex:
 npx convex env set VOCE_AUTH_SECRET <long-random-secret>
 npx convex env set RESEND_API_KEY re_...
 npx convex env set VOCE_AUTH_EMAIL_FROM "Voce <access@your-domain.com>"
+npx convex env set VOCE_ADMIN_EMAILS "you@example.com"
 npx convex env set VOCE_SUPPORT_EMAIL_FROM "Voce Support <support@your-domain.com>"
 npx convex env set VOCE_SUPPORT_EMAIL_TO "h.wright@vervetechgroup.com"
 npx convex env set VOCE_SIGNUP_EMAIL_TO "h.wright@vervetechgroup.com"
@@ -77,6 +81,7 @@ Recommended Stripe price mapping:
 `RESEND_API_KEY` and `VOCE_AUTH_EMAIL_FROM` are required for sending access codes.
 `VOCE_SUPPORT_EMAIL_FROM` and `VOCE_SUPPORT_EMAIL_TO` configure where in-app support requests are sent.
 `VOCE_SIGNUP_EMAIL_TO` optionally overrides where new signup notifications are sent.
+`VOCE_ADMIN_EMAILS` configures who can read the `/admin/usage-audit` report from the dev-only admin screen.
 `VOCE_ENTITLEMENT_API_SECRET` is optional and should not be used as the primary app access control.
 The Mac app requires a verified email session token for entitlement checks, usage recording, and subscription portal sessions.
 
@@ -104,6 +109,27 @@ The app usage endpoint is:
 ```txt
 https://<convex-deployment>.convex.site/entitlements/record-usage
 ```
+
+Usage audit report:
+
+```sh
+npx convex run entitlements:usageAudit '{"months":3}' --prod
+```
+
+The report returns per-user monthly seconds/minutes for total, hosted cloud,
+local, and BYOK dictation. Estimated cost is based only on hosted cloud minutes
+and defaults to `$0.017/minute`; local and BYOK minutes are tracked with `$0`
+cost to Voce.
+
+The dev app also reads the same report through:
+
+```txt
+https://<convex-deployment>.convex.site/admin/usage-audit
+```
+
+That endpoint requires either the entitlement API bearer secret or a verified
+session for an email listed in `VOCE_ADMIN_EMAILS`, `VOCE_SIGNUP_EMAIL_TO`, or
+`VOCE_SUPPORT_EMAIL_TO`.
 
 Cloud dictation proxy endpoints are:
 

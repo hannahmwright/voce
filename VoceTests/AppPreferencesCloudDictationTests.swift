@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import VoceKit
 @testable import Voce
@@ -10,6 +11,9 @@ func appPreferencesCloudDictationDefaults() {
     #expect(preferences.dictation.cloud.provider == .openAI)
     #expect(preferences.dictation.cloud.refinementEnabled)
     #expect(preferences.dictation.cloud.apiKeySource == .keychain)
+    #expect(!preferences.dictation.cloud.openAIKeyFallbackEnabled)
+    #expect(preferences.dictation.cloud.directUsagePeriodKey.isEmpty)
+    #expect(preferences.dictation.cloud.directUsageSeconds == 0)
     #expect(preferences.appDictationEnginePreferences.isEmpty)
 }
 
@@ -53,4 +57,36 @@ func dictationEngineModeResolverClampsUnavailableCloud() {
 
     let resolved = resolver.resolve(for: AppContext(bundleIdentifier: "com.apple.dt.Xcode", appName: "Xcode"))
     #expect(resolved == .local)
+}
+
+@Test("Voce Pro entitlement decodes hosted cloud usage fields")
+func voceProEntitlementDecodesCloudUsageFields() throws {
+    let payload = Data("""
+    {
+      "entitled": true,
+      "source": "stripe",
+      "feature": "voce_app_access",
+      "email": "user@example.com",
+      "planTier": "pro",
+      "grantedFeatures": ["voce_app_access", "voce_cloud_dictation"],
+      "expiresAt": null,
+      "freeLimitSeconds": null,
+      "freeUsedSeconds": null,
+      "freeRemainingSeconds": null,
+      "periodStartsAt": null,
+      "periodEndsAt": null,
+      "cloudLimitSeconds": 18000,
+      "cloudUsedSeconds": 120,
+      "cloudRemainingSeconds": 17880,
+      "cloudPeriodStartsAt": 1767225600000,
+      "cloudPeriodEndsAt": 1769904000000
+    }
+    """.utf8)
+
+    let entitlement = try JSONDecoder().decode(VoceProEntitlement.self, from: payload)
+
+    #expect(entitlement.cloudLimitSeconds == 18_000)
+    #expect(entitlement.cloudUsedSeconds == 120)
+    #expect(entitlement.cloudRemainingSeconds == 17_880)
+    #expect(entitlement.cloudRemainingMinutesText == "298 minutes")
 }

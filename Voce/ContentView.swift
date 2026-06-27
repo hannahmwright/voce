@@ -599,7 +599,7 @@ private struct AccessPromptView: View {
             accessHero(
                 icon: "person.crop.circle.fill",
                 title: "Let's set up access",
-                subtitle: "Voce uses your email to find Base or Pro access, or start your free monthly time."
+                subtitle: "Voce uses your email to find Base or Pro access, or start your free monthly time. Pro includes 300 minutes/month of Voce Cloud."
             )
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
@@ -996,7 +996,7 @@ private struct AccessPromptView: View {
                         )
                 }
 
-                Text("Best accuracy with optional cloud dictation.")
+                Text("Best accuracy with 300 minutes/month of Voce Cloud.")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             }
@@ -1007,7 +1007,8 @@ private struct AccessPromptView: View {
                     .foregroundStyle(VoceDesign.textPrimary)
 
                 planFeatureRow(icon: "star.fill", text: "Everything in Base", muted: false)
-                planFeatureRow(icon: "cloud.fill", text: "Cloud dictation", muted: false)
+                planFeatureRow(icon: "cloud.fill", text: "300 minutes/month of Voce Cloud", muted: false)
+                planFeatureRow(icon: "key.fill", text: "Use your OpenAI key or local dictation after that", muted: false)
                 planFeatureRow(icon: "list.bullet", text: "Smarter cleanup and formatting", muted: false)
             }
 
@@ -1257,7 +1258,7 @@ private struct AccessPromptView: View {
         case .base:
             return "Local dictation and AI actions are ready to go."
         case .pro:
-            return "Local and cloud dictation are ready to go."
+            return "300 minutes/month of Voce Cloud is ready, with local dictation always available."
         case .free, nil:
             return "You're all set."
         }
@@ -1298,7 +1299,7 @@ private struct AccessPromptView: View {
             case .base:
                 return "We found Base for \(normalizedEmail)."
             case .pro:
-                return "We found Pro for \(normalizedEmail)."
+                return "We found Pro for \(normalizedEmail): 300 minutes/month of Voce Cloud."
             case .free:
                 return "Select Base or Pro, or keep using your free monthly time."
             case nil:
@@ -1307,11 +1308,11 @@ private struct AccessPromptView: View {
         case .checking:
             return "Looking for an active subscription or free monthly time."
         case .notEntitled:
-            return "Choose Base for local-only access or Pro for cloud dictation."
+            return "Choose Base for local-only access or Pro for 300 minutes/month of Voce Cloud."
         case .failed:
             return "Try the email you used for checkout."
         case .missingEmail, .needsVerification:
-            return "Voce uses your email to find Base or Pro access, or start your free monthly time."
+            return "Voce uses your email to find Base or Pro access, or start your free monthly time. Pro includes 300 minutes/month of Voce Cloud."
         }
     }
 

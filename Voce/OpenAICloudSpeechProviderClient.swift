@@ -18,6 +18,7 @@ enum CloudDictationError: LocalizedError {
     case missingAPIKey
     case authenticationRequired
     case subscriptionRequired
+    case hostedCloudMinutesExhausted
     case invalidResponse
     case invalidAudioFile
     case emptyTranscript
@@ -35,6 +36,8 @@ enum CloudDictationError: LocalizedError {
             return "Cloud dictation unavailable: verify your email to use cloud dictation."
         case .subscriptionRequired:
             return "Cloud dictation unavailable: Voce Pro is required."
+        case .hostedCloudMinutesExhausted:
+            return "Voce Cloud monthly minutes are used. Use your OpenAI key or local dictation until next month."
         case .invalidResponse:
             return "Cloud dictation unavailable: invalid provider response."
         case .invalidAudioFile:

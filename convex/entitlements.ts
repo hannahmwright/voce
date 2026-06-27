@@ -3,12 +3,23 @@ import { v } from "convex/values";
 
 export const APP_ACCESS_FEATURE = "voce_app_access";
 export const CLOUD_DICTATION_FEATURE = "voce_cloud_dictation";
+export const TOTAL_DICTATION_FEATURE = "voce_dictation_total";
+export const LOCAL_DICTATION_FEATURE = "voce_dictation_local";
+export const BYOK_DICTATION_FEATURE = "voce_dictation_byok";
 const DEFAULT_FEATURE = APP_ACCESS_FEATURE;
 const FREE_MONTHLY_SECONDS = 30 * 60;
+const CLOUD_MONTHLY_SECONDS = configuredPositiveInt("VOCE_CLOUD_MONTHLY_SECONDS") ?? 300 * 60;
+const REALTIME_TRANSCRIPTION_COST_PER_MINUTE =
+  configuredPositiveFloat("VOCE_REALTIME_TRANSCRIPTION_COST_PER_MINUTE") ?? 0.017;
 type ReadCtx = QueryCtx | MutationCtx;
 type Feature = typeof APP_ACCESS_FEATURE | typeof CLOUD_DICTATION_FEATURE;
+type AuditOnlyFeature =
+  | typeof TOTAL_DICTATION_FEATURE
+  | typeof LOCAL_DICTATION_FEATURE
+  | typeof BYOK_DICTATION_FEATURE;
 type PlanTier = "free" | "base" | "pro";
 type EntitlementSource = "free" | "manual" | "stripe";
+type UsageBucket = "totalSeconds" | "hostedSeconds" | "localSeconds" | "byokSeconds";
 
 type AccessGrantBundle = {
   source: EntitlementSource;
@@ -20,6 +31,11 @@ type AccessGrantBundle = {
   freeRemainingSeconds: number | null;
   periodStartsAt: number | null;
   periodEndsAt: number | null;
+  cloudLimitSeconds: number | null;
+  cloudUsedSeconds: number | null;
+  cloudRemainingSeconds: number | null;
+  cloudPeriodStartsAt: number | null;
+  cloudPeriodEndsAt: number | null;
 };
 
 const STRIPE_BASE_PRODUCT_IDS = configuredSetFromEnv("STRIPE_BASE_PRODUCT_IDS", "STRIPE_BASE_PRODUCT_ID");
@@ -39,6 +55,32 @@ function configuredSetFromEnv(...names: string[]) {
       .filter(Boolean),
   );
   return new Set(values);
+}
+
+function configuredPositiveInt(name: string) {
+  const rawValue = (process.env[name] ?? "").trim();
+  if (!rawValue) {
+    return null;
+  }
+  const value = Number.parseInt(rawValue, 10);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function configuredPositiveFloat(name: string) {
+  const rawValue = (process.env[name] ?? "").trim();
+  if (!rawValue) {
+    return null;
+  }
+  const value = Number.parseFloat(rawValue);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function isAuditOnlyFeature(feature: string): feature is AuditOnlyFeature {
+  return (
+    feature === TOTAL_DICTATION_FEATURE ||
+    feature === LOCAL_DICTATION_FEATURE ||
+    feature === BYOK_DICTATION_FEATURE
+  );
 }
 
 function grantedFeaturesForPlanTier(planTier: PlanTier): Feature[] {
@@ -194,6 +236,11 @@ async function activeManualBundle(ctx: ReadCtx, email: string, now: number): Pro
     freeRemainingSeconds: null,
     periodStartsAt: null,
     periodEndsAt: null,
+    cloudLimitSeconds: null,
+    cloudUsedSeconds: null,
+    cloudRemainingSeconds: null,
+    cloudPeriodStartsAt: null,
+    cloudPeriodEndsAt: null,
   };
 }
 
@@ -244,6 +291,11 @@ async function activeStripeBundle(ctx: ReadCtx, email: string, now: number): Pro
     freeRemainingSeconds: null,
     periodStartsAt: null,
     periodEndsAt: null,
+    cloudLimitSeconds: null,
+    cloudUsedSeconds: null,
+    cloudRemainingSeconds: null,
+    cloudPeriodStartsAt: null,
+    cloudPeriodEndsAt: null,
   };
 }
 
@@ -256,11 +308,47 @@ async function usageForPeriod(ctx: ReadCtx, email: string, feature: string, peri
     .unique();
 }
 
+async function addUsageSeconds(
+  ctx: MutationCtx,
+  email: string,
+  feature: string,
+  seconds: number,
+  now: number,
+) {
+  const period = monthPeriod(now);
+  const existing = await usageForPeriod(ctx, email, feature, period.periodKey);
+
+  if (existing) {
+    await ctx.db.patch(existing._id, {
+      usedSeconds: existing.usedSeconds + seconds,
+      updatedAt: now,
+    });
+  } else {
+    await ctx.db.insert("monthlyUsage", {
+      email,
+      feature,
+      periodKey: period.periodKey,
+      usedSeconds: seconds,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+}
+
 async function entitlementFor(ctx: ReadCtx, email: string, feature: string) {
   const now = Date.now();
   const requestedFeature = feature as Feature;
   const manualBundle = await activeManualBundle(ctx, email, now);
   const stripeBundle = await activeStripeBundle(ctx, email, now);
+  const cloudPeriod = monthPeriod(now);
+  const cloudUsage = await usageForPeriod(
+    ctx,
+    email,
+    CLOUD_DICTATION_FEATURE,
+    cloudPeriod.periodKey,
+  );
+  const cloudUsedSeconds = cloudUsage?.usedSeconds ?? 0;
+  const cloudRemainingSeconds = Math.max(0, CLOUD_MONTHLY_SECONDS - cloudUsedSeconds);
 
   let freeBundle: AccessGrantBundle | null = null;
   if (requestedFeature === DEFAULT_FEATURE) {
@@ -279,6 +367,11 @@ async function entitlementFor(ctx: ReadCtx, email: string, feature: string) {
       freeRemainingSeconds: remainingSeconds,
       periodStartsAt: period.startsAt,
       periodEndsAt: period.endsAt,
+      cloudLimitSeconds: null,
+      cloudUsedSeconds: null,
+      cloudRemainingSeconds: null,
+      cloudPeriodStartsAt: null,
+      cloudPeriodEndsAt: null,
     };
   }
 
@@ -289,7 +382,11 @@ async function entitlementFor(ctx: ReadCtx, email: string, feature: string) {
 
   const granted = bestBundle?.grantedFeatures.includes(requestedFeature) ?? false;
   const freeIsActive = bestBundle?.source === "free" && (bestBundle.freeRemainingSeconds ?? 0) > 0;
-  const entitled = granted && (bestBundle?.source !== "free" || freeIsActive);
+  const cloudIsActive =
+    requestedFeature !== CLOUD_DICTATION_FEATURE ||
+    (bestBundle?.planTier === "pro" && cloudRemainingSeconds > 0);
+  const entitled = granted && (bestBundle?.source !== "free" || freeIsActive) && cloudIsActive;
+  const hasProCloudAccess = bestBundle?.grantedFeatures.includes(CLOUD_DICTATION_FEATURE) ?? false;
 
   return {
     entitled,
@@ -304,6 +401,11 @@ async function entitlementFor(ctx: ReadCtx, email: string, feature: string) {
     freeRemainingSeconds: bestBundle?.freeRemainingSeconds ?? null,
     periodStartsAt: bestBundle?.periodStartsAt ?? null,
     periodEndsAt: bestBundle?.periodEndsAt ?? null,
+    cloudLimitSeconds: hasProCloudAccess ? CLOUD_MONTHLY_SECONDS : null,
+    cloudUsedSeconds: hasProCloudAccess ? cloudUsedSeconds : null,
+    cloudRemainingSeconds: hasProCloudAccess ? cloudRemainingSeconds : null,
+    cloudPeriodStartsAt: hasProCloudAccess ? cloudPeriod.startsAt : null,
+    cloudPeriodEndsAt: hasProCloudAccess ? cloudPeriod.endsAt : null,
   };
 }
 
@@ -330,37 +432,226 @@ export const recordUsage = mutation({
     const feature = args.feature ?? DEFAULT_FEATURE;
     const seconds = Math.max(0, Math.ceil(args.seconds));
     const now = Date.now();
+    const entitlementFeature = isAuditOnlyFeature(feature) ? DEFAULT_FEATURE : feature;
 
     if (seconds === 0) {
-      return await entitlementFor(ctx, email, feature);
+      return await entitlementFor(ctx, email, entitlementFeature);
     }
 
-    const manual = await activeManualBundle(ctx, email, now);
-    const active = await activeStripeBundle(ctx, email, now);
-    if (manual || active || feature !== DEFAULT_FEATURE) {
-      return await entitlementFor(ctx, email, feature);
+    if (isAuditOnlyFeature(feature)) {
+      const entitlement = await entitlementFor(ctx, email, DEFAULT_FEATURE);
+      if (!entitlement.entitled) {
+        return entitlement;
+      }
+      await addUsageSeconds(ctx, email, feature, seconds, now);
+      if (feature !== TOTAL_DICTATION_FEATURE) {
+        await addUsageSeconds(ctx, email, TOTAL_DICTATION_FEATURE, seconds, now);
+      }
+      return await entitlementFor(ctx, email, DEFAULT_FEATURE);
     }
 
-    const period = monthPeriod(now);
-    const existing = await usageForPeriod(ctx, email, feature, period.periodKey);
+    const entitlement = await entitlementFor(ctx, email, feature);
+    if (
+      feature !== CLOUD_DICTATION_FEATURE &&
+      (entitlement.source === "manual" || entitlement.source === "stripe" || feature !== DEFAULT_FEATURE)
+    ) {
+      return await entitlementFor(ctx, email, feature);
+    }
+    if (feature === CLOUD_DICTATION_FEATURE && !entitlement.grantedFeatures.includes(CLOUD_DICTATION_FEATURE)) {
+      return entitlement;
+    }
 
-    if (existing) {
-      await ctx.db.patch(existing._id, {
-        usedSeconds: existing.usedSeconds + seconds,
-        updatedAt: now,
-      });
-    } else {
-      await ctx.db.insert("monthlyUsage", {
-        email,
-        feature,
-        periodKey: period.periodKey,
-        usedSeconds: seconds,
-        createdAt: now,
-        updatedAt: now,
-      });
+    await addUsageSeconds(ctx, email, feature, seconds, now);
+    if (feature === CLOUD_DICTATION_FEATURE) {
+      await addUsageSeconds(ctx, email, TOTAL_DICTATION_FEATURE, seconds, now);
     }
 
     return await entitlementFor(ctx, email, feature);
+  },
+});
+
+function recentPeriodKeys(count: number, now: number) {
+  const monthCount = Math.max(1, Math.min(36, Math.floor(count)));
+  const cursor = new Date(now);
+  cursor.setUTCDate(1);
+  cursor.setUTCHours(0, 0, 0, 0);
+
+  const periods: string[] = [];
+  for (let index = 0; index < monthCount; index += 1) {
+    periods.push(
+      `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`,
+    );
+    cursor.setUTCMonth(cursor.getUTCMonth() - 1);
+  }
+  return periods.reverse();
+}
+
+function emptyUsagePeriod(periodKey: string) {
+  return {
+    periodKey,
+    totalSeconds: 0,
+    hostedSeconds: 0,
+    localSeconds: 0,
+    byokSeconds: 0,
+    estimatedCostUSD: 0,
+  };
+}
+
+function estimatedHostedCostUSD(hostedSeconds: number, costPerHostedMinuteUSD: number) {
+  return Math.round((hostedSeconds / 60) * costPerHostedMinuteUSD * 10_000) / 10_000;
+}
+
+function usageBucketForFeature(feature: string): UsageBucket | null {
+  switch (feature) {
+    case TOTAL_DICTATION_FEATURE:
+      return "totalSeconds";
+    case CLOUD_DICTATION_FEATURE:
+      return "hostedSeconds";
+    case LOCAL_DICTATION_FEATURE:
+      return "localSeconds";
+    case BYOK_DICTATION_FEATURE:
+      return "byokSeconds";
+    default:
+      return null;
+  }
+}
+
+export const usageAudit = query({
+  args: {
+    months: v.optional(v.number()),
+    costPerHostedMinuteUSD: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const periodKeys = recentPeriodKeys(args.months ?? 6, now);
+    const costPerHostedMinuteUSD =
+      args.costPerHostedMinuteUSD !== undefined && Number.isFinite(args.costPerHostedMinuteUSD)
+        ? Math.max(0, args.costPerHostedMinuteUSD)
+        : REALTIME_TRANSCRIPTION_COST_PER_MINUTE;
+    const trackedFeatures = [
+      TOTAL_DICTATION_FEATURE,
+      CLOUD_DICTATION_FEATURE,
+      LOCAL_DICTATION_FEATURE,
+      BYOK_DICTATION_FEATURE,
+    ];
+    const userSummaries = new Map<
+      string,
+      {
+        email: string;
+        totalSeconds: number;
+        hostedSeconds: number;
+        localSeconds: number;
+        byokSeconds: number;
+        estimatedCostUSD: number;
+        byPeriod: Map<string, ReturnType<typeof emptyUsagePeriod>>;
+      }
+    >();
+
+    function summaryForEmail(email: string) {
+      let summary = userSummaries.get(email);
+      if (!summary) {
+        summary = {
+          email,
+          totalSeconds: 0,
+          hostedSeconds: 0,
+          localSeconds: 0,
+          byokSeconds: 0,
+          estimatedCostUSD: 0,
+          byPeriod: new Map(periodKeys.map((periodKey) => [periodKey, emptyUsagePeriod(periodKey)])),
+        };
+        userSummaries.set(email, summary);
+      }
+      return summary;
+    }
+
+    for (const periodKey of periodKeys) {
+      for (const feature of trackedFeatures) {
+        const bucket = usageBucketForFeature(feature);
+        if (!bucket) {
+          continue;
+        }
+        const rows = await ctx.db
+          .query("monthlyUsage")
+          .withIndex("by_feature_period", (q) => q.eq("feature", feature).eq("periodKey", periodKey))
+          .collect();
+        for (const row of rows) {
+          const summary = summaryForEmail(row.email);
+          const period = summary.byPeriod.get(periodKey) ?? emptyUsagePeriod(periodKey);
+          summary[bucket] += row.usedSeconds;
+          period[bucket] += row.usedSeconds;
+          summary.byPeriod.set(periodKey, period);
+        }
+      }
+    }
+
+    const totals = {
+      totalSeconds: 0,
+      hostedSeconds: 0,
+      localSeconds: 0,
+      byokSeconds: 0,
+      estimatedCostUSD: 0,
+    };
+
+    const users = Array.from(userSummaries.values())
+      .map((summary) => {
+        const byPeriod = periodKeys.map((periodKey) => {
+          const period = summary.byPeriod.get(periodKey) ?? emptyUsagePeriod(periodKey);
+          return {
+            ...period,
+            estimatedCostUSD: estimatedHostedCostUSD(
+              period.hostedSeconds,
+              costPerHostedMinuteUSD,
+            ),
+          };
+        });
+        const estimatedCostUSD = estimatedHostedCostUSD(
+          summary.hostedSeconds,
+          costPerHostedMinuteUSD,
+        );
+
+        totals.totalSeconds += summary.totalSeconds;
+        totals.hostedSeconds += summary.hostedSeconds;
+        totals.localSeconds += summary.localSeconds;
+        totals.byokSeconds += summary.byokSeconds;
+        totals.estimatedCostUSD += estimatedCostUSD;
+
+        return {
+          email: summary.email,
+          totalSeconds: summary.totalSeconds,
+          hostedSeconds: summary.hostedSeconds,
+          localSeconds: summary.localSeconds,
+          byokSeconds: summary.byokSeconds,
+          totalMinutes: Math.round((summary.totalSeconds / 60) * 100) / 100,
+          hostedMinutes: Math.round((summary.hostedSeconds / 60) * 100) / 100,
+          localMinutes: Math.round((summary.localSeconds / 60) * 100) / 100,
+          byokMinutes: Math.round((summary.byokSeconds / 60) * 100) / 100,
+          estimatedCostUSD,
+          byPeriod,
+        };
+      })
+      .sort((a, b) => b.totalSeconds - a.totalSeconds || a.email.localeCompare(b.email));
+
+    totals.estimatedCostUSD = Math.round(totals.estimatedCostUSD * 10_000) / 10_000;
+
+    return {
+      generatedAt: now,
+      periodKeys,
+      costPerHostedMinuteUSD,
+      features: {
+        total: TOTAL_DICTATION_FEATURE,
+        hosted: CLOUD_DICTATION_FEATURE,
+        local: LOCAL_DICTATION_FEATURE,
+        byok: BYOK_DICTATION_FEATURE,
+      },
+      totals: {
+        ...totals,
+        totalMinutes: Math.round((totals.totalSeconds / 60) * 100) / 100,
+        hostedMinutes: Math.round((totals.hostedSeconds / 60) * 100) / 100,
+        localMinutes: Math.round((totals.localSeconds / 60) * 100) / 100,
+        byokMinutes: Math.round((totals.byokSeconds / 60) * 100) / 100,
+      },
+      users,
+    };
   },
 });
 

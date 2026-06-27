@@ -151,7 +151,7 @@ struct VoceAccessSettingsSection: View {
 
             if showsUpgradeToProCard {
                 VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                    Text("Keep local dictation and add cloud dictation with smarter cleanup.")
+                    Text("Keep local dictation and add 300 minutes/month of Voce Cloud. After that, use your OpenAI key or local dictation.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -387,9 +387,9 @@ struct VoceAccessSettingsSection: View {
 
     private var planSelectionHelp: String {
         if showsUpgradeToProCard {
-            return "Pro adds cloud dictation and smarter cleanup while keeping local dictation available any time."
+            return "Pro adds 300 minutes/month of Voce Cloud. After that, use your OpenAI key or local dictation."
         }
-        return "Choose Base for unlimited local dictation, or Pro for cloud dictation and smarter cleanup."
+        return "Choose Base for unlimited local dictation, or Pro for 300 minutes/month of Voce Cloud. After that, use your OpenAI key or local dictation."
     }
 
     private var primaryAccessButtonTitle: String {
@@ -454,7 +454,7 @@ struct VoceAccessSettingsSection: View {
         case .missingEmail:
             return (
                 "Start with your email",
-                "We will find Base or Pro access, or start your free monthly dictation time.",
+                "We will find Base or Pro access, or start your free monthly dictation time. Pro includes 300 minutes/month of Voce Cloud.",
                 nil,
                 "person.crop.circle",
                 VoceDesign.warmAccentText
@@ -481,8 +481,8 @@ struct VoceAccessSettingsSection: View {
                 return (
                     entitlement.source == .manual ? "Voce Pro is on us" : "Voce Pro is active",
                     entitlement.source == .manual
-                        ? "Cloud dictation, local dictation, and AI actions are ready for you."
-                        : "Cloud dictation, local dictation, and AI actions are ready to go.",
+                        ? "300 minutes/month of Voce Cloud, local dictation, and AI actions are ready for you."
+                        : "300 minutes/month of Voce Cloud, local dictation, and AI actions are ready to go.",
                     entitlement.source == .manual ? "Pro" : "Subscribed",
                     "sparkles",
                     VoceDesign.warmAccentText
@@ -516,7 +516,7 @@ struct VoceAccessSettingsSection: View {
         case .notEntitled:
             return (
                 "Your free time is used",
-                "Choose Base for unlimited local dictation or Pro for cloud dictation.",
+                "Choose Base for unlimited local dictation or Pro for 300 minutes/month of Voce Cloud.",
                 nil,
                 "sparkles",
                 VoceDesign.warmAccentText

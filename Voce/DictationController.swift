@@ -166,9 +166,15 @@ struct DailyUsageActivityDay: Equatable {
     let sessionCount: Int
 }
 
+private enum ActiveCloudUsageMetering {
+    case voceHosted
+    case directOpenAI
+}
+
 @MainActor
 final class DictationController: ObservableObject {
     private static let minimumVisibleEmptyTranscriptDurationMS = 3_000
+    private static let directOpenAIEstimatedCostPerMinute = 0.017
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "DictationController")
 
     private enum RecordingStartError: LocalizedError {
@@ -205,7 +211,7 @@ final class DictationController: ObservableObject {
             if voceProEntitlementStatus.isEntitled {
                 prefetchRealtimeWhisperClientSecretIfNeeded()
             }
-            if cloudAccessEnabled(for: oldValue) != cloudAccessEnabled(for: voceProEntitlementStatus) {
+            if cloudRoutingSignature(for: oldValue) != cloudRoutingSignature(for: voceProEntitlementStatus) {
                 Task { @MainActor [weak self] in
                     await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
                 }
@@ -251,6 +257,7 @@ final class DictationController: ObservableObject {
     private var activeStartTaskID: UUID?
     private var activePreviewSession: AppleSpeechPreviewSession?
     private var activeRealtimeWhisperSession: OpenAIRealtimeWhisperCaptureSession?
+    private var activeCloudUsageMetering: ActiveCloudUsageMetering?
     private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
@@ -259,9 +266,11 @@ final class DictationController: ObservableObject {
     private var entitlementRefreshTask: Task<Void, Never>?
     private var realtimeWhisperClientSecretPrefetchTask: Task<Void, Never>?
     private var realtimeWhisperClientSecretRefreshTask: Task<Void, Never>?
+    private var captureReadyOverlayStartTaskID: UUID?
     private var terminationObserver: Any?
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
+    private var activeHostedCloudUsageLimitSeconds: TimeInterval?
     private var suppressNextPressToTalkStop = false
     private var cloudValidationTask: Task<Void, Never>?
     private var cloudValidationCredentialVersion = UUID()
@@ -409,6 +418,7 @@ final class DictationController: ObservableObject {
         realtimeWhisperClientSecretPrefetchTask = nil
         realtimeWhisperClientSecretRefreshTask?.cancel()
         realtimeWhisperClientSecretRefreshTask = nil
+        captureReadyOverlayStartTaskID = nil
         overlay.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
@@ -1224,25 +1234,116 @@ final class DictationController: ObservableObject {
     }
 
     var hasCloudDictationEntitlement: Bool {
-        guard case .entitled(let entitlement) = voceProEntitlementStatus else {
-            return false
-        }
-        return entitlement.hasFeature(.cloudDictation)
+        hasCloudDictationEntitlement(in: voceProEntitlementStatus)
     }
 
     var canUseCloudDictation: Bool {
         isDevBuildWithCloudOptions || hasCloudDictationEntitlement
     }
 
-    private func cloudAccessEnabled(for status: VoceProEntitlementStatus) -> Bool {
-        if isDevBuildWithCloudOptions {
-            return true
-        }
+    var canUseCloudRuntime: Bool {
+        isDevBuildWithCloudOptions || canUseCloudRuntime(in: voceProEntitlementStatus)
+    }
 
+    private func hasCloudDictationEntitlement(in status: VoceProEntitlementStatus) -> Bool {
         guard case .entitled(let entitlement) = status else {
             return false
         }
         return entitlement.hasFeature(.cloudDictation)
+    }
+
+    private func canUseCloudRuntime(in status: VoceProEntitlementStatus) -> Bool {
+        guard hasCloudDictationEntitlement(in: status) else { return false }
+        return hostedCloudRemainingSeconds(in: status) != 0 || canUseDirectCloudOverageFallback
+    }
+
+    private func cloudRoutingSignature(for status: VoceProEntitlementStatus) -> String {
+        [
+            canUseCloudRuntime(in: status) ? "cloud-runtime" : "local-runtime",
+            usesDirectCloudCredentials(in: status) ? "direct" : "hosted",
+            hostedCloudRemainingSeconds(in: status) == 0 ? "cloud-empty" : "cloud-available",
+        ].joined(separator: "|")
+    }
+
+    private func hostedCloudRemainingSeconds(in status: VoceProEntitlementStatus) -> Int? {
+        guard case .entitled(let entitlement) = status else { return nil }
+        return entitlement.cloudRemainingSeconds
+    }
+
+    private var hostedCloudRemainingSeconds: Int? {
+        hostedCloudRemainingSeconds(in: voceProEntitlementStatus)
+    }
+
+    var hostedCloudUsageFraction: Double? {
+        guard case .entitled(let entitlement) = voceProEntitlementStatus,
+              let used = entitlement.cloudUsedSeconds,
+              let limit = entitlement.cloudLimitSeconds,
+              limit > 0
+        else { return nil }
+        return min(max(Double(used) / Double(limit), 0), 1)
+    }
+
+    var hostedCloudUsageSummary: String? {
+        guard case .entitled(let entitlement) = voceProEntitlementStatus,
+              let used = entitlement.cloudUsedSeconds,
+              let limit = entitlement.cloudLimitSeconds,
+              let remaining = entitlement.cloudRemainingSeconds
+        else { return nil }
+        return "\(Self.minutesText(for: used)) used of \(Self.minutesText(for: limit)); \(Self.minutesText(for: remaining)) left this month."
+    }
+
+    var hostedCloudUsageWarning: String? {
+        guard case .entitled(let entitlement) = voceProEntitlementStatus,
+              entitlement.hasFeature(.cloudDictation),
+              entitlement.cloudRemainingSeconds == 0
+        else { return nil }
+        if canUseDirectCloudOverageFallback {
+            return "Voce Cloud minutes are used. Voce will use your OpenAI key for cloud dictation."
+        }
+        return "Voce Cloud minutes are used. Voce will use local dictation until next month or until you add an OpenAI key."
+    }
+
+    var directOpenAIUsageSummary: String {
+        let cloud = preferences.dictation.cloud
+        let periodKey = Self.currentUsagePeriodKey()
+        let usedSeconds = cloud.directUsagePeriodKey == periodKey ? max(0, cloud.directUsageSeconds) : 0
+        let minutes = Double(usedSeconds) / 60
+        let estimatedCost = minutes * Self.directOpenAIEstimatedCostPerMinute
+        return "\(Self.minutesText(for: usedSeconds)) used this month. Estimated realtime OpenAI cost: \(Self.currencyString(estimatedCost))."
+    }
+
+    private var canUseDirectCloudOverageFallback: Bool {
+        preferences.dictation.cloud.openAIKeyFallbackEnabled && hasResolvableDirectCloudCredentials
+    }
+
+    private var hasResolvableDirectCloudCredentials: Bool {
+        !cloudDictationAvailabilityService.directCredentialStatus(for: preferences.dictation).isError
+    }
+
+    private func usesDirectCloudCredentials(in status: VoceProEntitlementStatus) -> Bool {
+        isDevBuildWithCloudOptions || (hostedCloudRemainingSeconds(in: status) == 0 && canUseDirectCloudOverageFallback)
+    }
+
+    private static func minutesText(for seconds: Int) -> String {
+        let minutes = max(0, Int(ceil(Double(seconds) / 60)))
+        return "\(minutes) \(minutes == 1 ? "minute" : "minutes")"
+    }
+
+    private static func currencyString(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "$%.2f", value)
+    }
+
+    private static func currentUsagePeriodKey(for date: Date = Date()) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        let components = calendar.dateComponents([.year, .month], from: date)
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        return String(format: "%04d-%02d", year, month)
     }
 
     var cloudDictationStatus: CloudDictationAvailabilityStatus {
@@ -1272,7 +1373,7 @@ final class DictationController: ObservableObject {
     }
 
     var usesDirectCloudCredentials: Bool {
-        isDevBuildWithCloudOptions
+        usesDirectCloudCredentials(in: voceProEntitlementStatus)
     }
 
     var cloudCredentialEnvironmentVariableName: String {
@@ -1282,6 +1383,20 @@ final class DictationController: ObservableObject {
     private func baseCloudDictationStatus() -> CloudDictationAvailabilityStatus {
         if usesDirectCloudCredentials {
             return cloudDictationAvailabilityService.directCredentialStatus(for: preferences.dictation)
+        }
+
+        if hasCloudDictationEntitlement,
+           hostedCloudRemainingSeconds == 0 {
+            if preferences.dictation.cloud.openAIKeyFallbackEnabled {
+                return CloudDictationAvailabilityStatus(
+                    message: "Voce Cloud minutes are used. Add or fix your OpenAI API key to keep cloud dictation, or use local dictation until next month.",
+                    isError: true
+                )
+            }
+            return CloudDictationAvailabilityStatus(
+                message: "Voce Cloud minutes are used. Voce will use local dictation until next month.",
+                isError: true
+            )
         }
 
         let email = normalizedSubscriberEmail
@@ -1302,10 +1417,14 @@ final class DictationController: ObservableObject {
             )
         }
 
-        return CloudDictationAvailabilityStatus(
-            message: "Ready. Authenticated through your Voce account.",
-            isError: false
-        )
+        if let remaining = hostedCloudRemainingSeconds {
+            return CloudDictationAvailabilityStatus(
+                message: "Ready. \(Self.minutesText(for: remaining)) of Voce Cloud left this month.",
+                isError: false
+            )
+        }
+
+        return CloudDictationAvailabilityStatus(message: "Ready. Authenticated through your Voce account.", isError: false)
     }
 
     private func makeCloudSpeechProviderClient(
@@ -1320,6 +1439,26 @@ final class DictationController: ObservableObject {
 
     private func usesRealtimeWhisperCapture(for appContext: AppContext) -> Bool {
         dictationEngineModeResolver.resolve(for: appContext) == .cloud
+    }
+
+    private func requestedDictationMode(for appContext: AppContext) -> DictationEngineMode {
+        preferences.appDictationEnginePreferences[appContext.bundleIdentifier]?
+            .resolvedMode(globalMode: preferences.dictation.engineMode)
+            ?? preferences.dictation.engineMode
+    }
+
+    private func cloudRoutingNotice(for appContext: AppContext) -> String? {
+        guard requestedDictationMode(for: appContext) == .cloud else { return nil }
+
+        if usesRealtimeWhisperCapture(for: appContext) {
+            if usesDirectCloudCredentials, hostedCloudRemainingSeconds == 0 {
+                return "Voce Cloud minutes are used. Recording with your OpenAI key."
+            }
+            return nil
+        }
+
+        guard hostedCloudRemainingSeconds == 0 else { return nil }
+        return "Voce Cloud minutes are used. Recording locally until next month."
     }
 
     private func makeRealtimeWhisperCaptureSession(
@@ -1348,12 +1487,31 @@ final class DictationController: ObservableObject {
             let tokenProvider = VoceRealtimeTranscriptionTokenProvider(
                 subscriberEmail: normalizedSubscriberEmail
             )
+            let directFallbackEnabled = canUseDirectCloudOverageFallback
+            let fallbackAPIKeySource = preferences.dictation.cloud.apiKeySource
             authTokenProvider = {
-                try await tokenProvider.clientSecret(
-                    localeIdentifier: localeIdentifier,
-                    hints: transcriptionHints,
-                    model: resolvedModel
-                )
+                do {
+                    return try await tokenProvider.clientSecret(
+                        localeIdentifier: localeIdentifier,
+                        hints: transcriptionHints,
+                        model: resolvedModel
+                    )
+                } catch CloudDictationError.hostedCloudMinutesExhausted where directFallbackEnabled {
+                    await MainActor.run {
+                        self.activeCloudUsageMetering = .directOpenAI
+                        self.activeHostedCloudUsageLimitSeconds = nil
+                        self.status = "Voce Cloud minutes are used. Recording with your OpenAI key."
+                    }
+                    do {
+                        return try CloudProviderCredentialStore.shared.resolveOpenAIAPIKey(
+                            source: fallbackAPIKeySource
+                        )
+                    } catch CloudProviderCredentialStoreError.missingAPIKey {
+                        throw CloudDictationError.missingAPIKey
+                    } catch {
+                        throw error
+                    }
+                }
             }
         }
 
@@ -1380,7 +1538,8 @@ final class DictationController: ObservableObject {
     private func prefetchRealtimeWhisperClientSecretIfNeeded() {
         guard hasBootstrapped,
               !usesDirectCloudCredentials,
-              canUseCloudDictation,
+              canUseCloudRuntime,
+              hostedCloudRemainingSeconds != 0,
               preferences.usesCloudDictationConfiguration
         else {
             cancelRealtimeWhisperClientSecretWarmup()
@@ -1478,7 +1637,8 @@ final class DictationController: ObservableObject {
                       self.preferences.dictation.localeIdentifier == localeIdentifier,
                       self.realtimeWhisperTranscriptionModel == model,
                       self.preferences.usesCloudDictationConfiguration,
-                      self.canUseCloudDictation,
+                      self.canUseCloudRuntime,
+                      self.hostedCloudRemainingSeconds != 0,
                       !self.usesDirectCloudCredentials
                 else { return }
 
@@ -1494,6 +1654,9 @@ final class DictationController: ObservableObject {
         lastCloudValidationToken = nil
         lastCloudValidationFailureMessage = nil
         refreshCloudValidationIfNeeded(force: true)
+        Task { @MainActor [weak self] in
+            await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
+        }
     }
 
     func clearCloudAPIKey() throws {
@@ -1503,6 +1666,9 @@ final class DictationController: ObservableObject {
         cloudValidationCredentialVersion = UUID()
         lastCloudValidationToken = nil
         lastCloudValidationFailureMessage = nil
+        Task { @MainActor [weak self] in
+            await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
+        }
     }
 
     func runCloudDictationTest() async throws -> String {
@@ -1607,7 +1773,9 @@ final class DictationController: ObservableObject {
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
         pendingCompletionActionOverride = nil
         activeStyleOverride = nil
+        activeCloudUsageMetering = nil
         activeFreeUsageLimitSeconds = voceProEntitlementStatus.freeRecordingRemainingSeconds
+        activeHostedCloudUsageLimitSeconds = nil
         overlay.selectedControlStyle = effectiveStyleProfile(for: capturedContext).structureMode
 
         // Restore per-app overlay position if the user previously dragged it,
@@ -1631,22 +1799,27 @@ final class DictationController: ObservableObject {
 
         let startTaskID = UUID()
         activeStartTaskID = startTaskID
+        captureReadyOverlayStartTaskID = nil
         activeStartTask = Task { @MainActor in
             do {
                 try await ensureMicrophonePermission()
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
 
                 status = "Arming microphone..."
-                // Show the bubble immediately with a spinner (no audio glyph)
-                // so the user sees feedback right away but doesn't start
-                // speaking before audio capture is actually live. For cloud
-                // sessions this covers the worst-case window where the
-                // session token wasn't prefetched or has expired.
+                // Show the bubble immediately with a spinner. The first real
+                // mic callback switches it to the listening glyph, even if the
+                // realtime websocket is still arming.
                 overlay.setAnchorSnapshot(overlayAnchorSnapshot)
                 overlay.controlWorkflows = enabledAIWorkflows
                 overlay.show(state: .preparing(handsFree: mode == .handsFree))
 
                 if usesRealtimeWhisperCapture(for: capturedContext) {
+                    activeCloudUsageMetering = usesDirectCloudCredentials ? .directOpenAI : .voceHosted
+                    if activeCloudUsageMetering == .voceHosted,
+                       let remaining = hostedCloudRemainingSeconds,
+                       remaining > 0 {
+                        activeHostedCloudUsageLimitSeconds = TimeInterval(remaining)
+                    }
                     let session = try makeRealtimeWhisperCaptureSession(
                         onPartialText: { [weak self, weak overlay] text in
                             Task { @MainActor [weak self, weak overlay] in
@@ -1661,14 +1834,20 @@ final class DictationController: ObservableObject {
                         },
                         onAudioLevel: { [weak self, weak overlay] level in
                             Task { @MainActor [weak self, weak overlay] in
-                                guard self?.shouldDisplayStreamingCaptureFeedback(for: mode) == true else { return }
-                                overlay?.updateAudioLevel(level)
+                                guard overlay != nil else { return }
+                                self?.displayCaptureReadyFeedbackIfNeeded(
+                                    for: mode,
+                                    startTaskID: startTaskID,
+                                    level: level
+                                )
                             }
                         }
                     )
                     activeRealtimeWhisperSession = session
                     try await session.start()
                 } else {
+                    activeCloudUsageMetering = nil
+                    activeHostedCloudUsageLimitSeconds = nil
                     let session = AppleSpeechPreviewSession(
                         localeIdentifier: preferences.dictation.localeIdentifier,
                         previewTranscriptionEnabled: false,
@@ -1680,8 +1859,12 @@ final class DictationController: ObservableObject {
                         },
                         onAudioLevel: { [weak self, weak overlay] level in
                             Task { @MainActor [weak self, weak overlay] in
-                                guard self?.shouldDisplayStreamingCaptureFeedback(for: mode) == true else { return }
-                                overlay?.updateAudioLevel(level)
+                                guard overlay != nil else { return }
+                                self?.displayCaptureReadyFeedbackIfNeeded(
+                                    for: mode,
+                                    startTaskID: startTaskID,
+                                    level: level
+                                )
                             }
                         }
                     )
@@ -1693,7 +1876,8 @@ final class DictationController: ObservableObject {
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
                 currentSessionID = sessionID
 
-                status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
+                status = cloudRoutingNotice(for: capturedContext)
+                    ?? (mode == .handsFree ? "Hands-free listening..." : "Recording...")
                 isRecording = true
                 handsFreeOn = mode == .handsFree
                 menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
@@ -1704,9 +1888,13 @@ final class DictationController: ObservableObject {
                     Task { @MainActor [weak self] in
                         self?.recordingElapsed += 1
                         self?.stopIfFreeUsageLimitReached()
+                        self?.stopIfHostedCloudUsageLimitReached()
                     }
                 }
-                overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+                if captureReadyOverlayStartTaskID != startTaskID {
+                    overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+                    captureReadyOverlayStartTaskID = startTaskID
+                }
 
                 if shouldPauseMedia {
                     let mediaToken = await mediaInterruption.beginInterruption()
@@ -1724,18 +1912,21 @@ final class DictationController: ObservableObject {
                 self.recordingTimer?.invalidate()
                 self.recordingTimer = nil
                 self.recordingElapsed = 0
+                captureReadyOverlayStartTaskID = nil
                 isRecording = false
                 handsFreeOn = false
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
                 activeAppContext = nil
                 activeFreeUsageLimitSeconds = nil
+                activeHostedCloudUsageLimitSeconds = nil
                 overlayPersistenceBundleIdentifier = nil
                 pendingCompletionActionOverride = nil
                 activeStyleOverride = nil
                 updateActiveRecordingHotkeys()
                 activePreviewSession = nil
                 activeRealtimeWhisperSession = nil
+                activeCloudUsageMetering = nil
                 recordingStateMachine.markTranscriptionFailed()
                 status = "Failed to start"
                 lastError = error.localizedDescription
@@ -1753,6 +1944,23 @@ final class DictationController: ObservableObject {
         isRecording && activeRecordingMode == mode
     }
 
+    private func displayCaptureReadyFeedbackIfNeeded(
+        for mode: RecordingMode,
+        startTaskID: UUID,
+        level: Double
+    ) {
+        let startIsStillArming = activeStartTaskID == startTaskID
+            && (activePreviewSession != nil || activeRealtimeWhisperSession != nil)
+        let recordingIsActive = shouldDisplayStreamingCaptureFeedback(for: mode)
+        guard startIsStillArming || recordingIsActive else { return }
+
+        if captureReadyOverlayStartTaskID != startTaskID {
+            captureReadyOverlayStartTaskID = startTaskID
+            overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+        }
+        overlay.updateAudioLevel(level)
+    }
+
     private func handleStreamingFailure(_ error: Error) {
         let previewSession = activePreviewSession
         let realtimeSession = activeRealtimeWhisperSession
@@ -1763,15 +1971,18 @@ final class DictationController: ObservableObject {
         activeStartTaskID = nil
         activePreviewSession = nil
         activeRealtimeWhisperSession = nil
+        activeCloudUsageMetering = nil
 
         recordingTimer?.invalidate()
         recordingTimer = nil
+        captureReadyOverlayStartTaskID = nil
         recordingElapsed = 0
         isRecording = false
         handsFreeOn = false
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
         activeFreeUsageLimitSeconds = nil
+        activeHostedCloudUsageLimitSeconds = nil
         updateActiveRecordingHotkeys()
 
         Task {
@@ -1815,10 +2026,13 @@ final class DictationController: ObservableObject {
         activePreviewSession = nil
         let realtimeSession = activeRealtimeWhisperSession
         activeRealtimeWhisperSession = nil
+        let cloudUsageMetering = activeCloudUsageMetering
+        activeCloudUsageMetering = nil
         let recordedSeconds = recordingElapsed
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
         recordingTimer = nil
+        captureReadyOverlayStartTaskID = nil
         accumulateRecordingSeconds(recordedSeconds)
         recordVoceUsageSeconds(recordedSeconds)
         recordingElapsed = 0
@@ -1827,6 +2041,7 @@ final class DictationController: ObservableObject {
         menuBar.updateIcon(isRecording: false, handsFreeOn: false)
         activeRecordingMode = nil
         activeFreeUsageLimitSeconds = nil
+        activeHostedCloudUsageLimitSeconds = nil
         updateActiveRecordingHotkeys()
 
         let readyCoordinator = coordinator
@@ -1925,6 +2140,10 @@ final class DictationController: ObservableObject {
                     let stopResult = try await realtimeSession.stop()
                     defer { try? FileManager.default.removeItem(at: stopResult.captureURL) }
                     captureDurationMS = stopResult.rawTranscript.durationMS
+                    recordDictationAuditUsage(
+                        mode: cloudUsageMetering,
+                        seconds: TimeInterval(captureDurationMS) / 1_000
+                    )
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
                         + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -1949,6 +2168,10 @@ final class DictationController: ObservableObject {
                 } else if let previewSession {
                     let stopResult = try previewSession.stop()
                     captureDurationMS = stopResult.captureDurationMS
+                    recordDictationAuditUsage(
+                        mode: nil,
+                        seconds: TimeInterval(captureDurationMS) / 1_000
+                    )
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
                         + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -2543,7 +2766,7 @@ final class DictationController: ObservableObject {
             snapshot: snapshot,
             clipboardService: clipboardService,
             wordFrequencies: wordFreqs,
-            cloudRuntimeAllowed: canUseCloudDictation,
+            cloudRuntimeAllowed: canUseCloudRuntime,
             subscriberEmail: normalizedSubscriberEmail,
             useDirectCloudCredentials: usesDirectCloudCredentials
         )
@@ -2651,6 +2874,19 @@ final class DictationController: ObservableObject {
         stopActiveRecording()
     }
 
+    private func stopIfHostedCloudUsageLimitReached() {
+        guard let activeHostedCloudUsageLimitSeconds,
+              activeHostedCloudUsageLimitSeconds > 0,
+              recordingElapsed >= activeHostedCloudUsageLimitSeconds,
+              isRecording
+        else {
+            return
+        }
+
+        status = "Voce Cloud monthly minutes reached."
+        stopActiveRecording()
+    }
+
     private func scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: String) {
         if previousEmail != normalizedSubscriberEmail {
             scheduleVoceProEntitlementRefresh(immediate: false)
@@ -2726,6 +2962,84 @@ final class DictationController: ObservableObject {
                     }
                 }
             }
+        }
+    }
+
+    private func recordDictationAuditUsage(mode: ActiveCloudUsageMetering?, seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+
+        switch mode {
+        case .voceHosted:
+            recordHostedCloudUsageSeconds(seconds)
+        case .directOpenAI:
+            recordAuditUsageSeconds(feature: .dictationBYOK, seconds: seconds)
+            recordDirectOpenAIUsageSeconds(seconds)
+        case nil:
+            recordAuditUsageSeconds(feature: .dictationLocal, seconds: seconds)
+        }
+    }
+
+    private func recordAuditUsageSeconds(feature: VoceEntitlementFeature, seconds: TimeInterval) {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty, seconds > 0 else { return }
+
+        let wholeSeconds = max(1, Int(ceil(seconds)))
+        Task { [entitlementService] in
+            do {
+                _ = try await entitlementService.recordUsage(
+                    email: email,
+                    feature: feature,
+                    seconds: wholeSeconds
+                )
+            } catch {
+                Self.logger.error(
+                    "Could not update dictation audit usage \(feature.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private func recordHostedCloudUsageSeconds(_ seconds: TimeInterval) {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty, seconds > 0 else { return }
+
+        let wholeSeconds = max(1, Int(ceil(seconds)))
+        Task { [weak self, entitlementService] in
+            do {
+                let entitlement = try await entitlementService.recordUsage(
+                    email: email,
+                    feature: .cloudDictation,
+                    seconds: wholeSeconds
+                )
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.voceProEntitlementStatus = entitlement.hasFeature(.appAccess)
+                        ? .entitled(entitlement)
+                        : .notEntitled(email: email)
+                }
+            } catch {
+                // Hosted usage metering should not make a completed dictation
+                // look failed. The next entitlement refresh will retry the read
+                // side and recover the visible usage state.
+                Self.logger.error("Could not update hosted cloud usage: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func recordDirectOpenAIUsageSeconds(_ seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+
+        var snapshot = preferences
+        let periodKey = Self.currentUsagePeriodKey()
+        if snapshot.dictation.cloud.directUsagePeriodKey != periodKey {
+            snapshot.dictation.cloud.directUsagePeriodKey = periodKey
+            snapshot.dictation.cloud.directUsageSeconds = 0
+        }
+        snapshot.dictation.cloud.directUsageSeconds += max(1, Int(ceil(seconds)))
+        preferences = snapshot
+
+        Task { [preferencesStore] in
+            await preferencesStore.save(snapshot)
         }
     }
 

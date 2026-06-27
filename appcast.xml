@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.50</title>
+      <sparkle:version>53</sparkle:version>
+      <sparkle:shortVersionString>0.4.50</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.50</h2>
+        <ul>
+          <li>Adds clear 300 minutes/month Voce Cloud usage tracking for Pro users</li>
+          <li>Falls back to local dictation, or your OpenAI key when enabled, after hosted cloud minutes run out</li>
+          <li>Improves internal dictation usage metering for hosted cloud, local, and bring-your-own-key sessions</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sat, 27 Jun 2026 15:46:18 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.50/Voce-0.4.50.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="Zs3UBwhWYt4r4r33aKZSEGw9ySa2dZ0BF6LgsVW4Vh5OOmADQmhZAARl0pmAjnN8MbVMs8VUAjUnBbSA2aWuDg=="
+        length="19028289"
+      />
+    </item>
+    <item>
       <title>Version 0.4.49</title>
       <sparkle:version>52</sparkle:version>
       <sparkle:shortVersionString>0.4.49</sparkle:shortVersionString>

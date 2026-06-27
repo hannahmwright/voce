@@ -36,6 +36,26 @@ function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+function configuredEmailSet(...names: string[]) {
+  const emails = names.flatMap((name) =>
+    (process.env[name] ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .map((value) => value.match(/<([^>]+)>/)?.[1] ?? value)
+      .map(normalizeEmail)
+      .filter(isValidEmail),
+  );
+  return new Set(emails);
+}
+
+function adminEmailSet() {
+  return configuredEmailSet("VOCE_ADMIN_EMAILS", "VOCE_SIGNUP_EMAIL_TO", "VOCE_SUPPORT_EMAIL_TO");
+}
+
+function isAdminEmail(email: string) {
+  return adminEmailSet().has(normalizeEmail(email));
+}
+
 function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -292,6 +312,21 @@ async function verifiedFeatureEmail(
     feature,
   });
   if (!entitlement.entitled) {
+    if (
+      feature === CLOUD_DICTATION_FEATURE &&
+      entitlement.planTier === "pro" &&
+      entitlement.cloudRemainingSeconds === 0
+    ) {
+      return {
+        response: jsonResponse(
+          {
+            error:
+              "Voce Cloud monthly minutes are used. Use your OpenAI key or local dictation until next month.",
+          },
+          403,
+        ),
+      };
+    }
     return { response: jsonResponse({ error: "Voce Pro cloud dictation is required." }, 403) };
   }
 
@@ -662,6 +697,48 @@ http.route({
       seconds: body.seconds,
     });
     return jsonResponse(entitlement);
+  }),
+});
+
+http.route({
+  path: "/admin/usage-audit",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const body = (await request.json()) as {
+      email?: string;
+      months?: number;
+      costPerHostedMinuteUSD?: number;
+    };
+    const expectedSecret = process.env.VOCE_ENTITLEMENT_API_SECRET;
+    const token = bearerToken(request);
+
+    if (token) {
+      if (!expectedSecret || token !== expectedSecret) {
+        return jsonResponse({ error: "Unauthorized" }, 401);
+      }
+    } else {
+      if (!body.email) {
+        return jsonResponse({ error: "Missing email" }, 400);
+      }
+      const email = await verifiedSessionEmail(ctx, request, body.email);
+      if (!email) {
+        return jsonResponse({ error: "Email verification required" }, 401);
+      }
+      if (!isAdminEmail(email)) {
+        return jsonResponse({ error: "Admin access required" }, 403);
+      }
+    }
+
+    const report = await ctx.runQuery(api.entitlements.usageAudit, {
+      months: typeof body.months === "number" && Number.isFinite(body.months)
+        ? body.months
+        : undefined,
+      costPerHostedMinuteUSD:
+        typeof body.costPerHostedMinuteUSD === "number" && Number.isFinite(body.costPerHostedMinuteUSD)
+          ? body.costPerHostedMinuteUSD
+          : undefined,
+    });
+    return jsonResponse(report);
   }),
 });
 

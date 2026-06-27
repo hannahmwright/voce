@@ -4,6 +4,9 @@ import Security
 enum VoceEntitlementFeature: String, CaseIterable, Codable, Sendable {
     case appAccess = "voce_app_access"
     case cloudDictation = "voce_cloud_dictation"
+    case dictationTotal = "voce_dictation_total"
+    case dictationLocal = "voce_dictation_local"
+    case dictationBYOK = "voce_dictation_byok"
 }
 
 enum VocePlanTier: String, Codable, Sendable {
@@ -64,6 +67,11 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
     var freeRemainingSeconds: Int?
     var periodStartsAt: Double?
     var periodEndsAt: Double?
+    var cloudLimitSeconds: Int?
+    var cloudUsedSeconds: Int?
+    var cloudRemainingSeconds: Int?
+    var cloudPeriodStartsAt: Double?
+    var cloudPeriodEndsAt: Double?
 
     enum Source: String, Decodable, Sendable {
         case free
@@ -84,6 +92,11 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
         case freeRemainingSeconds
         case periodStartsAt
         case periodEndsAt
+        case cloudLimitSeconds
+        case cloudUsedSeconds
+        case cloudRemainingSeconds
+        case cloudPeriodStartsAt
+        case cloudPeriodEndsAt
     }
 
     init(from decoder: Decoder) throws {
@@ -100,6 +113,11 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
         freeRemainingSeconds = try container.decodeIfPresent(Int.self, forKey: .freeRemainingSeconds)
         periodStartsAt = try container.decodeIfPresent(Double.self, forKey: .periodStartsAt)
         periodEndsAt = try container.decodeIfPresent(Double.self, forKey: .periodEndsAt)
+        cloudLimitSeconds = try container.decodeIfPresent(Int.self, forKey: .cloudLimitSeconds)
+        cloudUsedSeconds = try container.decodeIfPresent(Int.self, forKey: .cloudUsedSeconds)
+        cloudRemainingSeconds = try container.decodeIfPresent(Int.self, forKey: .cloudRemainingSeconds)
+        cloudPeriodStartsAt = try container.decodeIfPresent(Double.self, forKey: .cloudPeriodStartsAt)
+        cloudPeriodEndsAt = try container.decodeIfPresent(Double.self, forKey: .cloudPeriodEndsAt)
     }
 
     var freeRemainingMinutesText: String? {
@@ -111,6 +129,12 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
     var freeRecordingRemainingSeconds: TimeInterval? {
         guard source == .free, entitled, let freeRemainingSeconds else { return nil }
         return TimeInterval(freeRemainingSeconds)
+    }
+
+    var cloudRemainingMinutesText: String? {
+        guard let cloudRemainingSeconds else { return nil }
+        let minutes = max(0, Int(ceil(Double(cloudRemainingSeconds) / 60)))
+        return "\(minutes) \(minutes == 1 ? "minute" : "minutes")"
     }
 
     func hasFeature(_ feature: VoceEntitlementFeature) -> Bool {
@@ -175,13 +199,13 @@ enum VoceProEntitlementStatus: Equatable {
                     : "Voce Base is active."
             case .pro:
                 return entitlement.source == .manual
-                    ? "Voce Pro is active.\nVoce loves you. Pro is on us!"
-                    : "Voce Pro is active."
+                    ? "Voce Pro is active.\n300 minutes/month of Voce Cloud included. Voce loves you. Pro is on us!"
+                    : "Voce Pro is active. 300 minutes/month of Voce Cloud included."
             case nil:
                 return "Voce access is active."
             }
         case .notEntitled:
-            return "Monthly free time is used. Choose Base or Pro to keep using Voce."
+            return "Monthly free time is used. Choose Base, or choose Pro for 300 minutes/month of Voce Cloud."
         case .failed(_, let message):
             return message
         }
@@ -339,7 +363,11 @@ actor VoceProEntitlementService {
         return try JSONDecoder().decode(VoceProEntitlement.self, from: data)
     }
 
-    func recordUsage(email: String, seconds: Int) async throws -> VoceProEntitlement {
+    func recordUsage(
+        email: String,
+        feature: VoceEntitlementFeature = .appAccess,
+        seconds: Int
+    ) async throws -> VoceProEntitlement {
         var request = URLRequest(url: usageEndpointURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -348,7 +376,7 @@ actor VoceProEntitlementService {
             request.setValue("Bearer \(apiSecret)", forHTTPHeaderField: "authorization")
         }
         request.httpBody = try JSONEncoder().encode(
-            RecordUsageRequest(email: email, feature: feature, seconds: seconds)
+            RecordUsageRequest(email: email, feature: feature.rawValue, seconds: seconds)
         )
 
         let (data, response) = try await session.data(for: request)

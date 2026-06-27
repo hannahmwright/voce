@@ -260,7 +260,7 @@ struct OnboardingView: View {
                     ? "Voce is unlocked on this Mac."
                     : (accessVerificationCodeWasSent
                        ? "Enter the 6-digit code sent to \(normalizedAccessEmail)."
-                       : "Voce uses your email to find Base or Pro access, or start your free monthly time.")
+                       : "Voce uses your email to find Base or Pro access, or start your free monthly time. Pro includes 300 minutes/month of Voce Cloud.")
             )
 
             VStack(alignment: .leading, spacing: VoceDesign.md) {
