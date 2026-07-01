@@ -13,6 +13,47 @@ public struct ProcessExecutionResult: Sendable {
 }
 
 public enum ProcessRunner {
+    public struct TimeoutError: Error, Sendable, Equatable {
+        public let timeoutNanoseconds: UInt64
+
+        public init(timeoutNanoseconds: UInt64) {
+            self.timeoutNanoseconds = timeoutNanoseconds
+        }
+    }
+
+    public static func run(
+        executableURL: URL,
+        arguments: [String] = [],
+        environment: [String: String]? = nil,
+        currentDirectoryURL: URL? = nil,
+        standardOutput: FileHandle? = nil,
+        standardError: FileHandle? = nil,
+        timeoutNanoseconds: UInt64
+    ) async throws -> ProcessExecutionResult {
+        try await withThrowingTaskGroup(of: ProcessExecutionResult.self) { group in
+            group.addTask {
+                try await run(
+                    executableURL: executableURL,
+                    arguments: arguments,
+                    environment: environment,
+                    currentDirectoryURL: currentDirectoryURL,
+                    standardOutput: standardOutput,
+                    standardError: standardError
+                )
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                throw TimeoutError(timeoutNanoseconds: timeoutNanoseconds)
+            }
+
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else {
+                throw CancellationError()
+            }
+            return result
+        }
+    }
+
     public static func run(
         executableURL: URL,
         arguments: [String] = [],

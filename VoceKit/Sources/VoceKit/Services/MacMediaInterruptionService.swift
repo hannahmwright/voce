@@ -101,11 +101,6 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         .applePodcasts,
         .appleTV,
         .quickTime,
-        .chrome,
-        .edge,
-        .brave,
-        .arc,
-        .safari,
         .vlc,
     ]
     private var activeTokens: Set<UUID> = []
@@ -1419,6 +1414,11 @@ typealias SpotifyPlaybackControlling = AppPlaybackControlling
 typealias AppleMusicPlaybackControlling = AppPlaybackControlling
 typealias ChromePlaybackControlling = AppPlaybackControlling
 
+private enum AppleScriptMediaTimeout {
+    static let browser: UInt64 = 750_000_000
+    static let player: UInt64 = 1_200_000_000
+}
+
 struct UnavailableSpotifyPlaybackController: SpotifyPlaybackControlling {
     func playerState() async -> AppPlaybackState { .unknown }
     func pause() async -> Bool { false }
@@ -1558,7 +1558,8 @@ struct SpotifyPlaybackController: SpotifyPlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.player
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)
@@ -1635,7 +1636,8 @@ struct AppleMusicPlaybackController: AppleMusicPlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.player
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)
@@ -1714,7 +1716,8 @@ struct AppleScriptPlayerPlaybackController: AppPlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.player
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)
@@ -1776,19 +1779,6 @@ struct ChromePlaybackController: ChromePlaybackControlling {
     }
 
     func pauseOutcome() async -> AppPlaybackPauseOutcome {
-        let tabRiskAssessment = await tabRiskAssessment()
-        let allowsGenericFallback: Bool
-        switch tabRiskAssessment {
-        case .safe:
-            allowsGenericFallback = true
-        case .blocked:
-            allowsGenericFallback = false
-        case .uninspectable:
-            return .blocked
-        case .stopped:
-            return .failed
-        }
-
         let script = """
         if application id "\(applicationID)" is running then
             tell application id "\(applicationID)"
@@ -1819,21 +1809,14 @@ struct ChromePlaybackController: ChromePlaybackControlling {
         end if
         """
         guard let output = await runAppleScript(script) else {
-            return allowsGenericFallback ? .failed : .blocked
+            return .failed
         }
         let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if trimmedOutput == "blocked" {
             return .blocked
         }
         guard let pausedCount = Int(trimmedOutput), pausedCount > 0 else {
-            return allowsGenericFallback ? .failed : .blocked
-        }
-
-        for _ in 0..<5 {
-            if await playerState() != .playing {
-                return .paused
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            return .failed
         }
         return .paused
     }
@@ -1928,7 +1911,8 @@ struct ChromePlaybackController: ChromePlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.browser
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)
@@ -1984,19 +1968,6 @@ struct SafariPlaybackController: AppPlaybackControlling {
     }
 
     func pauseOutcome() async -> AppPlaybackPauseOutcome {
-        let tabRiskAssessment = await tabRiskAssessment()
-        let allowsGenericFallback: Bool
-        switch tabRiskAssessment {
-        case .safe:
-            allowsGenericFallback = true
-        case .blocked:
-            allowsGenericFallback = false
-        case .uninspectable:
-            return .blocked
-        case .stopped:
-            return .failed
-        }
-
         let script = """
         if application id "com.apple.Safari" is running then
             tell application id "com.apple.Safari"
@@ -2027,21 +1998,14 @@ struct SafariPlaybackController: AppPlaybackControlling {
         end if
         """
         guard let output = await runAppleScript(script) else {
-            return allowsGenericFallback ? .failed : .blocked
+            return .failed
         }
         let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if trimmedOutput == "blocked" {
             return .blocked
         }
         guard let pausedCount = Int(trimmedOutput), pausedCount > 0 else {
-            return allowsGenericFallback ? .failed : .blocked
-        }
-
-        for _ in 0..<5 {
-            if await playerState() != .playing {
-                return .paused
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            return .failed
         }
         return .paused
     }
@@ -2122,7 +2086,8 @@ struct SafariPlaybackController: AppPlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.browser
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)
@@ -2218,7 +2183,8 @@ struct QuickTimePlaybackController: AppPlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.player
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)
@@ -2306,7 +2272,8 @@ struct VLCPlaybackController: AppPlaybackControlling {
         do {
             let result = try await ProcessRunner.run(
                 executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
-                arguments: ["-e", script]
+                arguments: ["-e", script],
+                timeoutNanoseconds: AppleScriptMediaTimeout.player
             )
             guard result.terminationStatus == 0 else { return nil }
             return String(data: result.standardOutput, encoding: .utf8)

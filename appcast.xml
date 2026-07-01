@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.53</title>
+      <sparkle:version>56</sparkle:version>
+      <sparkle:shortVersionString>0.4.53</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.53</h2>
+        <ul>
+          <li>Fixes browser media interruption getting stuck while starting dictation when Chrome, Arc, Edge, Brave, or Safari automation is delayed or blocked</li>
+          <li>Prevents hidden multi-browser automation prompts by avoiding blind browser probing when macOS does not report a concrete media app</li>
+          <li>Keeps app-specific media paths bounded so slow AppleScript calls can fall back without blocking dictation startup</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 01 Jul 2026 20:10:18 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.53/Voce-0.4.53.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="2ID7f6ai5qRdOaycWbp4OhB+b0UYVdQxQ6OObcA9gjDRIJL3R/vh0T2gZ8yokIUwe7BvnuP732v7NjyVlx/VDw=="
+        length="19073518"
+      />
+    </item>
+    <item>
       <title>Version 0.4.52</title>
       <sparkle:version>55</sparkle:version>
       <sparkle:shortVersionString>0.4.52</sparkle:shortVersionString>

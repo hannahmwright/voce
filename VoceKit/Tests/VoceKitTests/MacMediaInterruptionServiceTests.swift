@@ -582,6 +582,36 @@ func customBrowserPauseSuccessKeepsBrowserResumeStrategyWhenGlobalPlaybackRemain
     #expect(recorder.commands.isEmpty)
 }
 
+@MainActor
+@Test("Nil display id owner probe does not request browser automation")
+func nilDisplayIDOwnerProbeDoesNotRequestBrowserAutomation() async {
+    let browserOwners: [InterruptedPlaybackOwner] = [.chrome, .edge, .brave, .arc, .safari]
+    var controllers: [InterruptedPlaybackOwner: FakeChromePlaybackController] = [:]
+    var overrides: [InterruptedPlaybackOwner: any AppPlaybackControlling] = [:]
+
+    for owner in browserOwners {
+        let controller = FakeChromePlaybackController([.playing], fallbackState: .playing)
+        controllers[owner] = controller
+        overrides[owner] = controller
+    }
+
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.playing], displayIDs: [nil]),
+        playbackControllerOverrides: overrides,
+        sendPlayPauseKey: { false },
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil)
+    for owner in browserOwners {
+        let controller = controllers[owner]
+        #expect(await controller?.pauseCalls == 0, "\(owner.logValue) should not be paused without an explicit display id.")
+        #expect(await controller?.playCalls == 0, "\(owner.logValue) should not be resumed without an explicit display id.")
+    }
+}
+
 @Test("Browser media risk blocks meeting URLs but allows ordinary media URLs")
 func browserMediaRiskClassifiesMeetingURLs() {
     let blockedURLs = [
