@@ -56,11 +56,63 @@ public struct MediaPlaybackDiagnosticsSnapshot: Sendable, Equatable {
 public final class MacMediaInterruptionService: MediaInterruptionService {
     private static let logger = VoceKitDiagnostics.logger
     private static let spotifyDisplayID = "com.spotify.client"
+    private static let appleMusicDisplayID = "com.apple.Music"
+    private static let applePodcastsDisplayID = "com.apple.podcasts"
+    private static let appleTVDisplayID = "com.apple.TV"
+    private static let quickTimeDisplayID = "com.apple.QuickTimePlayerX"
+    private static let chromeDisplayID = "com.google.Chrome"
+    private static let edgeDisplayID = "com.microsoft.edgemac"
+    private static let braveDisplayID = "com.brave.Browser"
+    private static let arcDisplayID = "company.thebrowser.Browser"
+    private static let safariDisplayID = "com.apple.Safari"
+    private static let firefoxDisplayID = "org.mozilla.firefox"
+    private static let vlcDisplayID = "org.videolan.vlc"
+    private static let iinaDisplayID = "com.colliderli.iina"
+    private static let blockedMediaDisplayIDs: Set<String> = [
+        "com.apple.FaceTime",
+        "us.zoom.xos",
+        "com.microsoft.teams",
+        "com.microsoft.teams2",
+        "com.cisco.webexmeetingsapp",
+        "com.webex.meetingmanager",
+        "com.google.meetings",
+        "com.skype.skype",
+        "com.tinyspeck.slackmacgap",
+        "com.hnc.Discord",
+    ]
+    private static let displayIDOwners: [String: InterruptedPlaybackOwner] = [
+        spotifyDisplayID: .spotify,
+        appleMusicDisplayID: .appleMusic,
+        applePodcastsDisplayID: .applePodcasts,
+        appleTVDisplayID: .appleTV,
+        quickTimeDisplayID: .quickTime,
+        chromeDisplayID: .chrome,
+        edgeDisplayID: .edge,
+        braveDisplayID: .brave,
+        arcDisplayID: .arc,
+        safariDisplayID: .safari,
+        firefoxDisplayID: .firefox,
+        vlcDisplayID: .vlc,
+        iinaDisplayID: .iina,
+    ]
+    private static let nilDisplayIDProbeOwners: [InterruptedPlaybackOwner] = [
+        .spotify,
+        .appleMusic,
+        .applePodcasts,
+        .appleTV,
+        .quickTime,
+        .chrome,
+        .edge,
+        .brave,
+        .arc,
+        .safari,
+        .vlc,
+    ]
     private var activeTokens: Set<UUID> = []
-    private var interruptedPlaybackOwner: InterruptedPlaybackOwner?
+    private var interruptedPlaybackResumeStrategy: InterruptedPlaybackResumeStrategy?
     private let playbackDetector: any MediaPlaybackStateDetector
-    private let spotifyPlaybackController: any SpotifyPlaybackControlling
-    private let sendPlayPauseKey: () -> Bool
+    private let playbackController: (InterruptedPlaybackOwner) -> any AppPlaybackControlling
+    private let sendMediaCommand: (MediaInterruptionCommand) -> Bool
     private let minimumResumeDelayNanoseconds: UInt64
     private let pauseConfirmationDelayNanoseconds: UInt64
     private let unknownResumeRetryDelayNanoseconds: UInt64
@@ -71,8 +123,10 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     public init() {
         let bridge = MediaRemoteBridge()
         self.playbackDetector = MultiSignalMediaPlaybackStateDetector(bridge: bridge)
-        self.spotifyPlaybackController = SpotifyPlaybackController()
-        self.sendPlayPauseKey = SystemMediaKeySender.sendPlayPause
+        self.playbackController = { owner in
+            AppPlaybackControllerFactory.controller(for: owner, sendMediaCommand: SystemMediaCommandSender.send)
+        }
+        self.sendMediaCommand = SystemMediaCommandSender.send
         self.minimumResumeDelayNanoseconds = 300_000_000
         self.pauseConfirmationDelayNanoseconds = 120_000_000
         self.unknownResumeRetryDelayNanoseconds = 150_000_000
@@ -151,15 +205,38 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     init(
         playbackDetector: any MediaPlaybackStateDetector,
         spotifyPlaybackController: any SpotifyPlaybackControlling = UnavailableSpotifyPlaybackController(),
+        appleMusicPlaybackController: any AppleMusicPlaybackControlling = UnavailableAppleMusicPlaybackController(),
+        chromePlaybackController: any ChromePlaybackControlling = UnavailableChromePlaybackController(),
+        playbackControllerOverrides: [InterruptedPlaybackOwner: any AppPlaybackControlling] = [:],
+        useDefaultPlaybackControllers: Bool = false,
         sendPlayPauseKey: @escaping () -> Bool,
+        sendMediaCommand: ((MediaInterruptionCommand) -> Bool)? = nil,
         minimumResumeDelayNanoseconds: UInt64 = 300_000_000,
         pauseConfirmationDelayNanoseconds: UInt64 = 120_000_000,
         unknownResumeRetryDelayNanoseconds: UInt64 = 150_000_000,
         maximumUnknownResumeRetryCount: Int = 2
     ) {
+        let commandSender = sendMediaCommand ?? { _ in sendPlayPauseKey() }
         self.playbackDetector = playbackDetector
-        self.spotifyPlaybackController = spotifyPlaybackController
-        self.sendPlayPauseKey = sendPlayPauseKey
+        self.playbackController = { owner in
+            if let override = playbackControllerOverrides[owner] {
+                return override
+            }
+            switch owner {
+            case .spotify:
+                return spotifyPlaybackController
+            case .appleMusic:
+                return appleMusicPlaybackController
+            case .chrome:
+                return chromePlaybackController
+            default:
+                if useDefaultPlaybackControllers {
+                    return AppPlaybackControllerFactory.controller(for: owner, sendMediaCommand: commandSender)
+                }
+                return UnavailableAppPlaybackController()
+            }
+        }
+        self.sendMediaCommand = commandSender
         self.minimumResumeDelayNanoseconds = minimumResumeDelayNanoseconds
         self.pauseConfirmationDelayNanoseconds = pauseConfirmationDelayNanoseconds
         self.unknownResumeRetryDelayNanoseconds = unknownResumeRetryDelayNanoseconds
@@ -186,6 +263,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         let detection = await playbackDetector.detect()
         let interruptedApplicationDisplayID = playbackDetector.lastDetectedDisplayID
+        if let interruptedApplicationDisplayID,
+           Self.blockedMediaDisplayIDs.contains(interruptedApplicationDisplayID) {
+            Self.logger.notice(
+                "Media interruption skipped blocked media app=\(interruptedApplicationDisplayID, privacy: .public)."
+            )
+            return nil
+        }
         let interruptedPlaybackOwner = await identifyInterruptedPlaybackOwner(
             detection: detection,
             displayID: interruptedApplicationDisplayID
@@ -202,26 +286,33 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 Self.logger.debug("Skipping media interruption because task is cancelled before key send.")
                 return nil
             }
-            let didPause: Bool
-            if interruptedPlaybackOwner == .spotify {
-                didPause = await spotifyPlaybackController.pause()
-                Self.logger.notice("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
-                Self.logger.debug("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
+            let pauseOutcome: AppPlaybackPauseOutcome
+            let resumeStrategy: InterruptedPlaybackResumeStrategy
+            if let interruptedPlaybackOwner {
+                pauseOutcome = await pauseScriptablePlayback(owner: interruptedPlaybackOwner)
+                Self.logger.notice(
+                    "Media interruption \(interruptedPlaybackOwner.logValue, privacy: .public) pause attempted: \(pauseOutcome.logValue, privacy: .public)"
+                )
+                Self.logger.debug(
+                    "Media interruption \(interruptedPlaybackOwner.logValue, privacy: .public) pause attempted: \(pauseOutcome.logValue, privacy: .public)"
+                )
+                resumeStrategy = pauseOutcome == .paused ? interruptedPlaybackOwner.resumeStrategy : .systemMediaKey
             } else {
-                didPause = false
+                pauseOutcome = .failed
+                resumeStrategy = .systemMediaKey
             }
-            if !didPause {
-                let didSend = sendPlayPauseKey()
-                Self.logger.debug("Media interruption pause key send attempted: \(didSend, privacy: .public)")
+            if pauseOutcome == .blocked {
+                Self.logger.notice("Media interruption skipped because custom media pathway is blocked.")
+                return nil
+            }
+            if pauseOutcome == .failed {
+                let didSend = sendMediaCommand(.pause)
+                Self.logger.debug("Media interruption pause command send attempted: \(didSend, privacy: .public)")
                 guard didSend else { return nil }
             }
 
             if pauseConfirmationDelayNanoseconds > 0 {
                 try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
-            }
-            if Task.isCancelled {
-                Self.logger.debug("Skipping media interruption because task is cancelled before pause confirmation.")
-                return nil
             }
 
             let postPauseDetection = await playbackDetector.detect()
@@ -231,10 +322,6 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 initial=\(detection.logValue, privacy: .public)
                 """
             )
-            guard !Task.isCancelled else {
-                Self.logger.debug("Skipping media interruption because task is cancelled after pause confirmation.")
-                return nil
-            }
 
             if postPauseDetection != .notPlaying {
                 Self.logger.debug(
@@ -249,42 +336,51 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             }
 
             activeTokens.insert(token.id)
-            self.interruptedPlaybackOwner = interruptedPlaybackOwner
+            self.interruptedPlaybackResumeStrategy = resumeStrategy
             pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             Self.logger.notice(
                 """
                 Media interruption token activated. \
                 Active tokens: \(self.activeTokens.count, privacy: .public) \
                 interruptedApp=\(interruptedApplicationDisplayID ?? "nil", privacy: .public) \
-                interruptedOwner=\(interruptedPlaybackOwner?.logValue ?? "nil", privacy: .public)
+                interruptedOwner=\(interruptedPlaybackOwner?.logValue ?? "nil", privacy: .public) \
+                resumeStrategy=\(resumeStrategy.logValue, privacy: .public)
                 """
             )
             Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
             return token
         case .likelyPlaying:
-            guard interruptedPlaybackOwner == .spotify else {
+            guard let interruptedPlaybackOwner else {
                 Self.logger.notice("Media interruption skipped weak playback detection to avoid phantom media launch.")
                 Self.logger.debug("Skipping media interruption for likelyPlaying without app-specific pause control.")
                 return nil
             }
             if Task.isCancelled {
-                Self.logger.debug("Skipping media interruption because task is cancelled before Spotify pause.")
+                Self.logger.debug(
+                    "Skipping media interruption because task is cancelled before \(interruptedPlaybackOwner.logValue, privacy: .public) pause."
+                )
                 return nil
             }
-            let didPause = await spotifyPlaybackController.pause()
-            Self.logger.notice("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
-            Self.logger.debug("Media interruption Spotify pause attempted: \(didPause, privacy: .public)")
-            guard didPause else { return nil }
+            let pauseOutcome = await pauseScriptablePlayback(owner: interruptedPlaybackOwner)
+            Self.logger.notice(
+                "Media interruption \(interruptedPlaybackOwner.logValue, privacy: .public) pause attempted: \(pauseOutcome.logValue, privacy: .public)"
+            )
+            Self.logger.debug(
+                "Media interruption \(interruptedPlaybackOwner.logValue, privacy: .public) pause attempted: \(pauseOutcome.logValue, privacy: .public)"
+            )
+            guard pauseOutcome == .paused else { return nil }
 
             activeTokens.insert(token.id)
-            self.interruptedPlaybackOwner = interruptedPlaybackOwner
+            let resumeStrategy = interruptedPlaybackOwner.resumeStrategy
+            interruptedPlaybackResumeStrategy = resumeStrategy
             pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             Self.logger.notice(
                 """
                 Media interruption token activated. \
                 Active tokens: \(self.activeTokens.count, privacy: .public) \
                 interruptedApp=\(interruptedApplicationDisplayID ?? "nil", privacy: .public) \
-                interruptedOwner=\(interruptedPlaybackOwner?.logValue ?? "nil", privacy: .public)
+                interruptedOwner=\(interruptedPlaybackOwner.logValue, privacy: .public) \
+                resumeStrategy=\(resumeStrategy.logValue, privacy: .public)
                 """
             )
             Self.logger.debug("Media interruption started. Active tokens: \(self.activeTokens.count, privacy: .public)")
@@ -329,11 +425,23 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         Self.logger.debug("Media interruption ended. Active tokens: 0")
     }
 
+    private func pauseScriptablePlayback(owner: InterruptedPlaybackOwner) async -> AppPlaybackPauseOutcome {
+        await playbackController(owner).pauseOutcome()
+    }
+
+    private func playScriptablePlayback(owner: InterruptedPlaybackOwner) async -> Bool {
+        await playbackController(owner).play()
+    }
+
+    private func scriptablePlaybackState(owner: InterruptedPlaybackOwner) async -> AppPlaybackState {
+        await playbackController(owner).playerState()
+    }
+
     private func resumePlaybackIfNeeded() async {
         defer {
             pendingResumeTask = nil
             pauseSentAtUptimeNanoseconds = nil
-            interruptedPlaybackOwner = nil
+            interruptedPlaybackResumeStrategy = nil
         }
 
         guard !Task.isCancelled else {
@@ -346,31 +454,51 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return
         }
 
-        if interruptedPlaybackOwner == .spotify {
-            let spotifyState = await spotifyPlaybackController.playerState()
+        if let scriptableOwner = interruptedPlaybackResumeStrategy?.scriptableOwner {
+            let playbackState = await scriptablePlaybackState(owner: scriptableOwner)
             Self.logger.notice(
-                "Media interruption Spotify state at resume=\(spotifyState.logValue, privacy: .public)"
+                """
+                Media interruption \(scriptableOwner.logValue, privacy: .public) \
+                state at resume=\(playbackState.logValue, privacy: .public)
+                """
             )
-            switch spotifyState {
+            switch playbackState {
             case .playing:
                 Self.logger.notice(
-                    "Media interruption resume skipped because Spotify already resumed itself."
+                    """
+                    Media interruption resume skipped because \
+                    \(scriptableOwner.logValue, privacy: .public) already resumed itself.
+                    """
                 )
-                Self.logger.debug("Skipping media interruption resume because Spotify already resumed itself.")
+                Self.logger.debug(
+                    "Skipping media interruption resume because \(scriptableOwner.logValue, privacy: .public) already resumed itself."
+                )
                 return
             case .paused:
-                let didResume = await spotifyPlaybackController.play()
-                Self.logger.notice("Media interruption Spotify resume attempted: \(didResume, privacy: .public)")
-                Self.logger.debug("Media interruption Spotify resume attempted: \(didResume, privacy: .public)")
+                let didResume = await playScriptablePlayback(owner: scriptableOwner)
+                Self.logger.notice(
+                    "Media interruption \(scriptableOwner.logValue, privacy: .public) resume attempted: \(didResume, privacy: .public)"
+                )
+                Self.logger.debug(
+                    "Media interruption \(scriptableOwner.logValue, privacy: .public) resume attempted: \(didResume, privacy: .public)"
+                )
                 return
             case .stopped:
-                Self.logger.notice("Media interruption resume skipped because Spotify is stopped.")
-                Self.logger.debug("Skipping media interruption resume because Spotify is stopped.")
+                Self.logger.notice(
+                    "Media interruption resume skipped because \(scriptableOwner.logValue, privacy: .public) is stopped."
+                )
+                Self.logger.debug(
+                    "Skipping media interruption resume because \(scriptableOwner.logValue, privacy: .public) is stopped."
+                )
                 return
             case .unknown:
-                let didResume = await spotifyPlaybackController.play()
-                Self.logger.notice("Media interruption Spotify fallback resume attempted: \(didResume, privacy: .public)")
-                Self.logger.debug("Media interruption Spotify fallback resume attempted: \(didResume, privacy: .public)")
+                let didResume = await playScriptablePlayback(owner: scriptableOwner)
+                Self.logger.notice(
+                    "Media interruption \(scriptableOwner.logValue, privacy: .public) fallback resume attempted: \(didResume, privacy: .public)"
+                )
+                Self.logger.debug(
+                    "Media interruption \(scriptableOwner.logValue, privacy: .public) fallback resume attempted: \(didResume, privacy: .public)"
+                )
                 return
             }
         }
@@ -399,9 +527,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.notice("Media interruption resume skipped because playback state is unknown.")
             Self.logger.debug("Skipping media interruption resume because playback state is unknown.")
         case .notPlaying:
-            let didSend = sendPlayPauseKey()
-            Self.logger.notice("Media interruption resume key send attempted: \(didSend, privacy: .public)")
-            Self.logger.debug("Media interruption resume key send attempted: \(didSend, privacy: .public)")
+            let didSend = sendMediaCommand(.play)
+            Self.logger.notice("Media interruption resume command send attempted: \(didSend, privacy: .public)")
+            Self.logger.debug("Media interruption resume command send attempted: \(didSend, privacy: .public)")
         }
     }
 
@@ -410,12 +538,24 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         displayID: String?
     ) async -> InterruptedPlaybackOwner? {
         guard detection == .playing || detection == .likelyPlaying else { return nil }
-        if displayID == Self.spotifyDisplayID {
-            return .spotify
+        if let displayID, let owner = Self.displayIDOwners[displayID] {
+            return await confirmedOwner(owner, for: detection)
         }
         guard displayID == nil else { return nil }
-        let spotifyState = await spotifyPlaybackController.playerState()
-        return spotifyState == .playing ? .spotify : nil
+        for owner in Self.nilDisplayIDProbeOwners {
+            if await scriptablePlaybackState(owner: owner) == .playing {
+                return owner
+            }
+        }
+        return nil
+    }
+
+    private func confirmedOwner(
+        _ owner: InterruptedPlaybackOwner,
+        for detection: PlaybackDetectionResult
+    ) async -> InterruptedPlaybackOwner? {
+        guard detection == .likelyPlaying else { return owner }
+        return await scriptablePlaybackState(owner: owner) == .playing ? owner : nil
     }
 
     private func stabilizedResumeDetection() async -> PlaybackDetectionResult {
@@ -460,18 +600,182 @@ enum PlaybackDetectionResult: Sendable, Equatable {
     }
 }
 
-enum InterruptedPlaybackOwner: Sendable, Equatable {
+enum InterruptedPlaybackOwner: Sendable, Equatable, Hashable {
     case spotify
+    case appleMusic
+    case applePodcasts
+    case appleTV
+    case quickTime
+    case chrome
+    case edge
+    case brave
+    case arc
+    case safari
+    case firefox
+    case vlc
+    case iina
 
     var logValue: String {
         switch self {
         case .spotify:
             "spotify"
+        case .appleMusic:
+            "appleMusic"
+        case .applePodcasts:
+            "applePodcasts"
+        case .appleTV:
+            "appleTV"
+        case .quickTime:
+            "quickTime"
+        case .chrome:
+            "chrome"
+        case .edge:
+            "edge"
+        case .brave:
+            "brave"
+        case .arc:
+            "arc"
+        case .safari:
+            "safari"
+        case .firefox:
+            "firefox"
+        case .vlc:
+            "vlc"
+        case .iina:
+            "iina"
+        }
+    }
+
+    var resumeStrategy: InterruptedPlaybackResumeStrategy {
+        switch self {
+        case .spotify:
+            .spotify
+        case .appleMusic:
+            .appleMusic
+        case .applePodcasts:
+            .applePodcasts
+        case .appleTV:
+            .appleTV
+        case .quickTime:
+            .quickTime
+        case .chrome:
+            .chrome
+        case .edge:
+            .edge
+        case .brave:
+            .brave
+        case .arc:
+            .arc
+        case .safari:
+            .safari
+        case .firefox:
+            .firefox
+        case .vlc:
+            .vlc
+        case .iina:
+            .iina
         }
     }
 }
 
-enum SpotifyPlaybackState: Sendable, Equatable {
+enum InterruptedPlaybackResumeStrategy: Sendable, Equatable {
+    case spotify
+    case appleMusic
+    case applePodcasts
+    case appleTV
+    case quickTime
+    case chrome
+    case edge
+    case brave
+    case arc
+    case safari
+    case firefox
+    case vlc
+    case iina
+    case systemMediaKey
+
+    var logValue: String {
+        switch self {
+        case .spotify:
+            "spotify"
+        case .appleMusic:
+            "appleMusic"
+        case .applePodcasts:
+            "applePodcasts"
+        case .appleTV:
+            "appleTV"
+        case .quickTime:
+            "quickTime"
+        case .chrome:
+            "chrome"
+        case .edge:
+            "edge"
+        case .brave:
+            "brave"
+        case .arc:
+            "arc"
+        case .safari:
+            "safari"
+        case .firefox:
+            "firefox"
+        case .vlc:
+            "vlc"
+        case .iina:
+            "iina"
+        case .systemMediaKey:
+            "systemMediaKey"
+        }
+    }
+
+    var scriptableOwner: InterruptedPlaybackOwner? {
+        switch self {
+        case .spotify:
+            .spotify
+        case .appleMusic:
+            .appleMusic
+        case .applePodcasts:
+            .applePodcasts
+        case .appleTV:
+            .appleTV
+        case .quickTime:
+            .quickTime
+        case .chrome:
+            .chrome
+        case .edge:
+            .edge
+        case .brave:
+            .brave
+        case .arc:
+            .arc
+        case .safari:
+            .safari
+        case .firefox:
+            nil
+        case .vlc:
+            .vlc
+        case .iina:
+            nil
+        case .systemMediaKey:
+            nil
+        }
+    }
+}
+
+enum MediaInterruptionCommand: Sendable, Equatable {
+    case pause
+    case play
+
+    var mediaRemoteCommand: Int32 {
+        switch self {
+        case .play:
+            0
+        case .pause:
+            1
+        }
+    }
+}
+
+enum AppPlaybackState: Sendable, Equatable {
     case playing
     case paused
     case stopped
@@ -489,6 +793,99 @@ enum SpotifyPlaybackState: Sendable, Equatable {
             "unknown"
         }
     }
+}
+
+enum AppPlaybackPauseOutcome: Sendable, Equatable {
+    case paused
+    case blocked
+    case failed
+
+    var logValue: String {
+        switch self {
+        case .paused:
+            "paused"
+        case .blocked:
+            "blocked"
+        case .failed:
+            "failed"
+        }
+    }
+}
+
+private enum BrowserTabRiskAssessment: Sendable, Equatable {
+    case safe
+    case blocked
+    case uninspectable
+    case stopped
+
+    init(_ rawValue: String) {
+        switch rawValue.lowercased() {
+        case "safe":
+            self = .safe
+        case "blocked":
+            self = .blocked
+        case "stopped":
+            self = .stopped
+        default:
+            self = .uninspectable
+        }
+    }
+}
+
+enum BrowserMediaRisk: Sendable {
+    static let blockedHosts: Set<String> = [
+        "meet.google.com",
+        "teams.microsoft.com",
+        "teams.live.com",
+        "zoom.us",
+        "webex.com",
+    ]
+
+    static func isBlockedBrowserMediaURL(_ rawURL: String) -> Bool {
+        guard let host = URL(string: rawURL)?.host?.lowercased() else { return false }
+        return blockedHosts.contains { blockedHost in
+            host == blockedHost || host.hasSuffix(".\(blockedHost)")
+        }
+    }
+
+    static let appleScriptBlockedURLHandler = """
+    on voceIsBlockedBrowserMediaURL(tabURL)
+        set oldDelimiters to AppleScript's text item delimiters
+        try
+            set normalizedURL to tabURL as string
+            set AppleScript's text item delimiters to "://"
+            if (count of text items of normalizedURL) < 2 then
+                set AppleScript's text item delimiters to oldDelimiters
+                return false
+            end if
+            set urlRemainder to text item 2 of normalizedURL
+            set AppleScript's text item delimiters to "/"
+            set urlHostAndPort to text item 1 of urlRemainder
+            set AppleScript's text item delimiters to ":"
+            set urlHost to text item 1 of urlHostAndPort
+            set AppleScript's text item delimiters to oldDelimiters
+
+            if urlHost is "meet.google.com" then return true
+            if urlHost ends with ".meet.google.com" then return true
+            if urlHost is "teams.microsoft.com" then return true
+            if urlHost ends with ".teams.microsoft.com" then return true
+            if urlHost is "teams.live.com" then return true
+            if urlHost ends with ".teams.live.com" then return true
+            if urlHost is "zoom.us" then return true
+            if urlHost ends with ".zoom.us" then return true
+            if urlHost is "webex.com" then return true
+            if urlHost ends with ".webex.com" then return true
+            return false
+        on error
+            set AppleScript's text item delimiters to oldDelimiters
+            return false
+        end try
+    end voceIsBlockedBrowserMediaURL
+    """
+
+    static let javaScriptBlockedHostExpression = """
+    host === 'meet.google.com' || host.endsWith('.meet.google.com') || host === 'teams.microsoft.com' || host.endsWith('.teams.microsoft.com') || host === 'teams.live.com' || host.endsWith('.teams.live.com') || host === 'zoom.us' || host.endsWith('.zoom.us') || host === 'webex.com' || host.endsWith('.webex.com')
+    """
 }
 
 @MainActor
@@ -1005,20 +1402,93 @@ struct MediaRemoteAsyncProbeRunner {
     }
 }
 
-protocol SpotifyPlaybackControlling: Sendable {
-    func playerState() async -> SpotifyPlaybackState
+protocol AppPlaybackControlling: Sendable {
+    func playerState() async -> AppPlaybackState
     func pause() async -> Bool
+    func pauseOutcome() async -> AppPlaybackPauseOutcome
     func play() async -> Bool
 }
 
+extension AppPlaybackControlling {
+    func pauseOutcome() async -> AppPlaybackPauseOutcome {
+        await pause() ? .paused : .failed
+    }
+}
+
+typealias SpotifyPlaybackControlling = AppPlaybackControlling
+typealias AppleMusicPlaybackControlling = AppPlaybackControlling
+typealias ChromePlaybackControlling = AppPlaybackControlling
+
 struct UnavailableSpotifyPlaybackController: SpotifyPlaybackControlling {
-    func playerState() async -> SpotifyPlaybackState { .unknown }
+    func playerState() async -> AppPlaybackState { .unknown }
     func pause() async -> Bool { false }
     func play() async -> Bool { false }
 }
 
+struct UnavailableAppleMusicPlaybackController: AppleMusicPlaybackControlling {
+    func playerState() async -> AppPlaybackState { .unknown }
+    func pause() async -> Bool { false }
+    func play() async -> Bool { false }
+}
+
+struct UnavailableChromePlaybackController: ChromePlaybackControlling {
+    func playerState() async -> AppPlaybackState { .unknown }
+    func pause() async -> Bool { false }
+    func play() async -> Bool { false }
+}
+
+struct UnavailableAppPlaybackController: AppPlaybackControlling {
+    func playerState() async -> AppPlaybackState { .unknown }
+    func pause() async -> Bool { false }
+    func play() async -> Bool { false }
+}
+
+private enum AppPlaybackControllerFactory {
+    static func controller(
+        for owner: InterruptedPlaybackOwner,
+        sendMediaCommand: @escaping (MediaInterruptionCommand) -> Bool
+    ) -> any AppPlaybackControlling {
+        switch owner {
+        case .spotify:
+            SpotifyPlaybackController()
+        case .appleMusic:
+            AppleMusicPlaybackController()
+        case .applePodcasts:
+            AppleScriptPlayerPlaybackController(applicationID: "com.apple.podcasts")
+        case .appleTV:
+            AppleScriptPlayerPlaybackController(applicationID: "com.apple.TV")
+        case .quickTime:
+            QuickTimePlaybackController()
+        case .chrome:
+            ChromePlaybackController(applicationID: "com.google.Chrome")
+        case .edge:
+            ChromePlaybackController(applicationID: "com.microsoft.edgemac")
+        case .brave:
+            ChromePlaybackController(applicationID: "com.brave.Browser")
+        case .arc:
+            ChromePlaybackController(applicationID: "company.thebrowser.Browser")
+        case .safari:
+            SafariPlaybackController()
+        case .firefox:
+            MediaRemoteOnlyPlaybackController(sendMediaCommand: sendMediaCommand)
+        case .vlc:
+            VLCPlaybackController()
+        case .iina:
+            MediaRemoteOnlyPlaybackController(sendMediaCommand: sendMediaCommand)
+        }
+    }
+}
+
+struct MediaRemoteOnlyPlaybackController: AppPlaybackControlling, @unchecked Sendable {
+    let sendMediaCommand: (MediaInterruptionCommand) -> Bool
+
+    func playerState() async -> AppPlaybackState { .unknown }
+    func pause() async -> Bool { sendMediaCommand(.pause) }
+    func play() async -> Bool { sendMediaCommand(.play) }
+}
+
 struct SpotifyPlaybackController: SpotifyPlaybackControlling {
-    func playerState() async -> SpotifyPlaybackState {
+    func playerState() async -> AppPlaybackState {
         let script = """
         if application id "com.spotify.client" is running then
             tell application id "com.spotify.client"
@@ -1043,10 +1513,14 @@ struct SpotifyPlaybackController: SpotifyPlaybackControlling {
 
     func play() async -> Bool {
         let script = """
-        tell application id "com.spotify.client"
-            play
-            return player state as string
-        end tell
+        if application id "com.spotify.client" is running then
+            tell application id "com.spotify.client"
+                play
+                return player state as string
+            end tell
+        else
+            return "stopped"
+        end if
         """
         guard let output = await runAppleScript(script) else { return false }
         return output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "playing"
@@ -1054,11 +1528,18 @@ struct SpotifyPlaybackController: SpotifyPlaybackControlling {
 
     func pause() async -> Bool {
         let script = """
-        tell application id "com.spotify.client"
-            pause
-        end tell
+        if application id "com.spotify.client" is running then
+            tell application id "com.spotify.client"
+                pause
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
         """
-        guard await runAppleScript(script) != nil else { return false }
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
 
         // Spotify applies AppleScript playback commands asynchronously. A
         // same-script `return player state` can still report "playing" even
@@ -1087,6 +1568,764 @@ struct SpotifyPlaybackController: SpotifyPlaybackControlling {
     }
 }
 
+struct AppleMusicPlaybackController: AppleMusicPlaybackControlling {
+    func playerState() async -> AppPlaybackState {
+        let script = """
+        if application id "com.apple.Music" is running then
+            tell application id "com.apple.Music"
+                return player state as string
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func play() async -> Bool {
+        let script = """
+        if application id "com.apple.Music" is running then
+            tell application id "com.apple.Music"
+                play
+                return player state as string
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return false }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "playing"
+    }
+
+    func pause() async -> Bool {
+        let script = """
+        if application id "com.apple.Music" is running then
+            tell application id "com.apple.Music"
+                pause
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
+
+        for _ in 0..<5 {
+            if await playerState() == .paused {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+struct AppleScriptPlayerPlaybackController: AppPlaybackControlling {
+    let applicationID: String
+
+    func playerState() async -> AppPlaybackState {
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                return player state as string
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func play() async -> Bool {
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                play
+                return player state as string
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return false }
+        return output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "playing"
+    }
+
+    func pause() async -> Bool {
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                pause
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
+
+        for _ in 0..<5 {
+            if await playerState() == .paused {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+struct ChromePlaybackController: ChromePlaybackControlling {
+    let applicationID: String
+
+    init(applicationID: String = "com.google.Chrome") {
+        self.applicationID = applicationID
+    }
+
+    func playerState() async -> AppPlaybackState {
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                set sawPausedMedia to false
+                repeat with chromeWindow in windows
+                    repeat with chromeTab in tabs of chromeWindow
+                        try
+                            set stateText to execute chromeTab javascript "\(Self.chromeStateJavaScript)"
+                            if stateText is "playing" then
+                                return "playing"
+                            else if stateText is "paused" then
+                                set sawPausedMedia to true
+                            end if
+                        end try
+                    end repeat
+                end repeat
+                if sawPausedMedia then
+                    return "paused"
+                else
+                    return "stopped"
+                end if
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func pause() async -> Bool {
+        await pauseOutcome() == .paused
+    }
+
+    func pauseOutcome() async -> AppPlaybackPauseOutcome {
+        let tabRiskAssessment = await tabRiskAssessment()
+        let allowsGenericFallback: Bool
+        switch tabRiskAssessment {
+        case .safe:
+            allowsGenericFallback = true
+        case .blocked:
+            allowsGenericFallback = false
+        case .uninspectable:
+            return .blocked
+        case .stopped:
+            return .failed
+        }
+
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                set pausedCount to 0
+                set sawBlockedMedia to false
+                repeat with chromeWindow in windows
+                    repeat with chromeTab in tabs of chromeWindow
+                        try
+                            set pauseResult to execute chromeTab javascript "\(Self.chromePauseJavaScript)"
+                            if pauseResult is "blocked" then
+                                set sawBlockedMedia to true
+                            else
+                                set pausedCount to pausedCount + (pauseResult as integer)
+                            end if
+                        end try
+                    end repeat
+                end repeat
+                if pausedCount > 0 then
+                    return pausedCount as string
+                else if sawBlockedMedia then
+                    return "blocked"
+                else
+                    return "0"
+                end if
+            end tell
+        else
+            return "0"
+        end if
+        """
+        guard let output = await runAppleScript(script) else {
+            return allowsGenericFallback ? .failed : .blocked
+        }
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmedOutput == "blocked" {
+            return .blocked
+        }
+        guard let pausedCount = Int(trimmedOutput), pausedCount > 0 else {
+            return allowsGenericFallback ? .failed : .blocked
+        }
+
+        for _ in 0..<5 {
+            if await playerState() != .playing {
+                return .paused
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return .paused
+    }
+
+    private func tabRiskAssessment() async -> BrowserTabRiskAssessment {
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                set sawInspectableTab to false
+                repeat with chromeWindow in windows
+                    repeat with chromeTab in tabs of chromeWindow
+                        try
+                            set sawInspectableTab to true
+                            set tabURL to URL of chromeTab as string
+                            if my voceIsBlockedBrowserMediaURL(tabURL) then
+                                return "blocked"
+                            end if
+                        on error
+                            return "uninspectable"
+                        end try
+                    end repeat
+                end repeat
+                if sawInspectableTab then
+                    return "safe"
+                else
+                    return "safe"
+                end if
+            end tell
+        else
+            return "stopped"
+        end if
+
+        \(BrowserMediaRisk.appleScriptBlockedURLHandler)
+        """
+        guard let output = await runAppleScript(script) else { return .uninspectable }
+        return BrowserTabRiskAssessment(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    func play() async -> Bool {
+        let script = """
+        if application id "\(applicationID)" is running then
+            tell application id "\(applicationID)"
+                set resumedCount to 0
+                repeat with chromeWindow in windows
+                    repeat with chromeTab in tabs of chromeWindow
+                        try
+                            set resumedCount to resumedCount + ((execute chromeTab javascript "\(Self.chromePlayJavaScript)") as integer)
+                        end try
+                    end repeat
+                end repeat
+                return resumedCount as string
+            end tell
+        else
+            return "0"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              let resumedCount = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)),
+              resumedCount > 0
+        else {
+            return false
+        }
+
+        for _ in 0..<5 {
+            if await playerState() == .playing {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    fileprivate static let chromeStateJavaScript =
+        """
+        (() => { const host = location.hostname.toLowerCase(); const blocked = \(BrowserMediaRisk.javaScriptBlockedHostExpression); if (blocked) return 'none'; const media = Array.from(document.querySelectorAll('video,audio')); if (media.some((item) => !item.paused && !item.ended)) return 'playing'; if (media.length > 0) return 'paused'; return 'none'; })()
+        """
+        .appleScriptSingleLineLiteral
+
+    fileprivate static let chromePauseJavaScript =
+        """
+        (() => { const host = location.hostname.toLowerCase(); const blocked = \(BrowserMediaRisk.javaScriptBlockedHostExpression); let count = 0; let blockedCount = 0; for (const item of Array.from(document.querySelectorAll('video,audio'))) { if (!item.paused && !item.ended) { if (blocked) { blockedCount += 1; } else { item.dataset.vocePausedForDictation = '1'; item.pause(); count += 1; } } } if (blockedCount > 0 && count === 0) return 'blocked'; return String(count); })()
+        """
+        .appleScriptSingleLineLiteral
+
+    fileprivate static let chromePlayJavaScript =
+        """
+        (() => { const host = location.hostname.toLowerCase(); const blocked = \(BrowserMediaRisk.javaScriptBlockedHostExpression); if (blocked) return '0'; let count = 0; for (const item of Array.from(document.querySelectorAll('video,audio'))) { if (item.dataset.vocePausedForDictation === '1') { delete item.dataset.vocePausedForDictation; try { item.play(); count += 1; } catch (_) {} } } return String(count); })()
+        """
+        .appleScriptSingleLineLiteral
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+struct SafariPlaybackController: AppPlaybackControlling {
+    func playerState() async -> AppPlaybackState {
+        let script = """
+        if application id "com.apple.Safari" is running then
+            tell application id "com.apple.Safari"
+                set sawPausedMedia to false
+                repeat with safariWindow in windows
+                    repeat with safariTab in tabs of safariWindow
+                        try
+                            set stateText to do JavaScript "\(Self.safariStateJavaScript)" in safariTab
+                            if stateText is "playing" then
+                                return "playing"
+                            else if stateText is "paused" then
+                                set sawPausedMedia to true
+                            end if
+                        end try
+                    end repeat
+                end repeat
+                if sawPausedMedia then
+                    return "paused"
+                else
+                    return "stopped"
+                end if
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func pause() async -> Bool {
+        await pauseOutcome() == .paused
+    }
+
+    func pauseOutcome() async -> AppPlaybackPauseOutcome {
+        let tabRiskAssessment = await tabRiskAssessment()
+        let allowsGenericFallback: Bool
+        switch tabRiskAssessment {
+        case .safe:
+            allowsGenericFallback = true
+        case .blocked:
+            allowsGenericFallback = false
+        case .uninspectable:
+            return .blocked
+        case .stopped:
+            return .failed
+        }
+
+        let script = """
+        if application id "com.apple.Safari" is running then
+            tell application id "com.apple.Safari"
+                set pausedCount to 0
+                set sawBlockedMedia to false
+                repeat with safariWindow in windows
+                    repeat with safariTab in tabs of safariWindow
+                        try
+                            set pauseResult to do JavaScript "\(Self.safariPauseJavaScript)" in safariTab
+                            if pauseResult is "blocked" then
+                                set sawBlockedMedia to true
+                            else
+                                set pausedCount to pausedCount + (pauseResult as integer)
+                            end if
+                        end try
+                    end repeat
+                end repeat
+                if pausedCount > 0 then
+                    return pausedCount as string
+                else if sawBlockedMedia then
+                    return "blocked"
+                else
+                    return "0"
+                end if
+            end tell
+        else
+            return "0"
+        end if
+        """
+        guard let output = await runAppleScript(script) else {
+            return allowsGenericFallback ? .failed : .blocked
+        }
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmedOutput == "blocked" {
+            return .blocked
+        }
+        guard let pausedCount = Int(trimmedOutput), pausedCount > 0 else {
+            return allowsGenericFallback ? .failed : .blocked
+        }
+
+        for _ in 0..<5 {
+            if await playerState() != .playing {
+                return .paused
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return .paused
+    }
+
+    private func tabRiskAssessment() async -> BrowserTabRiskAssessment {
+        let script = """
+        if application id "com.apple.Safari" is running then
+            tell application id "com.apple.Safari"
+                set sawInspectableTab to false
+                repeat with safariWindow in windows
+                    repeat with safariTab in tabs of safariWindow
+                        try
+                            set sawInspectableTab to true
+                            set tabURL to URL of safariTab as string
+                            if my voceIsBlockedBrowserMediaURL(tabURL) then
+                                return "blocked"
+                            end if
+                        on error
+                            return "uninspectable"
+                        end try
+                    end repeat
+                end repeat
+                if sawInspectableTab then
+                    return "safe"
+                else
+                    return "safe"
+                end if
+            end tell
+        else
+            return "stopped"
+        end if
+
+        \(BrowserMediaRisk.appleScriptBlockedURLHandler)
+        """
+        guard let output = await runAppleScript(script) else { return .uninspectable }
+        return BrowserTabRiskAssessment(output.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    func play() async -> Bool {
+        let script = """
+        if application id "com.apple.Safari" is running then
+            tell application id "com.apple.Safari"
+                set resumedCount to 0
+                repeat with safariWindow in windows
+                    repeat with safariTab in tabs of safariWindow
+                        try
+                            set resumedCount to resumedCount + ((do JavaScript "\(Self.safariPlayJavaScript)" in safariTab) as integer)
+                        end try
+                    end repeat
+                end repeat
+                return resumedCount as string
+            end tell
+        else
+            return "0"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              let resumedCount = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)),
+              resumedCount > 0
+        else {
+            return false
+        }
+
+        for _ in 0..<5 {
+            if await playerState() == .playing {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    private static let safariStateJavaScript = ChromePlaybackController.chromeStateJavaScript
+    private static let safariPauseJavaScript = ChromePlaybackController.chromePauseJavaScript
+    private static let safariPlayJavaScript = ChromePlaybackController.chromePlayJavaScript
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+struct QuickTimePlaybackController: AppPlaybackControlling {
+    func playerState() async -> AppPlaybackState {
+        let script = """
+        if application id "com.apple.QuickTimePlayerX" is running then
+            tell application id "com.apple.QuickTimePlayerX"
+                if not (exists document 1) then return "stopped"
+                repeat with quickTimeDocument in documents
+                    try
+                        if playing of quickTimeDocument then return "playing"
+                    end try
+                end repeat
+                return "paused"
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func pause() async -> Bool {
+        let script = """
+        if application id "com.apple.QuickTimePlayerX" is running then
+            tell application id "com.apple.QuickTimePlayerX"
+                repeat with quickTimeDocument in documents
+                    try
+                        pause quickTimeDocument
+                    end try
+                end repeat
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
+        for _ in 0..<5 {
+            if await playerState() == .paused {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    func play() async -> Bool {
+        let script = """
+        if application id "com.apple.QuickTimePlayerX" is running then
+            tell application id "com.apple.QuickTimePlayerX"
+                if exists document 1 then
+                    play document 1
+                end if
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
+        for _ in 0..<5 {
+            if await playerState() == .playing {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+struct VLCPlaybackController: AppPlaybackControlling {
+    func playerState() async -> AppPlaybackState {
+        let script = """
+        if application id "org.videolan.vlc" is running then
+            tell application id "org.videolan.vlc"
+                if playing then
+                    return "playing"
+                else
+                    return "paused"
+                end if
+            end tell
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script) else { return .unknown }
+        switch output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "playing":
+            return .playing
+        case "paused":
+            return .paused
+        case "stopped":
+            return .stopped
+        default:
+            return .unknown
+        }
+    }
+
+    func pause() async -> Bool {
+        let script = """
+        if application id "org.videolan.vlc" is running then
+            tell application id "org.videolan.vlc"
+                pause
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
+        for _ in 0..<5 {
+            if await playerState() == .paused {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    func play() async -> Bool {
+        let script = """
+        if application id "org.videolan.vlc" is running then
+            tell application id "org.videolan.vlc"
+                play
+            end tell
+            return "ok"
+        else
+            return "stopped"
+        end if
+        """
+        guard let output = await runAppleScript(script),
+              output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ok"
+        else { return false }
+        for _ in 0..<5 {
+            if await playerState() == .playing {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return false
+    }
+
+    private func runAppleScript(_ script: String) async -> String? {
+        do {
+            let result = try await ProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/osascript"),
+                arguments: ["-e", script]
+            )
+            guard result.terminationStatus == 0 else { return nil }
+            return String(data: result.standardOutput, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+private extension String {
+    var appleScriptSingleLineLiteral: String {
+        replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\t", with: " ")
+    }
+}
+
 private final class ProbeContinuationGate<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value?, Never>?
@@ -1105,6 +2344,33 @@ private final class ProbeContinuationGate<Value: Sendable>: @unchecked Sendable 
         lock.unlock()
         // Never resume while holding the lock. Cancellation handlers may run concurrently.
         continuation.resume(returning: value)
+    }
+}
+
+private enum SystemMediaCommandSender {
+    static func send(_ command: MediaInterruptionCommand) -> Bool {
+        if MediaRemoteCommandSender.send(command) {
+            return true
+        }
+        return SystemMediaKeySender.sendPlayPause()
+    }
+}
+
+private enum MediaRemoteCommandSender {
+    private typealias SendCommandFn = @convention(c) (Int32, CFDictionary?) -> Void
+    private static let sendCommand: SendCommandFn? = {
+        guard let handle = dlopen("/System/Library/PrivateFrameworks/MediaRemote.framework/MediaRemote", RTLD_LAZY),
+              let symbol = dlsym(handle, "MRMediaRemoteSendCommand")
+        else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: SendCommandFn.self)
+    }()
+
+    static func send(_ command: MediaInterruptionCommand) -> Bool {
+        guard let sendCommand else { return false }
+        sendCommand(command.mediaRemoteCommand, nil)
+        return true
     }
 }
 

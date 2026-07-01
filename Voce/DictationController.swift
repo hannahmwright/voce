@@ -1805,6 +1805,10 @@ final class DictationController: ObservableObject {
                 try await ensureMicrophonePermission()
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
 
+                if shouldPauseMedia {
+                    activeMediaToken = await mediaInterruption.beginInterruption()
+                }
+
                 status = "Arming microphone..."
                 // Show the bubble immediately with a spinner. The first real
                 // mic callback switches it to the listening glyph, even if the
@@ -1894,15 +1898,6 @@ final class DictationController: ObservableObject {
                 if captureReadyOverlayStartTaskID != startTaskID {
                     overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
                     captureReadyOverlayStartTaskID = startTaskID
-                }
-
-                if shouldPauseMedia {
-                    let mediaToken = await mediaInterruption.beginInterruption()
-                    if currentSessionID == sessionID, isRecording {
-                        activeMediaToken = mediaToken
-                    } else if let mediaToken {
-                        mediaInterruption.endInterruption(token: mediaToken)
-                    }
                 }
             } catch {
                 if let token = activeMediaToken {

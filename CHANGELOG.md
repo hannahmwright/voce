@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.51] - 2026-07-01
+
+### Fixed
+- Rebuilt media interruption around app-specific pause and resume pathways for Chrome, Safari, Spotify, Apple Music, Podcasts, TV, QuickTime, VLC, Firefox, and IINA.
+- Fixed delayed media pausing by starting media interruption before dictation capture session startup instead of waiting for microphone or realtime setup to finish.
+- Made browser media interruption safer around Meet, Teams, Zoom, and Webex tabs by pausing only inspectable non-meeting page media and refusing risky generic fallbacks.
+- Added explicit MediaRemote pause/play fallback commands and broader protections for meeting and call apps so Voce avoids accidental play/pause toggles.
+
 ## [0.4.39] - 2026-04-29
 
 ### Changed

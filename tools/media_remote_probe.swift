@@ -170,8 +170,7 @@ private extension ProbeSnapshot {
 @MainActor
 private final class MediaRemoteProbe {
     private static let weakPositiveConfirmationDelayNanoseconds: UInt64 = 80_000_000
-    private static let spotifyDisplayID = "com.spotify.client"
-    private static let spotifyPausedPlaybackState = 2
+    private static let pausedPlaybackState = 2
     private let bridge = MediaRemoteBridge()
     private let includeInfo: Bool
 
@@ -291,7 +290,7 @@ private final class MediaRemoteProbe {
     }
 
     private func classify(_ snapshot: ProbeSnapshot) -> DetectionDecision {
-        if Self.isSpotifyPausedSignature(snapshot) {
+        if Self.isPausedSignature(snapshot) {
             return .notPlaying
         }
         if snapshot.hasStrongPositive && !snapshot.hasStrongNegative {
@@ -329,11 +328,10 @@ private final class MediaRemoteProbe {
         return (false, "uncorroborated-state")
     }
 
-    private static func isSpotifyPausedSignature(_ snapshot: ProbeSnapshot) -> Bool {
-        snapshot.displayID == spotifyDisplayID
-            && snapshot.anyPlaying == false
+    private static func isPausedSignature(_ snapshot: ProbeSnapshot) -> Bool {
+        snapshot.anyPlaying == false
             && snapshot.nowPlaying == false
-            && snapshot.playbackState == spotifyPausedPlaybackState
+            && snapshot.playbackState == pausedPlaybackState
             && snapshot.playbackRate == nil
     }
 }

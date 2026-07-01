@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.51</title>
+      <sparkle:version>54</sparkle:version>
+      <sparkle:shortVersionString>0.4.51</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.51</h2>
+        <ul>
+          <li>Rebuilds media interruption with app-specific pause and resume paths for Chrome, Safari, Spotify, Apple Music, Podcasts, TV, QuickTime, VLC, Firefox, and IINA</li>
+          <li>Pauses media before dictation capture startup so slow microphone or realtime setup no longer delays media interruption</li>
+          <li>Improves browser safety around Meet, Teams, Zoom, and Webex tabs by pausing only inspectable non-meeting page media and avoiding risky generic fallbacks</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 01 Jul 2026 19:21:20 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.51/Voce-0.4.51.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="9HNiu+NwO34fndk4TMp28VINMxOuA1Gfg09E10aPtqX54xCAdWyt9PqyMt3NqjA5SblaYoHF6D+ZksP6AgPSBw=="
+        length="19056349"
+      />
+    </item>
+    <item>
       <title>Version 0.4.50</title>
       <sparkle:version>53</sparkle:version>
       <sparkle:shortVersionString>0.4.50</sparkle:shortVersionString>
