@@ -1847,6 +1847,121 @@ func unverifiedResumeCommandEscalatesToMediaKey() async {
     )
 }
 
+// MARK: - Weak-detection browser pause (Chrome/Arc with tab JavaScript unavailable)
+//
+// On macOS builds where MediaRemote only exposes weak signals for browsers, detection
+// is `.likelyPlaying` and the browser's scriptable state probe returns `.unknown`
+// (tab JavaScript from Apple Events is disabled by default in Chrome; Arc has no
+// toggle). Historically this skipped the interruption entirely, leaving media playing.
+// The display id naming the browser as the now-playing app justifies a verified
+// pause attempt instead.
+
+@MainActor
+@Test("Weak browser detection with unavailable state probe pauses via verified command")
+func weakBrowserDetectionPausesViaVerifiedCommand() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.likelyPlaying, .notPlaying],
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil, "Display-id-identified browser must be paused despite weak detection.")
+    #expect(await chrome.pauseCalls == 1)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0, "Verified command pause must not press the media key.")
+}
+
+@MainActor
+@Test("Weak browser detection escalates to the media key when the command is unverified")
+func weakBrowserDetectionEscalatesToMediaKeyWhenCommandUnverified() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.likelyPlaying, .likelyPlaying, .notPlaying],
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 1, "Unverified command pause must escalate to the media key.")
+}
+
+@MainActor
+@Test("Weak browser detection yields no token when the pause never verifies")
+func weakBrowserDetectionYieldsNoTokenWhenPauseNeverVerifies() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.likelyPlaying, .likelyPlaying, .likelyPlaying],
+            fallback: .likelyPlaying,
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "Weak evidence without verified pause success must not activate a token.")
+    #expect(keyRecorder.sendCalls == 1, "One escalation attempt is expected before giving up.")
+}
+
+@MainActor
+@Test("Weak detection with unavailable state probe still skips non-browser owners")
+func weakDetectionStillSkipsNonBrowserOwnersWithUnavailableStateProbe() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let spotify = FakeSpotifyPlaybackController([.unknown], fallbackState: .unknown)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.likelyPlaying],
+            displayIDs: [MediaDisplayID.spotify],
+            fallbackDisplayID: MediaDisplayID.spotify
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "Non-browser owners keep the strict likelyPlaying confirmation requirement.")
+    #expect(await spotify.pauseCalls == 0)
+    #expect(commandRecorder.commands.isEmpty)
+    #expect(keyRecorder.sendCalls == 0)
+}
+
 /// Detector that suspends a specific detect() call until released, allowing tests to
 /// interleave a new interruption inside another task's detection suspension point.
 @MainActor

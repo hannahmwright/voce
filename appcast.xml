@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.55</title>
+      <sparkle:version>58</sparkle:version>
+      <sparkle:shortVersionString>0.4.55</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.55</h2>
+        <ul>
+          <li>Fixes Chrome and Arc media interruption when macOS only reports weak browser playback signals and browser JavaScript state probing is unavailable</li>
+          <li>Uses the now-playing browser identity to run a verified fallback pause instead of skipping interruption when tab JavaScript from Apple Events is disabled</li>
+          <li>Keeps weak non-browser detections strict and only activates an interruption token after pause success is verified</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 01 Jul 2026 21:31:08 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.55/Voce-0.4.55.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="1ZxpzJBiGxim4Gqlw0dbw1yzlhbFgJ+12cfVG+UAsZNPXoXtGaIsGEi1IR455pQ9FzAmXPTRHLNeUHjBLInJDQ=="
+        length="19087060"
+      />
+    </item>
+    <item>
       <title>Version 0.4.54</title>
       <sparkle:version>57</sparkle:version>
       <sparkle:shortVersionString>0.4.54</sparkle:shortVersionString>

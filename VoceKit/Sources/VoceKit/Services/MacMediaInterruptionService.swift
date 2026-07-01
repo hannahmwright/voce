@@ -325,7 +325,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
             var postPauseDetection = await playbackDetector.detect()
             if pauseOutcome == .failed,
-               postPauseDetection == .playing,
+               postPauseDetection == .playing || postPauseDetection == .likelyPlaying,
                escalatesToMediaKeyOnUnverifiedCommand {
                 // The media command reported success but playback is verifiably still
                 // active. MediaRemote silently no-ops on macOS 15.4+ for non-entitled
@@ -393,10 +393,51 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             Self.logger.debug(
                 "Media interruption \(interruptedPlaybackOwner.logValue, privacy: .public) pause attempted: \(pauseOutcome.logValue, privacy: .public)"
             )
-            guard pauseOutcome == .paused else { return nil }
+            var resumeStrategy = interruptedPlaybackOwner.resumeStrategy
+            if pauseOutcome == .blocked { return nil }
+            if pauseOutcome == .failed {
+                // Browsers with tab JavaScript disabled cannot be paused scriptably even
+                // though MediaRemote names them as the now-playing app. Weak detection is
+                // trustworthy enough here BECAUSE the display id identified the app, so
+                // fall through to the generic command with detector verification instead
+                // of silently leaving media playing. Non-browser owners keep the strict
+                // behavior: their scriptable pause failing usually means nothing to pause.
+                guard interruptedPlaybackOwner.isBrowser else { return nil }
+                let didSend = sendMediaCommand(.pause)
+                Self.logger.notice(
+                    "Media interruption weak-detection browser pause command send attempted: \(didSend, privacy: .public)"
+                )
+                guard didSend else { return nil }
+
+                if pauseConfirmationDelayNanoseconds > 0 {
+                    try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
+                }
+                var postPauseDetection = await playbackDetector.detect()
+                if postPauseDetection != .notPlaying, escalatesToMediaKeyOnUnverifiedCommand {
+                    let didSendKey = sendPlayPauseKey()
+                    Self.logger.notice(
+                        "Media interruption weak-detection pause unverified; media key escalation attempted: \(didSendKey, privacy: .public)"
+                    )
+                    if didSendKey {
+                        if pauseConfirmationDelayNanoseconds > 0 {
+                            try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
+                        }
+                        postPauseDetection = await playbackDetector.detect()
+                    }
+                }
+                Self.logger.notice(
+                    """
+                    Media interruption weak-detection post-pause detection=\(postPauseDetection.logValue, privacy: .public) \
+                    initial=\(detection.logValue, privacy: .public)
+                    """
+                )
+                // Weak initial evidence demands verified success: only keep the
+                // interruption when the detector confirms playback stopped.
+                guard postPauseDetection == .notPlaying else { return nil }
+                resumeStrategy = .systemMediaKey
+            }
 
             activeTokens.insert(token.id)
-            let resumeStrategy = interruptedPlaybackOwner.resumeStrategy
             interruptedPlaybackResumeStrategy = resumeStrategy
             pauseSentAtUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
             Self.logger.notice(
@@ -597,7 +638,24 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         for detection: PlaybackDetectionResult
     ) async -> InterruptedPlaybackOwner? {
         guard detection == .likelyPlaying else { return owner }
-        return await scriptablePlaybackState(owner: owner) == .playing ? owner : nil
+        let state = await scriptablePlaybackState(owner: owner)
+        if state == .playing {
+            return owner
+        }
+        if owner.isBrowser, state == .unknown {
+            // MediaRemote named this browser as the now-playing app, but the browser's
+            // scriptable state probe is unavailable (tab JavaScript execution disabled).
+            // The displayID is the stronger signal here: keep the owner so the pause
+            // pathway can run and escalate, instead of silently doing nothing.
+            Self.logger.notice(
+                """
+                Media interruption \(owner.logValue, privacy: .public) state probe unavailable; \
+                trusting now-playing display id for weak playback detection.
+                """
+            )
+            return owner
+        }
+        return nil
     }
 
     private func stabilizedResumeDetection() async -> PlaybackDetectionResult {
@@ -685,6 +743,18 @@ enum InterruptedPlaybackOwner: Sendable, Equatable, Hashable {
             "vlc"
         case .iina:
             "iina"
+        }
+    }
+
+    /// Browsers cannot expose reliable scriptable playback state without the user
+    /// enabling tab JavaScript from Apple Events, so their owner identity may rest
+    /// on the MediaRemote display id alone.
+    var isBrowser: Bool {
+        switch self {
+        case .chrome, .edge, .brave, .arc, .safari, .firefox:
+            true
+        default:
+            false
         }
     }
 
@@ -1786,6 +1856,7 @@ struct ChromePlaybackController: ChromePlaybackControlling {
         if application id "\(applicationID)" is running then
             tell application id "\(applicationID)"
                 set sawPausedMedia to false
+                set sawScriptError to false
                 repeat with chromeWindow in windows
                     repeat with chromeTab in tabs of chromeWindow
                         try
@@ -1795,11 +1866,15 @@ struct ChromePlaybackController: ChromePlaybackControlling {
                             else if stateText is "paused" then
                                 set sawPausedMedia to true
                             end if
+                        on error
+                            set sawScriptError to true
                         end try
                     end repeat
                 end repeat
                 if sawPausedMedia then
                     return "paused"
+                else if sawScriptError then
+                    return "error"
                 else
                     return "stopped"
                 end if
@@ -1816,6 +1891,15 @@ struct ChromePlaybackController: ChromePlaybackControlling {
             return .paused
         case "stopped":
             return .stopped
+        case "error":
+            // Tab JavaScript is unavailable (e.g. "Allow JavaScript from Apple Events"
+            // disabled — Chrome's default; Arc has no toggle). The browser's true media
+            // state is unknowable via scripting; it must NOT be reported as stopped,
+            // or callers will wrongly rule the browser out as the playback owner.
+            VoceKitDiagnostics.logger.notice(
+                "Browser \(self.applicationID, privacy: .public) tab JavaScript state probe unavailable; reporting unknown."
+            )
+            return .unknown
         default:
             return .unknown
         }
