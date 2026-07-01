@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.54</title>
+      <sparkle:version>57</sparkle:version>
+      <sparkle:shortVersionString>0.4.54</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.54</h2>
+        <ul>
+          <li>Fixes browser media interruption on macOS releases where MediaRemote accepts pause and play commands but silently does nothing</li>
+          <li>Escalates failed Chrome, Arc, Edge, and Brave pauses to the physical play/pause media-key path only after playback detection confirms media is still active</li>
+          <li>Preserves app-specific Spotify and Apple media controls while preventing stale resume tasks from toggling media during a new interruption</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 01 Jul 2026 20:53:39 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.54/Voce-0.4.54.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="51XZmgbGEnchLWoVvyYAubjg0dXJOm+XKajTc5JtG5AKAzSX99VXIQsBnISOx/u4S8wWdKiDODfUV/klzQiACA=="
+        length="19077875"
+      />
+    </item>
+    <item>
       <title>Version 0.4.53</title>
       <sparkle:version>56</sparkle:version>
       <sparkle:shortVersionString>0.4.53</sparkle:shortVersionString>

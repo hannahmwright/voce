@@ -108,6 +108,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     private let playbackDetector: any MediaPlaybackStateDetector
     private let playbackController: (InterruptedPlaybackOwner) -> any AppPlaybackControlling
     private let sendMediaCommand: (MediaInterruptionCommand) -> Bool
+    /// Final fallback: synthesizes the physical play/pause media key (NX_KEYTYPE_PLAY).
+    private let sendPlayPauseKey: () -> Bool
+    /// When true, an unverified pause/resume (detector still reports the old state after
+    /// `sendMediaCommand`) escalates to a synthetic media-key press. MediaRemote commands
+    /// are fire-and-forget and silently no-op on macOS 15.4+ for non-entitled processes,
+    /// so success must be confirmed by detection, never by the sender's return value.
+    private let escalatesToMediaKeyOnUnverifiedCommand: Bool
     private let minimumResumeDelayNanoseconds: UInt64
     private let pauseConfirmationDelayNanoseconds: UInt64
     private let unknownResumeRetryDelayNanoseconds: UInt64
@@ -122,6 +129,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             AppPlaybackControllerFactory.controller(for: owner, sendMediaCommand: SystemMediaCommandSender.send)
         }
         self.sendMediaCommand = SystemMediaCommandSender.send
+        self.sendPlayPauseKey = SystemMediaKeySender.sendPlayPause
+        self.escalatesToMediaKeyOnUnverifiedCommand = true
         self.minimumResumeDelayNanoseconds = 300_000_000
         self.pauseConfirmationDelayNanoseconds = 120_000_000
         self.unknownResumeRetryDelayNanoseconds = 150_000_000
@@ -212,6 +221,10 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         maximumUnknownResumeRetryCount: Int = 2
     ) {
         let commandSender = sendMediaCommand ?? { _ in sendPlayPauseKey() }
+        self.sendPlayPauseKey = sendPlayPauseKey
+        // Escalation only makes sense when the media command sender is distinct from the
+        // media-key sender; otherwise escalation would just repeat the same key press.
+        self.escalatesToMediaKeyOnUnverifiedCommand = sendMediaCommand != nil
         self.playbackDetector = playbackDetector
         self.playbackController = { owner in
             if let override = playbackControllerOverrides[owner] {
@@ -310,7 +323,24 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
             }
 
-            let postPauseDetection = await playbackDetector.detect()
+            var postPauseDetection = await playbackDetector.detect()
+            if pauseOutcome == .failed,
+               postPauseDetection == .playing,
+               escalatesToMediaKeyOnUnverifiedCommand {
+                // The media command reported success but playback is verifiably still
+                // active. MediaRemote silently no-ops on macOS 15.4+ for non-entitled
+                // processes, so escalate to the synthetic play/pause media key.
+                let didSendKey = sendPlayPauseKey()
+                Self.logger.notice(
+                    "Media interruption pause unverified after command send; media key escalation attempted: \(didSendKey, privacy: .public)"
+                )
+                if didSendKey {
+                    if pauseConfirmationDelayNanoseconds > 0 {
+                        try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
+                    }
+                    postPauseDetection = await playbackDetector.detect()
+                }
+            }
             Self.logger.notice(
                 """
                 Media interruption post-pause detection=\(postPauseDetection.logValue, privacy: .public) \
@@ -525,6 +555,23 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             let didSend = sendMediaCommand(.play)
             Self.logger.notice("Media interruption resume command send attempted: \(didSend, privacy: .public)")
             Self.logger.debug("Media interruption resume command send attempted: \(didSend, privacy: .public)")
+            guard didSend, escalatesToMediaKeyOnUnverifiedCommand else { return }
+            if pauseConfirmationDelayNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
+            }
+            guard !Task.isCancelled, activeTokens.isEmpty else { return }
+            let postResumeDetection = await playbackDetector.detect()
+            // Re-check after the detect suspension: a new interruption may have begun
+            // and paused media; pressing the key now would un-pause it.
+            guard !Task.isCancelled, activeTokens.isEmpty else { return }
+            if postResumeDetection == .notPlaying {
+                // Same MediaRemote caveat as the pause path: the command sender cannot
+                // report real success, so verify and escalate to the media key.
+                let didSendKey = sendPlayPauseKey()
+                Self.logger.notice(
+                    "Media interruption resume unverified after command send; media key escalation attempted: \(didSendKey, privacy: .public)"
+                )
+            }
         }
     }
 
@@ -1784,6 +1831,7 @@ struct ChromePlaybackController: ChromePlaybackControlling {
             tell application id "\(applicationID)"
                 set pausedCount to 0
                 set sawBlockedMedia to false
+                set lastScriptError to ""
                 repeat with chromeWindow in windows
                     repeat with chromeTab in tabs of chromeWindow
                         try
@@ -1793,6 +1841,8 @@ struct ChromePlaybackController: ChromePlaybackControlling {
                             else
                                 set pausedCount to pausedCount + (pauseResult as integer)
                             end if
+                        on error errorMessage
+                            set lastScriptError to errorMessage
                         end try
                     end repeat
                 end repeat
@@ -1800,6 +1850,8 @@ struct ChromePlaybackController: ChromePlaybackControlling {
                     return pausedCount as string
                 else if sawBlockedMedia then
                     return "blocked"
+                else if lastScriptError is not "" then
+                    return "error:" & lastScriptError
                 else
                     return "0"
                 end if
@@ -1811,9 +1863,22 @@ struct ChromePlaybackController: ChromePlaybackControlling {
         guard let output = await runAppleScript(script) else {
             return .failed
         }
-        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let originalOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedOutput = originalOutput.lowercased()
         if trimmedOutput == "blocked" {
             return .blocked
+        }
+        if trimmedOutput.hasPrefix("error:") {
+            // Most common cause: "Allow JavaScript from Apple Events" is disabled
+            // (off by default in Chrome; Arc does not expose the toggle at all).
+            // Fail fast so the caller escalates to the system media key.
+            VoceKitDiagnostics.logger.notice(
+                """
+                Browser \(self.applicationID, privacy: .public) tab JavaScript pause failed: \
+                \(originalOutput, privacy: .public)
+                """
+            )
+            return .failed
         }
         guard let pausedCount = Int(trimmedOutput), pausedCount > 0 else {
             return .failed

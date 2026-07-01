@@ -1747,4 +1747,180 @@ func mediaRemoteProbeRunnerIgnoresLateCallbacks() async {
     resumedCallbackQueue = true
     try? await Task.sleep(nanoseconds: 50_000_000)
 }
+
+// MARK: - Media-key escalation for unverified media commands
+//
+// MRMediaRemoteSendCommand is fire-and-forget and silently no-ops on macOS 15.4+
+// for non-entitled processes. These tests lock in the behavior that pause/resume
+// success is confirmed by playback detection and escalates to the synthetic
+// play/pause media key when the command sender's claimed success is unverified.
+// This is the Chrome/Arc regression: browser JS pause fails -> MediaRemote lies ->
+// without escalation nothing pauses.
+
+@MainActor
+@Test("Unverified pause command escalates to the media key for browsers")
+func unverifiedPauseCommandEscalatesToMediaKeyForBrowsers() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.playing], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .playing, .notPlaying],
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(await chrome.pauseCalls == 1, "Browser-specific pause should be attempted first.")
+    #expect(commandRecorder.commands == [.pause], "Failed browser pause should fall back to the media command.")
+    #expect(
+        keyRecorder.sendCalls == 1,
+        "A pause command that claims success while playback verifiably continues must escalate to the media key."
+    )
+}
+
+@MainActor
+@Test("Verified pause command does not escalate to the media key")
+func verifiedPauseCommandDoesNotEscalateToMediaKey() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.playing], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying],
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0, "A detector-confirmed pause must not press the media key.")
+}
+
+@MainActor
+@Test("Unverified resume command escalates to the media key")
+func unverifiedResumeCommandEscalatesToMediaKey() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying, .notPlaying, .notPlaying],
+            fallback: .notPlaying
+        ),
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for confirmed generic playback.")
+        return
+    }
+    #expect(commandRecorder.commands == [.pause])
+
+    service.endInterruption(token: token)
+    let didEscalate = await waitUntil {
+        keyRecorder.sendCalls == 1
+    }
+
+    #expect(commandRecorder.commands == [.pause, .play])
+    #expect(
+        didEscalate,
+        "A resume command that claims success while playback verifiably stays stopped must escalate to the media key."
+    )
+}
+
+/// Detector that suspends a specific detect() call until released, allowing tests to
+/// interleave a new interruption inside another task's detection suspension point.
+@MainActor
+private final class GatedPlaybackDetector: MediaPlaybackStateDetector {
+    private let resultsByCallIndex: [Int: PlaybackDetectionResult]
+    private let gatedCallIndex: Int
+    private var released = false
+    private(set) var detectCalls = 0
+    nonisolated let lastDetectedDisplayID: String? = nil
+
+    init(_ resultsByCallIndex: [Int: PlaybackDetectionResult], gatedCallIndex: Int) {
+        self.resultsByCallIndex = resultsByCallIndex
+        self.gatedCallIndex = gatedCallIndex
+    }
+
+    func release() {
+        released = true
+    }
+
+    func detect() async -> PlaybackDetectionResult {
+        detectCalls += 1
+        let call = detectCalls
+        if call == gatedCallIndex {
+            while !released {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+        }
+        return resultsByCallIndex[call] ?? .notPlaying
+    }
+}
+
+@MainActor
+@Test("Resume media key escalation is skipped when a new interruption begins during verification")
+func resumeEscalationSkippedWhenNewInterruptionBeginsDuringVerification() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    // Calls: 1 begin#1, 2 post-pause#1, 3 resume detection, 4 post-resume verify (gated),
+    // 5 begin#2, 6 post-pause#2.
+    let detector = GatedPlaybackDetector(
+        [1: .playing, 2: .notPlaying, 3: .notPlaying, 4: .notPlaying, 5: .playing, 6: .notPlaying],
+        gatedCallIndex: 4
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for confirmed playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    // Wait until the resume task has sent the play command and is suspended in
+    // the gated post-resume verification detect.
+    let resumeStarted = await waitUntil {
+        commandRecorder.commands == [.pause, .play] && detector.detectCalls == 4
+    }
+    #expect(resumeStarted)
+
+    // A new interruption begins (and pauses media) while the old resume task is
+    // still verifying. Releasing the gate must NOT produce a media key press that
+    // would un-pause the media the new interruption just paused.
+    let secondToken = await service.beginInterruption()
+    #expect(secondToken != nil)
+    detector.release()
+
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(
+        keyRecorder.sendCalls == 0,
+        "Stale resume verification must not press the media key after a new interruption became active."
+    )
+}
 #endif
