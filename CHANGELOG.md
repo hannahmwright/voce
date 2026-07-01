@@ -7,6 +7,11 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.52] - 2026-07-01
+
+### Fixed
+- Fixed app reopen reliability when Voce is already running with no visible main window, including Raycast/open-app launches and menu-bar Open Voce recovery.
+
 ## [0.4.51] - 2026-07-01
 
 ### Fixed

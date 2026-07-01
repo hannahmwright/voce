@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.52</title>
+      <sparkle:version>55</sparkle:version>
+      <sparkle:shortVersionString>0.4.52</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.52</h2>
+        <ul>
+          <li>Fixes reopening Voce when the app is already running but no main window is visible</li>
+          <li>Improves recovery from Raycast/open-app launches, menu-bar Open Voce, hidden windows, minimized windows, and destroyed SwiftUI windows</li>
+          <li>Prevents duplicate main windows during rapid repeated open requests</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 01 Jul 2026 19:52:15 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.52/Voce-0.4.52.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="9TJF/Ycs1Kug0M9q6hwLhPsD5UbXuJzxNHPKrMPhjxbJNc92F5aT27sYUpsWxijbkCYRACBUvnxesVR2gZeYCw=="
+        length="19097301"
+      />
+    </item>
+    <item>
       <title>Version 0.4.51</title>
       <sparkle:version>54</sparkle:version>
       <sparkle:shortVersionString>0.4.51</sparkle:shortVersionString>
