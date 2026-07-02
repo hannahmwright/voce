@@ -76,6 +76,10 @@ targets:
     platform: macOS
     sources:
       - path: VoceTests
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: 6.0
     dependencies:
       - target: Voce
       - package: VoceKit

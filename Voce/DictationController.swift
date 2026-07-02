@@ -1375,6 +1375,10 @@ final class DictationController: ObservableObject {
         CloudProviderCredentialStore.shared.hasStoredOpenAIAPIKey()
     }
 
+    var storedCloudAPIKeyHint: String? {
+        CloudProviderCredentialStore.shared.storedOpenAIAPIKeyHint()
+    }
+
     var isDevBuildWithCloudOptions: Bool {
         VoceRuntimeConfiguration.isDevApp
     }

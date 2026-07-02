@@ -262,7 +262,9 @@ struct SettingsView: View {
                     try? await Task.sleep(nanoseconds: 80_000_000)
                     guard !Task.isCancelled else { return }
                     withAnimation(.easeInOut(duration: 0.3)) {
-                        scrollProxy.scrollTo(anchor, anchor: .top)
+                        // Cards align to the top; rows (anchor "Card › Row")
+                        // center so surrounding context stays visible.
+                        scrollProxy.scrollTo(anchor, anchor: anchor.contains(" › ") ? .center : .top)
                     }
                     highlightedSettingsCard = anchor
                     pendingSearchScrollAnchor = nil
@@ -534,7 +536,7 @@ struct SettingsView: View {
     }
 }
 
-private enum SettingsGroup: String, CaseIterable {
+enum SettingsGroup: String, CaseIterable {
     case setup
     case behavior
     case speech
@@ -604,14 +606,37 @@ private enum SettingsGroup: String, CaseIterable {
     }
 }
 
-private struct SettingsSearchResult: Identifiable {
+struct SettingsSearchResult: Identifiable {
     let id: String
     let title: String
     let detail: String
     let group: SettingsGroup
     let keywords: [String]
+    /// Card title for row-level entries. Card-level entries leave this nil.
+    /// Row anchors become "\(parent) › \(title)" and must match a
+    /// `.settingsRowAnchor(parent, title)` in the section source exactly.
+    var parent: String?
+
+    init(
+        id: String,
+        title: String,
+        detail: String,
+        group: SettingsGroup,
+        keywords: [String],
+        parent: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.group = group
+        self.keywords = keywords
+        self.parent = parent
+    }
 
     var anchor: String {
+        if let parent {
+            return "\(parent) › \(title)"
+        }
         switch id {
         case "walkthrough":
             return "Learn the basics"
@@ -654,7 +679,7 @@ private struct SettingsSearchResult: Identifiable {
     private func score(for term: String) -> Int? {
         if Self.fieldMatches(term: term, text: title) { return 3 }
         if keywords.contains(where: { Self.fieldMatches(term: term, text: $0) }) { return 2 }
-        let context = "\(detail) \(group.title) \(group.subtitle)"
+        let context = "\(detail) \(parent ?? "") \(group.title) \(group.subtitle)"
         if Self.fieldMatches(term: term, text: context) { return 1 }
         return nil
     }
@@ -726,7 +751,7 @@ private struct SettingsSearchResult: Identifiable {
     // Every card shown by `groupContent(_:)` must have an entry here, or it is
     // unfindable. When adding a settings card, add its entry (title, detail, and the
     // words a user would actually type — including synonyms not shown in the UI).
-    private static let all: [SettingsSearchResult] = [
+    static let all: [SettingsSearchResult] = [
         .init(
             id: "access",
             title: "Access",
@@ -761,13 +786,33 @@ private struct SettingsSearchResult: Identifiable {
         ),
         .init(
             id: "dictation-engine",
-            title: "Speech",
+            title: "Dictation engine",
             detail: "Choose local or cloud transcription, language, per-app overrides, and cloud model behavior.",
             group: .speech,
             keywords: [
                 "cloud", "local", "model", "transcription", "speech", "openai",
                 "language", "locale", "whisper", "override", "pin", "per app",
                 "on device", "offline", "engine"
+            ]
+        ),
+        .init(
+            id: "app-overrides",
+            title: "App overrides",
+            detail: "Pin specific apps to Local or Cloud transcription instead of the global engine.",
+            group: .speech,
+            keywords: [
+                "override", "pin", "per app", "app specific", "local", "cloud",
+                "exception", "custom", "bundle"
+            ]
+        ),
+        .init(
+            id: "speech-diagnostics",
+            title: "Diagnostics",
+            detail: "Test Apple Speech and your cloud setup to verify transcription works.",
+            group: .speech,
+            keywords: [
+                "test", "verify", "troubleshoot", "apple speech", "cloud test",
+                "not working", "check", "debug"
             ]
         ),
         .init(
@@ -879,6 +924,274 @@ private struct SettingsSearchResult: Identifiable {
                 "question", "answer", "fix word", "clipboard", "paste", "dictating",
                 "troubleshooting", "not working"
             ]
+        ),
+
+        // MARK: Row-level entries
+        // Each maps to a `.settingsRowAnchor(parent, title)` in the section
+        // source; the VoceTests coverage test cross-checks both directions.
+        // Rows come after cards so card matches win ranking ties.
+
+        // Recording shortcuts
+        .init(
+            id: "row-hold-to-talk",
+            title: "Hold to talk",
+            detail: "Dictate by holding modifier keys; choose the combination that triggers it.",
+            group: .behavior,
+            keywords: [
+                "hold", "press", "push to talk", "ptt", "modifier", "hotkey",
+                "shortcut", "record", "dictate", "key"
+            ],
+            parent: "Recording shortcuts"
+        ),
+        .init(
+            id: "row-tap-to-talk",
+            title: "Tap to talk",
+            detail: "Hands-free dictation toggled by a single tap (or double-tap for modifiers).",
+            group: .behavior,
+            keywords: [
+                "tap", "toggle", "hands free", "handsfree", "hotkey", "shortcut",
+                "start", "stop", "double tap", "key"
+            ],
+            parent: "Recording shortcuts"
+        ),
+        .init(
+            id: "row-return-to-send",
+            title: "Return to send",
+            detail: "While tap-to-talk is active, Return stops recording, inserts the transcript, and submits it.",
+            group: .behavior,
+            keywords: [
+                "return", "enter", "send", "submit", "chat", "finish",
+                "stop recording", "insert", "message"
+            ],
+            parent: "Recording shortcuts"
+        ),
+        .init(
+            id: "row-voce-actions",
+            title: "Voce actions",
+            detail: "Tap Command+Option on highlighted text to save it as a dictionary fix or spoken snippet.",
+            group: .behavior,
+            keywords: [
+                "actions", "command option", "selection", "highlight", "picker",
+                "dictionary", "snippet", "quick action", "tap"
+            ],
+            parent: "Recording shortcuts"
+        ),
+        .init(
+            id: "row-dictionary-quick-fix",
+            title: "Dictionary quick fix",
+            detail: "Direct shortcut that captures selected text and opens the dictionary correction popover.",
+            group: .behavior,
+            keywords: [
+                "dictionary", "correction", "quick fix", "vocabulary", "shortcut",
+                "hotkey", "spelling", "replace", "advanced"
+            ],
+            parent: "Recording shortcuts"
+        ),
+        .init(
+            id: "row-create-snippet",
+            title: "Create snippet",
+            detail: "Direct shortcut that captures selected text and opens the snippet creation popover.",
+            group: .behavior,
+            keywords: [
+                "snippet", "create", "phrase", "shortcut", "hotkey",
+                "spoken snippet", "text expansion", "save", "advanced"
+            ],
+            parent: "Recording shortcuts"
+        ),
+
+        // Media
+        .init(
+            id: "row-media-pause-hold",
+            title: "Pause media for hold to talk",
+            detail: "Pauses playing media while you dictate with hold-to-talk and resumes afterward.",
+            group: .behavior,
+            keywords: [
+                "pause", "media", "music", "playback", "audio", "hold to talk",
+                "resume", "mute", "spotify", "video"
+            ],
+            parent: "Media"
+        ),
+        .init(
+            id: "row-media-pause-tap",
+            title: "Pause media for tap to talk",
+            detail: "Pauses playing media while dictating in tap-to-talk mode and resumes when you stop.",
+            group: .behavior,
+            keywords: [
+                "pause", "media", "music", "playback", "audio", "tap to talk",
+                "hands free", "resume", "mute", "video"
+            ],
+            parent: "Media"
+        ),
+
+        // Dictation engine
+        .init(
+            id: "row-cloud-refinement",
+            title: "Cloud refinement",
+            detail: "Improves cloud transcripts with an extra cleanup pass.",
+            group: .speech,
+            keywords: [
+                "cloud", "refinement", "refine", "cleanup", "quality",
+                "transcription", "improve", "polish"
+            ],
+            parent: "Dictation engine"
+        ),
+        .init(
+            id: "row-openai-key-fallback",
+            title: "Use my OpenAI key",
+            detail: "Falls back to your own OpenAI key after Voce Cloud minutes run out.",
+            group: .speech,
+            keywords: [
+                "openai", "key", "fallback", "minutes", "quota", "byok",
+                "own key", "run out", "limit"
+            ],
+            parent: "Dictation engine"
+        ),
+        .init(
+            id: "row-openai-api-key",
+            title: "OpenAI API key",
+            detail: "Save, replace, or remove the OpenAI API key stored in your keychain.",
+            group: .speech,
+            keywords: [
+                "api key", "openai", "key", "keychain", "credential", "token",
+                "secret", "sk", "paste", "save key"
+            ],
+            parent: "Dictation engine"
+        ),
+
+        // General
+        .init(
+            id: "row-profile-name",
+            title: "Name",
+            detail: "Display name shown in the Home greeting; defaults to your Mac account name.",
+            group: .general,
+            keywords: [
+                "name", "display name", "profile", "greeting", "username",
+                "identity", "personal", "mac name"
+            ],
+            parent: "Profile"
+        ),
+        .init(
+            id: "row-appearance-theme",
+            title: "Appearance",
+            detail: "Follow macOS or stay fixed in light or dark appearance.",
+            group: .general,
+            keywords: [
+                "appearance", "theme", "dark mode", "light mode", "system",
+                "color scheme", "look", "style"
+            ],
+            parent: "Appearance"
+        ),
+        .init(
+            id: "row-appearance-bubble",
+            title: "Bubble",
+            detail: "How the floating dictation bubble looks while listening or processing.",
+            group: .general,
+            keywords: [
+                "bubble", "overlay", "indicator", "floating", "dictation",
+                "listening", "style", "appearance", "widget"
+            ],
+            parent: "Appearance"
+        ),
+        .init(
+            id: "row-launch-on-login",
+            title: "Launch on login",
+            detail: "Open Voce automatically when you sign in to your Mac.",
+            group: .general,
+            keywords: [
+                "launch", "login", "startup", "boot", "autostart",
+                "open automatically", "sign in", "start"
+            ],
+            parent: "App behavior"
+        ),
+        .init(
+            id: "row-show-in-dock",
+            title: "Show in Dock",
+            detail: "Keep the Voce icon visible in the macOS Dock.",
+            group: .general,
+            keywords: [
+                "dock", "icon", "show", "hide", "menu bar", "visibility",
+                "taskbar", "app icon"
+            ],
+            parent: "App behavior"
+        ),
+        .init(
+            id: "row-show-welcome",
+            title: "Show welcome",
+            detail: "Replay the onboarding welcome experience.",
+            group: .general,
+            keywords: [
+                "welcome", "onboarding", "tutorial", "intro", "setup", "replay",
+                "getting started", "tour"
+            ],
+            parent: "App behavior"
+        ),
+        .init(
+            id: "row-measure-typing-speed",
+            title: "Measure typing speed",
+            detail: "Retake the 30-second typing baseline whose best WPM powers time-saved estimates.",
+            group: .general,
+            keywords: [
+                "typing", "speed", "wpm", "test", "baseline", "keyboard",
+                "measure", "words per minute", "benchmark"
+            ],
+            parent: "Typing speed"
+        ),
+        .init(
+            id: "row-check-for-updates",
+            title: "Check for updates",
+            detail: "Shows your current Voce version with a button to check for a new release.",
+            group: .general,
+            keywords: [
+                "update", "upgrade", "version", "check", "release", "new",
+                "latest", "sparkle", "software"
+            ],
+            parent: "Updates"
+        ),
+
+        // AI workflows
+        .init(
+            id: "row-use-ai",
+            title: "Use AI",
+            detail: "Master toggle that turns on Apple Intelligence AI actions in Voce.",
+            group: .ai,
+            keywords: [
+                "ai", "apple intelligence", "enable", "toggle", "on device",
+                "actions", "assistant", "smart"
+            ],
+            parent: "AI workflows"
+        ),
+        .init(
+            id: "row-polish-dictated-text",
+            title: "Polish dictated text",
+            detail: "Cleans up punctuation, spacing, and list formatting of dictated text before insertion.",
+            group: .ai,
+            keywords: [
+                "polish", "cleanup", "punctuation", "formatting", "dictation",
+                "grammar", "spacing", "autocorrect", "tidy"
+            ],
+            parent: "AI workflows"
+        ),
+        .init(
+            id: "row-ai-trigger-mode",
+            title: "Trigger mode",
+            detail: "Trigger AI actions by hotkey only, or hotkey plus a spoken phrase like \"rewrite\".",
+            group: .ai,
+            keywords: [
+                "trigger", "hotkey", "voice", "phrase", "activation", "mode",
+                "keyboard", "speech", "command"
+            ],
+            parent: "AI workflows"
+        ),
+        .init(
+            id: "row-ai-actions",
+            title: "Actions",
+            detail: "Built-in and custom AI actions (Ask, Rewrite, Summarize, Polish) with editable prompts and voice phrases.",
+            group: .ai,
+            keywords: [
+                "actions", "workflows", "prompts", "custom", "rewrite",
+                "summarize", "ask", "edit", "add", "templates"
+            ],
+            parent: "AI workflows"
         )
     ]
 }
@@ -901,7 +1214,9 @@ private struct SettingsSearchResultRow: View {
                             .font(VoceDesign.bodyEmphasis())
                             .foregroundStyle(VoceDesign.textPrimary)
 
-                        Text(result.group.title)
+                        // Rows show their card as the breadcrumb; cards show
+                        // their group.
+                        Text(result.parent ?? result.group.title)
                             .font(VoceDesign.captionEmphasis())
                             .foregroundStyle(VoceDesign.textSecondary)
                             .padding(.horizontal, VoceDesign.xs)
@@ -1312,5 +1627,10 @@ private struct SettingsTopTabButtonLabel: View {
                     lineWidth: VoceDesign.borderThin
                 )
         )
+        // Hit-test the whole capsule, not just visible pixels. Unselected tabs
+        // have a clear background, and `.plain` buttons only respond on drawn
+        // content — without this, clicks in the tab's padding are swallowed
+        // and the tab appears to need a second click.
+        .contentShape(Capsule(style: .continuous))
     }
 }

@@ -171,6 +171,8 @@ struct CloudDictationPreferences: Codable, Sendable, Equatable {
 }
 
 struct AppPreferences: Codable, Sendable, Equatable {
+    static let reliableInsertionOrder: [InsertionMethod] = [.clipboardPaste, .accessibility, .direct]
+
     static let seededHiddenLexiconEntries: [LexiconEntry] = [
         LexiconEntry(term: "voceh", preferred: "Voce", scope: .global),
         LexiconEntry(term: "vochay", preferred: "Voce", scope: .global)
@@ -366,7 +368,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
-            orderedMethods = try container.decodeIfPresent([InsertionMethod].self, forKey: .orderedMethods) ?? [.direct, .accessibility, .clipboardPaste]
+            orderedMethods = try container.decodeIfPresent([InsertionMethod].self, forKey: .orderedMethods)
+                ?? AppPreferences.reliableInsertionOrder
         }
     }
 
@@ -550,7 +553,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
                     apiKeySource: .keychain
                 )
             ),
-            insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
+            insertion: .init(orderedMethods: reliableInsertionOrder),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),
             ai: .init(),
             billing: .init(),
@@ -579,20 +582,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
     mutating func normalize() {
         migrateCustomInsertTextCommandsToSnippets()
 
-        let supported: Set<InsertionMethod> = [.direct, .accessibility, .clipboardPaste]
-        var seen: Set<InsertionMethod> = []
-        var normalized: [InsertionMethod] = []
-
-        for method in insertion.orderedMethods where supported.contains(method) && !seen.contains(method) {
-            normalized.append(method)
-            seen.insert(method)
-        }
-
-        if !seen.contains(.clipboardPaste) {
-            normalized.append(.clipboardPaste)
-        }
-
-        insertion.orderedMethods = normalized
+        insertion.orderedMethods = Self.reliableInsertionOrder
         if !hotkeys.optionPressToTalkEnabled && hotkeys.handsFreeGlobalHotkey == nil {
             hotkeys.handsFreeGlobalHotkey = .init(hotkey: .keyCode(79))
         }

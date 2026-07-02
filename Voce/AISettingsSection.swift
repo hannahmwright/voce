@@ -81,6 +81,7 @@ struct AISettingsSection: View {
             }
             .disabled(!hasAccess)
             .opacity(hasAccess ? 1 : 0.55)
+            .settingsRowAnchor("AI workflows", "Use AI")
 
             Toggle(isOn: dictationPolishingBinding) {
                 settingInlineLabel(
@@ -90,11 +91,13 @@ struct AISettingsSection: View {
             }
             .disabled(!preferences.ai.isEnabled || !entitlementStatus.isEntitled)
             .opacity(preferences.ai.isEnabled && entitlementStatus.isEntitled ? 1 : 0.55)
+            .settingsRowAnchor("AI workflows", "Polish dictated text")
 
             voiceTriggerRow
 
             workflowList
                 .opacity(preferences.ai.isEnabled && hasAccess ? 1 : 0.48)
+                .settingsRowAnchor("AI workflows", "Actions")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardStyle()
@@ -437,6 +440,7 @@ struct AISettingsSection: View {
             .opacity(preferences.ai.isEnabled ? 1 : 0.55)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .settingsRowAnchor("AI workflows", "Trigger mode")
     }
 
     private var selectedTriggerMode: TriggerMode {

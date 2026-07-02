@@ -118,6 +118,7 @@
 		EC4DFD98F217107FE76ABC00 /* CloudDictationAvailabilityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62CD9BDA1E022751668C858A /* CloudDictationAvailabilityService.swift */; };
 		ED0D1E6EEB82ACB672E83821 /* OpenAIRealtimeWhisperSpeechProviderClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F2A636A5D3626CB4AE0E052 /* OpenAIRealtimeWhisperSpeechProviderClient.swift */; };
 		EF21FC927B7769D00F076728 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 335B2032462C81705F1CFCD5 /* Sparkle */; };
+		F0C088B63C7BA184EF790119 /* SettingsSearchIndexCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37FA84FD73FEC11ECAE25F1B /* SettingsSearchIndexCoverageTests.swift */; };
 		F31E0101DAB6966D7DF067D6 /* VoceProEntitlementService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9457C7DCFE3916C4FBC73BD /* VoceProEntitlementService.swift */; };
 		F405620BECD9FA0C302A16BA /* CompletionExecutionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 031C5C612BCBDBEAA304D169 /* CompletionExecutionService.swift */; };
 		F55F17DD16A4D66173381094 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 627E6D8A9A0959D181744C14 /* HistoryView.swift */; };
@@ -159,6 +160,7 @@
 		32D6BB3AE4EEE92E50CFFE78 /* AppPreferencesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferencesStore.swift; sourceTree = "<group>"; };
 		340E874BDA6F985AB31A34BB /* MicButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicButton.swift; sourceTree = "<group>"; };
 		3653857F0B4CD58897D2E51E /* VoceDev.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoceDev.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		37FA84FD73FEC11ECAE25F1B /* SettingsSearchIndexCoverageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSearchIndexCoverageTests.swift; sourceTree = "<group>"; };
 		41A4AACACF799B8954E3C2A7 /* HomeTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeTab.swift; sourceTree = "<group>"; };
 		421E757B86947D8D1176BB71 /* OpenAITranscriptRefinementEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAITranscriptRefinementEngine.swift; sourceTree = "<group>"; };
 		47F2703A4DE9A2E1D8AB361D /* RecordingSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingSettingsSection.swift; sourceTree = "<group>"; };
@@ -242,6 +244,7 @@
 				17D413FBD4DC4BEAECF088ED /* AppPreferencesCloudDictationTests.swift */,
 				A9CE7D3C70D77C2E91691C18 /* OpenAICloudSpeechProviderClientPromptTests.swift */,
 				971EF335C2B9B796BA0F8BD6 /* OpenAIRealtimeWhisperConverterTests.swift */,
+				37FA84FD73FEC11ECAE25F1B /* SettingsSearchIndexCoverageTests.swift */,
 			);
 			path = VoceTests;
 			sourceTree = "<group>";
@@ -553,6 +556,7 @@
 				80B0AD66C040E7528402F625 /* AppPreferencesCloudDictationTests.swift in Sources */,
 				B7D175531847C879DD254844 /* OpenAICloudSpeechProviderClientPromptTests.swift in Sources */,
 				55A2B36AD63CA62AA7CA5523 /* OpenAIRealtimeWhisperConverterTests.swift in Sources */,
+				F0C088B63C7BA184EF790119 /* SettingsSearchIndexCoverageTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -655,12 +659,14 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
 				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Voce.app/Contents/MacOS/Voce";
 			};
 			name = Debug;
@@ -859,12 +865,14 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
 				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Voce.app/Contents/MacOS/Voce";
 			};
 			name = Release;

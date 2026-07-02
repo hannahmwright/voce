@@ -30,6 +30,7 @@ struct MediaSettingsSection: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("Pause media for hold to talk")
             }
+            .settingsRowAnchor("Media", "Pause media for hold to talk")
 
             HStack(alignment: .center, spacing: VoceDesign.md) {
                 mediaModeLabel(
@@ -44,6 +45,7 @@ struct MediaSettingsSection: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("Pause media for tap to talk")
             }
+            .settingsRowAnchor("Media", "Pause media for tap to talk")
         }
     }
 

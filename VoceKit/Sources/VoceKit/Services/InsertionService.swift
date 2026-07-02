@@ -11,13 +11,6 @@ public enum AutoPasteOutcome: Sendable, Equatable {
 }
 
 public struct InsertionService: InsertionServiceProtocol, Sendable {
-    private static let terminalClipboardFirstBundleIDs: Set<String> = [
-        "dev.warp.warp-stable",
-        "com.openai.codex",
-        "com.apple.terminal",
-        "com.googlecode.iterm2"
-    ]
-
     private let transports: [any InsertionTransport]
 
     private struct TransportFailure: Sendable {
@@ -85,13 +78,30 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             }
         }
 
+        let failureSummary = failures
+            .map { "\($0.method.rawValue): \($0.message)" }
+            .joined(separator: " | ")
+
+        // Last resort: every transport failed, including the clipboard
+        // transport's own copy attempt. Retry a plain copy (no auto-paste) so
+        // the transcript is never lost — the user can still paste manually.
+        for transport in transports {
+            guard let clipboardTransport = transport as? ClipboardInsertionTransport else { continue }
+            if (try? await clipboardTransport.copyToClipboard(text: text)) != nil {
+                return InsertResult(
+                    status: .copiedOnly,
+                    method: .clipboardPaste,
+                    insertedText: text,
+                    errorMessage: "Insertion failed; copied to clipboard instead. \(failureSummary)"
+                )
+            }
+        }
+
         return InsertResult(
             status: .failed,
             method: .none,
             insertedText: text,
-            errorMessage: failures
-                .map { "\($0.method.rawValue): \($0.message)" }
-                .joined(separator: " | ")
+            errorMessage: failureSummary
         )
     }
 
@@ -101,6 +111,10 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
     ) -> InsertionRecoveryAction? {
         guard isRefocusPasteCandidate(skipReason: clipboardSkipReason) else {
             return nil
+        }
+
+        guard !failures.isEmpty else {
+            return .refocusToPaste
         }
 
         let failedMethods = Set(failures.map(\.method))
@@ -130,11 +144,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             || normalized.contains("failed to update focused element text")
     }
 
-    private func prioritizedTransports(for target: AppContext) -> [any InsertionTransport] {
-        guard Self.terminalClipboardFirstBundleIDs.contains(target.bundleIdentifier.lowercased()) else {
-            return transports
-        }
-
+    private func prioritizedTransports(for _: AppContext) -> [any InsertionTransport] {
         var clipboard: [any InsertionTransport] = []
         var others: [any InsertionTransport] = []
 
@@ -175,6 +185,13 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 
     public func insert(text: String, target: AppContext) async throws {
         _ = try await insertAndReturnOutcome(text: text, target: target)
+    }
+
+    /// Copies to the clipboard without attempting auto-paste. Used by
+    /// `InsertionService` as a last-resort fallback when every transport
+    /// (including this one's initial copy) has failed.
+    public func copyToClipboard(text: String) async throws {
+        try await clipboard.setString(text)
     }
 
     public func insertAndReturnOutcome(text: String, target: AppContext) async throws -> AutoPasteOutcome {

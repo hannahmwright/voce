@@ -74,6 +74,41 @@ extension View {
     func settingsCardAnchor(_ title: String) -> some View {
         modifier(SettingsCardAnchorModifier(title: title))
     }
+
+    /// Tags an individual settings row as a search jump target. Row anchors are
+    /// "\(card) › \(row)" so they can never collide with card anchors. Search
+    /// entries with a `parent` in `SettingsView` must match these exactly —
+    /// the coverage test in VoceTests cross-checks both directions.
+    func settingsRowAnchor(_ card: String, _ row: String) -> some View {
+        modifier(SettingsRowAnchorModifier(anchor: "\(card) › \(row)"))
+    }
+}
+
+/// Row twin of `SettingsCardAnchorModifier`: a scroll `.id` plus a brief
+/// highlight wash when the user jumps here from search. Backgrounds are drawn
+/// slightly outset (negative padding on the shapes) so the glow hugs the row
+/// without changing layout.
+private struct SettingsRowAnchorModifier: ViewModifier {
+    let anchor: String
+    @Environment(\.highlightedSettingsCard) private var highlighted
+
+    private var isHighlighted: Bool { highlighted == anchor }
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
+                    .fill(VoceDesign.accent.opacity(isHighlighted ? 0.10 : 0))
+                    .padding(-VoceDesign.xs)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
+                    .stroke(VoceDesign.accent.opacity(isHighlighted ? 0.8 : 0), lineWidth: 1.5)
+                    .padding(-VoceDesign.xs)
+            )
+            .animation(.easeInOut(duration: 0.35), value: isHighlighted)
+            .id(anchor)
+    }
 }
 
 @MainActor
