@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.56</title>
+      <sparkle:version>59</sparkle:version>
+      <sparkle:shortVersionString>0.4.56</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.56</h2>
+        <ul>
+          <li>Improves Settings navigation with clearer Speech and Behavior sections, better search landing, and shortcut access</li>
+          <li>Adds a soft screen-edge recording haze that appears with the dictation bubble as an additional capture indicator</li>
+          <li>Fixes browser media resume when macOS reports weak stale playback state while CoreAudio confirms the interrupted browser is silent</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 02 Jul 2026 04:16:09 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.56/Voce-0.4.56.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="AUHy6NgtQ+58kK1mnfZPnOGMP9lpx8fnn9mXpziUyaWqoxPSS/y5O8Ijv5C8gSaX4//CHzUllv8QUYORRgpMDg=="
+        length="19188392"
+      />
+    </item>
+    <item>
       <title>Version 0.4.55</title>
       <sparkle:version>58</sparkle:version>
       <sparkle:shortVersionString>0.4.55</sparkle:shortVersionString>
