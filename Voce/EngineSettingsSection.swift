@@ -15,24 +15,31 @@ struct EngineSettingsSection: View {
     @State private var isTestingCloud = false
     @State private var apiKeyDraft = ""
     @State private var isEditingStoredAPIKey = false
+    @State private var isAPIKeyVisible = false
     @State private var cloudStatusRefreshID = UUID()
     @State private var showAddAppOverrideSheet = false
     @State private var newAppOverrideBundleID = ""
     @State private var newAppOverridePreference: AppDictationEnginePreference = .cloud
 
     var body: some View {
-        settingsCard("Speech") {
-            engineRow
+        Group {
+            settingsCard("Dictation engine") {
+                engineRow
 
-            if usesCloudConfiguration {
-                cloudConfiguration
+                if usesCloudConfiguration {
+                    cloudConfiguration
+                }
             }
 
             if cloudControlsUnlocked {
-                appOverrideSection
+                settingsCard("App overrides") {
+                    appOverrideSection
+                }
             }
 
-            diagnosticsRow
+            settingsCard("Diagnostics") {
+                diagnosticsRow
+            }
         }
     }
 
@@ -42,8 +49,10 @@ struct EngineSettingsSection: View {
         HStack(alignment: .center, spacing: VoceDesign.md) {
             VStack(alignment: .leading, spacing: VoceDesign.xxs) {
                 HStack(spacing: VoceDesign.xs) {
-                    Text("Dictation Engine")
-                        .font(VoceDesign.bodyEmphasis())
+                    // The card title already says "Dictation engine"; this row just
+                    // explains the choice the picker makes.
+                    Text("Where your speech is transcribed")
+                        .font(VoceDesign.callout())
                         .foregroundStyle(VoceDesign.textPrimary)
 
                     if controller.isDevBuildWithCloudOptions {
@@ -109,6 +118,7 @@ struct EngineSettingsSection: View {
             Toggle("Cloud refinement", isOn: $preferences.dictation.cloud.refinementEnabled)
                 .tint(VoceDesign.warmAccentText)
                 .disabled(!cloudControlsUnlocked)
+                .settingsRowAnchor("Dictation engine", "Cloud refinement")
 
             if !controller.usesDirectCloudCredentials {
                 Text("Authenticated through your Voce account.")
@@ -121,26 +131,32 @@ struct EngineSettingsSection: View {
             Toggle("Use my OpenAI key after Voce Cloud minutes run out", isOn: $preferences.dictation.cloud.openAIKeyFallbackEnabled)
                 .tint(VoceDesign.warmAccentText)
                 .disabled(!cloudControlsUnlocked)
+                .settingsRowAnchor("Dictation engine", "Use my OpenAI key")
 
             if preferences.dictation.cloud.openAIKeyFallbackEnabled || controller.usesDirectCloudCredentials {
-                Picker("API Key Source", selection: $preferences.dictation.cloud.apiKeySource) {
-                    ForEach(CloudAPIKeySource.allCases, id: \.self) { source in
-                        Text(source.title).tag(source)
+                // VStack (not Group) so the row anchor applies once to the
+                // whole key block rather than to each child.
+                VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                    Picker("API Key Source", selection: $preferences.dictation.cloud.apiKeySource) {
+                        ForEach(CloudAPIKeySource.allCases, id: \.self) { source in
+                            Text(source.title).tag(source)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: preferences.dictation.cloud.apiKeySource) { _, _ in
+                        isEditingStoredAPIKey = false
+                        apiKeyDraft = ""
+                    }
+
+                    if preferences.dictation.cloud.apiKeySource == .keychain {
+                        keychainKeyControls
+                    } else {
+                        Text("Using `\(controller.cloudCredentialEnvironmentVariableName)` from environment.")
+                            .font(VoceDesign.caption())
+                            .foregroundStyle(VoceDesign.textSecondary)
                     }
                 }
-                .pickerStyle(.segmented)
-                .onChange(of: preferences.dictation.cloud.apiKeySource) { _, _ in
-                    isEditingStoredAPIKey = false
-                    apiKeyDraft = ""
-                }
-
-                if preferences.dictation.cloud.apiKeySource == .keychain {
-                    keychainKeyControls
-                } else {
-                    Text("Using `\(controller.cloudCredentialEnvironmentVariableName)` from environment.")
-                        .font(VoceDesign.caption())
-                        .foregroundStyle(VoceDesign.textSecondary)
-                }
+                .settingsRowAnchor("Dictation engine", "OpenAI API key")
 
                 Text(controller.directOpenAIUsageSummary)
                     .font(VoceDesign.caption())
@@ -174,44 +190,117 @@ struct EngineSettingsSection: View {
     @ViewBuilder
     private var keychainKeyControls: some View {
         if controller.hasStoredCloudAPIKey && !isEditingStoredAPIKey && apiKeyDraft.isEmpty {
+            storedAPIKeyRow
+        } else {
+            apiKeyEntryControls
+        }
+    }
+
+    private var storedAPIKeyRow: some View {
+        HStack(spacing: VoceDesign.sm) {
+            Image(systemName: "checkmark.seal.fill")
+                .foregroundStyle(.green)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("OpenAI API key saved")
+                    .font(VoceDesign.callout())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Text(controller.storedCloudAPIKeyHint ?? "Stored in your Mac's keychain.")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+
+            Spacer()
+
+            Button("Replace") {
+                isEditingStoredAPIKey = true
+            }
+            .buttonStyle(.bordered)
+
+            Button("Remove", role: .destructive) {
+                clearCloudAPIKey()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(VoceDesign.sm)
+        .background(
+            RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
+                .fill(Color.green.opacity(0.08))
+        )
+    }
+
+    private var apiKeyEntryControls: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            HStack(spacing: VoceDesign.xs) {
+                Group {
+                    if isAPIKeyVisible {
+                        TextField("sk-...", text: $apiKeyDraft)
+                    } else {
+                        SecureField("sk-...", text: $apiKeyDraft)
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .onSubmit {
+                    if canSaveAPIKey { saveCloudAPIKey() }
+                }
+
+                Button {
+                    isAPIKeyVisible.toggle()
+                } label: {
+                    Image(systemName: isAPIKeyVisible ? "eye.slash" : "eye")
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+                .buttonStyle(.borderless)
+                .help(isAPIKeyVisible ? "Hide key" : "Show key")
+            }
+
+            if showsAPIKeyFormatWarning {
+                Label("This doesn't look like an OpenAI key — they start with \"sk-\".", systemImage: "exclamationmark.triangle.fill")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(.orange)
+            }
+
             HStack(spacing: VoceDesign.sm) {
-                Button("Replace key") {
-                    isEditingStoredAPIKey = true
+                Button("Save key") {
+                    saveCloudAPIKey()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(!canSaveAPIKey)
 
-                Button("Clear key", role: .destructive) {
-                    clearCloudAPIKey()
-                }
-                .buttonStyle(.bordered)
-            }
-        } else {
-            VStack(alignment: .leading, spacing: VoceDesign.sm) {
-                SecureField("OpenAI API key", text: $apiKeyDraft)
-                    .textFieldStyle(.roundedBorder)
-
-                HStack(spacing: VoceDesign.sm) {
-                    Button("Save key") {
-                        saveCloudAPIKey()
+                if controller.hasStoredCloudAPIKey {
+                    Button("Cancel") {
+                        apiKeyDraft = ""
+                        isEditingStoredAPIKey = false
+                        isAPIKeyVisible = false
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if controller.hasStoredCloudAPIKey {
-                        Button("Cancel") {
-                            apiKeyDraft = ""
-                            isEditingStoredAPIKey = false
-                        }
-                        .buttonStyle(.bordered)
-
-                        Button("Clear key", role: .destructive) {
-                            clearCloudAPIKey()
-                        }
-                        .buttonStyle(.bordered)
-                    }
+                    .buttonStyle(.bordered)
                 }
+
+                Spacer()
+
+                Link("Get an API key", destination: URL(string: "https://platform.openai.com/api-keys")!)
+                    .font(VoceDesign.caption())
             }
+
+            Text("Paste your key and press Return. It's stored in your Mac's keychain and only sent to OpenAI.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
         }
+    }
+
+    private var trimmedAPIKeyDraft: String {
+        apiKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSaveAPIKey: Bool {
+        !trimmedAPIKeyDraft.isEmpty
+    }
+
+    private var showsAPIKeyFormatWarning: Bool {
+        !trimmedAPIKeyDraft.isEmpty && !trimmedAPIKeyDraft.hasPrefix("sk-")
     }
 
     // MARK: - Diagnostics
@@ -288,9 +377,10 @@ struct EngineSettingsSection: View {
     private var appOverrideSection: some View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
             HStack(spacing: VoceDesign.sm) {
-                Text("App overrides")
-                    .font(VoceDesign.captionEmphasis())
-                    .foregroundStyle(VoceDesign.textPrimary)
+                // The card title already says "App overrides"; describe the action.
+                Text("Pin specific apps to Local or Cloud.")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
 
                 Spacer(minLength: 0)
 
@@ -315,11 +405,7 @@ struct EngineSettingsSection: View {
                 }
             }
 
-            if preferences.appDictationEnginePreferences.isEmpty {
-                Text("Pin specific apps to Local or Cloud.")
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
-            } else {
+            if !preferences.appDictationEnginePreferences.isEmpty {
                 VStack(spacing: VoceDesign.xs) {
                     ForEach(preferences.appDictationEnginePreferences.keys.sorted(), id: \.self) { bundleID in
                         appOverrideRow(bundleID: bundleID)
@@ -715,6 +801,7 @@ struct EngineSettingsSection: View {
             try controller.saveCloudAPIKey(apiKeyDraft)
             apiKeyDraft = ""
             isEditingStoredAPIKey = false
+            isAPIKeyVisible = false
             cloudTestResult = "OpenAI API key saved."
             cloudTestResultIsError = false
             cloudStatusRefreshID = UUID()
@@ -729,6 +816,7 @@ struct EngineSettingsSection: View {
             try controller.clearCloudAPIKey()
             apiKeyDraft = ""
             isEditingStoredAPIKey = false
+            isAPIKeyVisible = false
             cloudTestResult = "OpenAI API key cleared."
             cloudTestResultIsError = false
             cloudStatusRefreshID = UUID()

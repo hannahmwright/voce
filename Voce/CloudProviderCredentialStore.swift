@@ -78,6 +78,13 @@ final class CloudProviderCredentialStore: @unchecked Sendable {
         (try? storedOpenAIAPIKey())?.isEmpty == false
     }
 
+    /// A masked preview of the stored key (e.g. "sk-…x4F2") safe to show in settings.
+    func storedOpenAIAPIKeyHint() -> String? {
+        guard let key = try? storedOpenAIAPIKey(), !key.isEmpty else { return nil }
+        guard key.count >= 12 else { return "••••••••" }
+        return "\(key.prefix(3))…\(key.suffix(4))"
+    }
+
     func resolveOpenAIAPIKey(source: CloudAPIKeySource) throws -> String {
         switch source {
         case .keychain:

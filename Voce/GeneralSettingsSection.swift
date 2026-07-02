@@ -22,6 +22,7 @@ struct GeneralSettingsSection: View {
                         .textFieldStyle(.plain)
                         .settingsInputChrome()
                 }
+                .settingsRowAnchor("Profile", "Name")
             }
 
             settingsCard("Appearance") {
@@ -39,6 +40,7 @@ struct GeneralSettingsSection: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+                .settingsRowAnchor("Appearance", "Appearance")
 
                 VStack(alignment: .leading, spacing: VoceDesign.xs) {
                     settingInlineLabel(
@@ -54,6 +56,7 @@ struct GeneralSettingsSection: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+                .settingsRowAnchor("Appearance", "Bubble")
             }
 
             settingsCard("App behavior") {
@@ -63,6 +66,7 @@ struct GeneralSettingsSection: View {
                         help: "Open Voce automatically when you sign in."
                     )
                 }
+                .settingsRowAnchor("App behavior", "Launch on login")
 
                 if !launchAtLoginWarning.isEmpty {
                     Text(launchAtLoginWarning)
@@ -85,6 +89,7 @@ struct GeneralSettingsSection: View {
                         help: "Keep Voce visible in the Dock."
                     )
                 }
+                .settingsRowAnchor("App behavior", "Show in Dock")
 
                 Button {
                     preferences.general.showOnboarding = true
@@ -105,6 +110,7 @@ struct GeneralSettingsSection: View {
                     )
                 }
                 .buttonStyle(.plain)
+                .settingsRowAnchor("App behavior", "Show welcome")
             }
 
             settingsCard("Typing speed") {
@@ -154,6 +160,7 @@ struct GeneralSettingsSection: View {
                         }
                     }
                 }
+                .settingsRowAnchor("Typing speed", "Measure typing speed")
             }
 
             settingsCard("Updates") {
@@ -163,7 +170,7 @@ struct GeneralSettingsSection: View {
                             .font(VoceDesign.callout())
                             .foregroundStyle(VoceDesign.textPrimary)
 
-                        Text("Get the latest version of Voce.")
+                        Text(currentVersionText)
                             .font(VoceDesign.caption())
                             .foregroundStyle(VoceDesign.textSecondary)
                     }
@@ -176,6 +183,7 @@ struct GeneralSettingsSection: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(!updaterController.canCheckForUpdates)
                 }
+                .settingsRowAnchor("Updates", "Check for updates")
             }
 
             settingsCard("Licenses") {
@@ -213,6 +221,16 @@ struct GeneralSettingsSection: View {
                 preferences.general.userName = newValue
             }
         )
+    }
+
+    private var currentVersionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        guard let version, !version.isEmpty else { return "Get the latest version of Voce." }
+        if let build, !build.isEmpty, build != version {
+            return "You're on Voce \(version) (\(build))."
+        }
+        return "You're on Voce \(version)."
     }
 
     private var macOSFirstName: String {

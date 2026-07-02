@@ -55,6 +55,7 @@ struct RecordingSettingsSection: View {
                     .disabled(!preferences.hotkeys.optionPressToTalkEnabled)
                     .opacity(preferences.hotkeys.optionPressToTalkEnabled ? 1 : 0.45)
             }
+            .settingsRowAnchor("Recording shortcuts", "Hold to talk")
 
             HStack(alignment: .top, spacing: VoceDesign.md) {
                 Toggle(isOn: tapToTalkBinding) {
@@ -74,6 +75,7 @@ struct RecordingSettingsSection: View {
                 .disabled(!tapToTalkEnabled)
                 .opacity(tapToTalkEnabled ? 1 : 0.45)
             }
+            .settingsRowAnchor("Recording shortcuts", "Tap to talk")
 
             HStack(alignment: .top, spacing: VoceDesign.md) {
                 HStack(spacing: VoceDesign.sm) {
@@ -98,6 +100,7 @@ struct RecordingSettingsSection: View {
 
                 Spacer(minLength: 0)
             }
+            .settingsRowAnchor("Recording shortcuts", "Return to send")
 
             HStack(alignment: .top, spacing: VoceDesign.md) {
                 Toggle(isOn: $preferences.hotkeys.voceActionsTapEnabled) {
@@ -113,6 +116,7 @@ struct RecordingSettingsSection: View {
                     isEnabled: preferences.hotkeys.voceActionsTapEnabled
                 )
             }
+            .settingsRowAnchor("Recording shortcuts", "Voce actions")
 
             // Power-user escape hatch: the picker (above) is the primary
             // surface, but some users want a single-press shortcut that skips
@@ -138,6 +142,7 @@ struct RecordingSettingsSection: View {
                             accessibilityLabel: "Dictionary quick fix hotkey"
                         )
                     }
+                    .settingsRowAnchor("Recording shortcuts", "Dictionary quick fix")
 
                     HStack(alignment: .top, spacing: VoceDesign.md) {
                         settingInlineLabel(
@@ -153,6 +158,7 @@ struct RecordingSettingsSection: View {
                             accessibilityLabel: "Create snippet hotkey"
                         )
                     }
+                    .settingsRowAnchor("Recording shortcuts", "Create snippet")
                 }
                 .padding(.top, VoceDesign.sm)
             }
