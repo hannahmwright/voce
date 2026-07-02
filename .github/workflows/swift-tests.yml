@@ -7,6 +7,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,15 +21,6 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-
-      - name: Verify generated Xcode project is not tracked
-        run: |
-          tracked_project_files="$(git ls-files 'Voce.xcodeproj/*')"
-          if [ -n "$tracked_project_files" ]; then
-            echo "Voce.xcodeproj must remain generated-only and untracked."
-            echo "$tracked_project_files"
-            exit 1
-          fi
 
       - name: Select Xcode (Swift 6.2+)
         uses: maxim-lobanov/setup-xcode@60606e260d2fc5762a71e64e74b2174e8ea3c8bd
@@ -49,6 +41,9 @@ jobs:
 
       - name: Generate Xcode project
         run: xcodegen generate
+
+      - name: Verify generated Xcode project is up to date
+        run: git diff --exit-code -- Voce.xcodeproj project.yml
 
       - name: Run VoceKit tests
         env:
