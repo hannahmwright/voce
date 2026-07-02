@@ -14,6 +14,7 @@ func settingsCard<Content: View>(_ title: String, @ViewBuilder content: () -> Co
         content()
     }
     .cardStyle()
+    .settingsCardAnchor(title)
 }
 
 @MainActor
@@ -27,6 +28,52 @@ func settingsCardWithSubtitle<Content: View>(
         content()
     }
     .cardStyle()
+    .settingsCardAnchor(title)
+}
+
+// MARK: - Settings card anchors (search jump target + highlight)
+
+/// Title of the settings card the user just jumped to from search, if any. Cards
+/// matching this value briefly glow so the eye lands on the right card after the
+/// scroll.
+private struct HighlightedSettingsCardKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    var highlightedSettingsCard: String? {
+        get { self[HighlightedSettingsCardKey.self] }
+        set { self[HighlightedSettingsCardKey.self] = newValue }
+    }
+}
+
+/// Tags a settings card with a stable scroll anchor (its title) and renders the
+/// brief search-jump highlight. Applied automatically by `settingsCard` and
+/// `settingsCardWithSubtitle`; apply manually to custom card containers (the AI
+/// section builds its own card). Search result anchors in `SettingsView` must
+/// match these titles exactly, or the jump degrades to plain group navigation.
+private struct SettingsCardAnchorModifier: ViewModifier {
+    let title: String
+    @Environment(\.highlightedSettingsCard) private var highlightedCard
+
+    private var isHighlighted: Bool { highlightedCard == title }
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                // Matches CardStyle's corner geometry so the glow hugs the card.
+                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
+                    .stroke(VoceDesign.accent.opacity(isHighlighted ? 0.85 : 0), lineWidth: 2)
+            )
+            .animation(.easeInOut(duration: 0.35), value: isHighlighted)
+            .id(title)
+    }
+}
+
+extension View {
+    func settingsCardAnchor(_ title: String) -> some View {
+        modifier(SettingsCardAnchorModifier(title: title))
+    }
 }
 
 @MainActor

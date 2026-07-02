@@ -2403,4 +2403,106 @@ func resumeProceedsOnUnknownDetectionWhenOwnerSilent() async {
         "Unknown MediaRemote state with a verifiably silent owner must still resume (command + key escalation)."
     )
 }
+
+@MainActor
+@Test("Resume proceeds despite weak active detection when the owner is verifiably silent")
+func resumeProceedsOnWeakActiveDetectionWhenOwnerSilent() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    // Detects: 1 begin, 2 post-pause verify, 3 resume detection reports weak
+    // activity even though CoreAudio says the interrupted owner is silent, 4
+    // post-resume verification still sees notPlaying and escalates to media key.
+    let detector = SequencedPlaybackDetector(
+        [.likelyPlaying, .notPlaying, .likelyPlaying, .notPlaying],
+        fallback: .notPlaying
+    )
+    let audible = AudibleProcessSequence(
+        [["com.google.Chrome.helper"]],
+        fallback: []
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { audible.next() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for audible Chrome playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    let resumed = await waitUntil {
+        commandRecorder.commands == [.pause, .play] && keyRecorder.sendCalls == 1
+    }
+
+    #expect(
+        resumed,
+        "Weak resume-time playback evidence must not suppress resume when CoreAudio proves the interrupted owner is silent."
+    )
+}
+
+// MARK: - Regression canaries (pause/resume must survive OS and refactor churn)
+//
+// The behavioral tests above all use the internal injectable initializer, so they can
+// pass forever while the shipped `public init()` is broken (probe unplugged, escalation
+// disabled) or while a macOS update quietly withdraws the CoreAudio process-audibility
+// signal the whole fix stands on — which is exactly how the MediaRemote display-id
+// lockdown in macOS 15.4 went unnoticed. These canaries run against the real probe and
+// the real production initializer so that kind of regression fails the suite instead of
+// shipping.
+
+@MainActor
+@Test("CoreAudio process-audibility probe is operational on this OS")
+func coreAudioAudibilityProbeIsOperationalOnThisOS() {
+    guard #available(macOS 14.4, *) else { return }
+    let audible = AudioProcessAudibilityProbe.audibleOutputBundleIDs()
+    #expect(
+        audible != nil,
+        """
+        kAudioHardwarePropertyProcessObjectList/kAudioProcessPropertyIsRunningOutput \
+        failed on macOS 14.4+. This is the primary media-interruption owner signal \
+        (MediaRemote metadata is entitlement-gated since macOS 15.4); if this OS \
+        release broke it, pause/resume for browsers is broken with it.
+        """
+    )
+    #expect(
+        audible?.allSatisfy { !$0.isEmpty } ?? true,
+        "The probe must never report empty bundle ids; owner prefix matching would misfire."
+    )
+}
+
+@MainActor
+@Test("Production initializer wires the audible probe and media-key escalation")
+func productionServiceWiresAudibleProbeAndMediaKeyEscalation() {
+    // Safe to construct for real: the MediaRemote bridge only activates inside
+    // detection, and this test never begins an interruption.
+    let service = MacMediaInterruptionService()
+    let canary = service.mediaInterruptionWiringCanary
+
+    #expect(
+        canary.escalatesToMediaKey,
+        """
+        The production service must escalate unverified MediaRemote commands to a \
+        synthetic media-key press; commands silently no-op for non-entitled processes \
+        on macOS 15.4+, so without escalation nothing pauses.
+        """
+    )
+    if #available(macOS 14.4, *) {
+        #expect(
+            canary.audibleSignalOperational,
+            """
+            The production service must be wired to the CoreAudio audibility probe and \
+            the probe must return data. Without it, owner identification regresses to \
+            the entitlement-gated display id, which is permanently nil on macOS 15.4+.
+            """
+        )
+    }
+}
 #endif

@@ -191,7 +191,12 @@ final class DictationController: ObservableObject {
     @Published var status: String = "Idle"
     @Published var lastTranscript: String = ""
     @Published var lastError: String = ""
-    @Published var isRecording: Bool = false
+    @Published var isRecording: Bool = false {
+        didSet {
+            guard oldValue != isRecording else { return }
+            screenRecordingHaze.setVisible(isRecording)
+        }
+    }
     @Published var handsFreeOn: Bool = false
     @Published var recentEntries: [TranscriptEntry] = []
     @Published var historyAIProcessingEntryID: UUID?
@@ -229,6 +234,7 @@ final class DictationController: ObservableObject {
     private let launchAtLoginService: LaunchAtLoginService
     private let entitlementService: VoceProEntitlementService
     private let clipboardRecoveryPrompt = ClipboardRecoveryPromptPresenter()
+    private let screenRecordingHaze = ScreenRecordingHazePresenter()
 
     private var lexiconService: PersonalLexiconService
     private var styleProfileService: StyleProfileService
@@ -420,6 +426,7 @@ final class DictationController: ObservableObject {
         realtimeWhisperClientSecretRefreshTask = nil
         captureReadyOverlayStartTaskID = nil
         overlay.hide()
+        screenRecordingHaze.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
@@ -1815,6 +1822,7 @@ final class DictationController: ObservableObject {
                 // realtime websocket is still arming.
                 overlay.setAnchorSnapshot(overlayAnchorSnapshot)
                 overlay.controlWorkflows = enabledAIWorkflows
+                screenRecordingHaze.setVisible(true)
                 overlay.show(state: .preparing(handsFree: mode == .handsFree))
 
                 if usesRealtimeWhisperCapture(for: capturedContext) {
@@ -1926,6 +1934,7 @@ final class DictationController: ObservableObject {
                 status = "Failed to start"
                 lastError = error.localizedDescription
                 overlay.hide()
+                screenRecordingHaze.hide()
                 clipboardRecoveryPrompt.hide()
             }
             if activeStartTaskID == startTaskID {
@@ -3042,7 +3051,7 @@ final class DictationController: ObservableObject {
         let localeIdentifier = preferences.dictation.localeIdentifier
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !localeIdentifier.isEmpty else {
-            status = "Apple Speech locale is missing. Check Settings \u{2192} Engine."
+            status = "Apple Speech locale is missing. Check Settings \u{2192} Speech."
             return
         }
 

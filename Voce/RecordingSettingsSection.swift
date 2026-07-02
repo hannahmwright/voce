@@ -10,7 +10,7 @@ struct RecordingSettingsSection: View {
     var autoStartHandsFreeCapture: Bool = false
 
     var body: some View {
-        settingsCard("Transcribing") {
+        settingsCard("Recording shortcuts") {
             if controller.inputMonitoringPermissionStatus != .granted {
                 HStack(spacing: VoceDesign.sm) {
                     Image(systemName: "exclamationmark.triangle.fill")

@@ -24,7 +24,7 @@ struct GeneralSettingsSection: View {
                 }
             }
 
-            settingsCard("App") {
+            settingsCard("Appearance") {
                 VStack(alignment: .leading, spacing: VoceDesign.xs) {
                     settingInlineLabel(
                         "Appearance",
@@ -54,7 +54,9 @@ struct GeneralSettingsSection: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+            }
 
+            settingsCard("App behavior") {
                 Toggle(isOn: $preferences.general.launchAtLoginEnabled) {
                     settingInlineLabel(
                         "Launch on login",

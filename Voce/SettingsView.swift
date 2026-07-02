@@ -16,6 +16,11 @@ struct SettingsView: View {
     @State private var selectedGroup: SettingsGroup = .setup
     @State private var settingsSearchText = ""
     @FocusState private var settingsSearchIsFocused: Bool
+    /// Card title to scroll to after a search result switches the group; consumed
+    /// once the pane has laid out.
+    @State private var pendingSearchScrollAnchor: String?
+    /// Card title currently glowing after a search jump; cleared after a beat.
+    @State private var highlightedSettingsCard: String?
 
     init(
         initialLaunchTarget: SettingsLaunchTarget? = nil,
@@ -178,10 +183,22 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear settings search")
+            } else if !settingsSearchIsFocused {
+                Text("⌘F")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary.opacity(0.7))
             }
         }
         .padding(.horizontal, VoceDesign.sm)
         .padding(.vertical, VoceDesign.xs)
+        .background(
+            // Invisible ⌘F target: focuses the search field from anywhere in Settings.
+            Button("") { settingsSearchIsFocused = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        )
         .background(
             RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
                 .fill(VoceDesign.surface.opacity(0.64))
@@ -218,19 +235,45 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
             contentHeader(isCompactHeight: isCompactHeight)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: VoceDesign.sm) {
-                    if isSearchingSettings {
-                        searchResultsContent
-                    } else {
-                        groupContent(selectedGroup)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    // Eager VStack, not LazyVStack: scroll anchors must exist for
+                    // `scrollTo` to land on cards below the fold, and panes are
+                    // small enough that laziness buys nothing.
+                    VStack(alignment: .leading, spacing: VoceDesign.sm) {
+                        if isSearchingSettings {
+                            searchResultsContent
+                        } else {
+                            groupContent(selectedGroup)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, VoceDesign.xs)
+                    .environment(\.highlightedSettingsCard, highlightedSettingsCard)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.trailing, VoceDesign.xs)
+                .id(isSearchingSettings ? "settings-search" : selectedGroup.rawValue)
+                .scrollIndicators(.visible)
+                // task(id:) rather than onChange: the ScrollView is recreated when
+                // the group swaps (its .id changes), and the new instance must still
+                // consume the pending anchor.
+                .task(id: pendingSearchScrollAnchor) {
+                    guard let anchor = pendingSearchScrollAnchor else { return }
+                    // Let the freshly selected group lay out before scrolling.
+                    try? await Task.sleep(nanoseconds: 80_000_000)
+                    guard !Task.isCancelled else { return }
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        scrollProxy.scrollTo(anchor, anchor: .top)
+                    }
+                    highlightedSettingsCard = anchor
+                    pendingSearchScrollAnchor = nil
+                }
+                .task(id: highlightedSettingsCard) {
+                    guard highlightedSettingsCard != nil else { return }
+                    try? await Task.sleep(nanoseconds: 1_700_000_000)
+                    guard !Task.isCancelled else { return }
+                    highlightedSettingsCard = nil
+                }
             }
-            .id(isSearchingSettings ? "settings-search" : selectedGroup.rawValue)
-            .scrollIndicators(.visible)
         }
         .padding(isCompactHeight ? VoceDesign.md : VoceDesign.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -299,7 +342,7 @@ struct SettingsView: View {
                             .font(VoceDesign.bodyEmphasis())
                             .foregroundStyle(VoceDesign.textPrimary)
 
-                        Text("Try words like hotkey, cloud, media, bubble, launch, AI, support, or microphone.")
+                        Text("Try words like hotkey, cloud, media, bubble, launch, updates, AI, support, or microphone.")
                             .font(VoceDesign.caption())
                             .foregroundStyle(VoceDesign.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -312,6 +355,7 @@ struct SettingsView: View {
                     selectedGroup = result.group
                     settingsSearchText = ""
                     settingsSearchIsFocused = false
+                    pendingSearchScrollAnchor = result.anchor
                 } label: {
                     SettingsSearchResultRow(result: result)
                 }
@@ -374,22 +418,26 @@ struct SettingsView: View {
             )
             #endif
             PermissionsSettingsSection()
+        case .behavior:
             RecordingSettingsSection(
                 preferences: $preferencesDraft,
                 hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage,
                 autoStartHandsFreeCapture: initialLaunchTarget == .handsFreeGlobalHotkey
             )
+            MediaSettingsSection(preferences: $preferencesDraft)
+        case .speech:
             EngineSettingsSection(
                 preferences: $preferencesDraft,
                 controller: controller
             )
-        case .behavior:
-            MediaSettingsSection(preferences: $preferencesDraft)
         case .ai:
             AISettingsSection(
                 preferences: $preferencesDraft,
                 entitlementStatus: controller.voceProEntitlementStatus
             )
+            // The AI section builds its own card chrome, so it doesn't get an
+            // anchor from settingsCard; tag it here so search can jump to it.
+            .settingsCardAnchor("AI workflows")
         case .general:
             GeneralSettingsSection(
                 preferences: $preferencesDraft,
@@ -479,7 +527,7 @@ struct SettingsView: View {
     private static func group(for launchTarget: SettingsLaunchTarget?) -> SettingsGroup {
         switch launchTarget {
         case .handsFreeGlobalHotkey:
-            return .setup
+            return .behavior
         case nil:
             return .setup
         }
@@ -489,6 +537,7 @@ struct SettingsView: View {
 private enum SettingsGroup: String, CaseIterable {
     case setup
     case behavior
+    case speech
     case ai
     case general
     case help
@@ -497,6 +546,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup: return "Setup"
         case .behavior: return "Behavior"
+        case .speech: return "Speech"
         case .ai: return "AI"
         case .general: return "General"
         case .help: return "Help"
@@ -505,10 +555,11 @@ private enum SettingsGroup: String, CaseIterable {
 
     var subtitle: String {
         switch self {
-        case .setup: return "Access, keys, speech"
-        case .behavior: return "Text and media"
+        case .setup: return "Access and permissions"
+        case .behavior: return "Shortcuts and media"
+        case .speech: return "Dictation engine"
         case .ai: return "Workflows, triggers"
-        case .general: return "Profile, launch, app"
+        case .general: return "Profile, app, updates"
         case .help: return "Walkthrough, support"
         }
     }
@@ -516,13 +567,15 @@ private enum SettingsGroup: String, CaseIterable {
     var description: String {
         switch self {
         case .setup:
-            return "Get Voce ready to listen: system permissions, recording controls, and the live transcription model."
+            return "Connect your account and grant the macOS permissions Voce needs before dictation starts."
         case .behavior:
-            return "Shape how transcripts are inserted and how media behaves during dictation."
+            return "Choose how recording starts and how music or video behaves while you dictate."
+        case .speech:
+            return "Choose local or cloud transcription, language, per-app overrides, and model diagnostics."
         case .ai:
             return "Configure Apple Intelligence workflows, spoken AI triggers, and hands-free AI finish behavior."
         case .general:
-            return "Manage app-level preferences like your display name, launch behavior, and Dock visibility."
+            return "Manage profile, appearance, launch behavior, update checks, and license notices."
         case .help:
             return "Replay the core teaching flow, get quick answers, and contact support when something goes wrong."
         }
@@ -532,6 +585,7 @@ private enum SettingsGroup: String, CaseIterable {
         switch self {
         case .setup: return "gearshape"
         case .behavior: return "slider.horizontal.3"
+        case .speech: return "waveform"
         case .ai: return "sparkles"
         case .general: return "wrench.and.screwdriver"
         case .help: return "questionmark.circle"
@@ -544,7 +598,7 @@ private enum SettingsGroup: String, CaseIterable {
             return "Start here"
         case .help:
             return "Need a refresher?"
-        case .behavior, .ai, .general:
+        case .behavior, .speech, .ai, .general:
             return nil
         }
     }
@@ -557,10 +611,13 @@ private struct SettingsSearchResult: Identifiable {
     let group: SettingsGroup
     let keywords: [String]
 
-    var searchableText: String {
-        ([title, detail, group.title, group.subtitle] + keywords)
-            .joined(separator: " ")
-            .lowercased()
+    var anchor: String {
+        switch id {
+        case "walkthrough":
+            return "Learn the basics"
+        default:
+            return title
+        }
     }
 
     static func matches(query: String, visibleGroups: [SettingsGroup]) -> [SettingsSearchResult] {
@@ -572,62 +629,178 @@ private struct SettingsSearchResult: Identifiable {
         guard !terms.isEmpty else { return [] }
 
         let visibleGroupSet = Set(visibleGroups)
-        return all
+        let scored = all
             .filter { visibleGroupSet.contains($0.group) }
-            .filter { result in
-                terms.allSatisfy { result.searchableText.contains($0) }
+            .enumerated()
+            .compactMap { index, result -> (score: Int, index: Int, result: SettingsSearchResult)? in
+                var total = 0
+                for term in terms {
+                    // Every term must match somewhere (AND semantics), but each term
+                    // may match a different field.
+                    guard let score = result.score(for: term) else { return nil }
+                    total += score
+                }
+                return (total, index, result)
             }
+
+        // Best matches first (title > keyword > detail); index keeps ties stable.
+        return scored
+            .sorted { $0.score == $1.score ? $0.index < $1.index : $0.score > $1.score }
+            .map(\.result)
     }
 
+    /// Field-weighted match score for a single query term, or nil when the term
+    /// matches nothing. Title hits outrank keyword hits outrank detail/group hits.
+    private func score(for term: String) -> Int? {
+        if Self.fieldMatches(term: term, text: title) { return 3 }
+        if keywords.contains(where: { Self.fieldMatches(term: term, text: $0) }) { return 2 }
+        let context = "\(detail) \(group.title) \(group.subtitle)"
+        if Self.fieldMatches(term: term, text: context) { return 1 }
+        return nil
+    }
+
+    /// A term matches a field when it appears as a substring (terms of 4+ characters),
+    /// shares a meaningful prefix with a word ("updates" ↔ "update", "updating" ↔
+    /// "update"), or is one typo away from a word ("permisions" → "permissions").
+    /// Plain substring search alone made the search feel broken: singular/plural and
+    /// small typos found nothing. Short terms (1-3 characters) only match word
+    /// prefixes so "pin" finds engine pinning, not the middle of "typing".
+    private static func fieldMatches(term: String, text: String) -> Bool {
+        let lowered = text.lowercased()
+        if term.count >= 4, lowered.contains(term) { return true }
+        return words(in: lowered).contains { word in
+            if word.hasPrefix(term) { return true }
+            if term.hasPrefix(word), word.count >= 4 { return true }
+            if term.count >= 5, word.count >= 5, abs(term.count - word.count) <= 1,
+               isWithinOneEdit(term, word) {
+                return true
+            }
+            return false
+        }
+    }
+
+    private static func words(in text: String) -> [String] {
+        text.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+
+    /// Damerau-Levenshtein distance ≤ 1: one insertion, deletion, replacement, or
+    /// adjacent transposition.
+    private static func isWithinOneEdit(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        let first = Array(a)
+        let second = Array(b)
+        let (short, long) = first.count <= second.count ? (first, second) : (second, first)
+        guard long.count - short.count <= 1 else { return false }
+
+        if short.count == long.count {
+            var mismatches: [Int] = []
+            for index in short.indices where short[index] != long[index] {
+                mismatches.append(index)
+                if mismatches.count > 2 { return false }
+            }
+            if mismatches.count <= 1 { return true }
+            let firstIndex = mismatches[0]
+            let secondIndex = mismatches[1]
+            return secondIndex == firstIndex + 1
+                && short[firstIndex] == long[secondIndex]
+                && short[secondIndex] == long[firstIndex]
+        }
+
+        var shortIndex = 0
+        var longIndex = 0
+        var skippedOne = false
+        while shortIndex < short.count, longIndex < long.count {
+            if short[shortIndex] == long[longIndex] {
+                shortIndex += 1
+                longIndex += 1
+            } else if skippedOne {
+                return false
+            } else {
+                skippedOne = true
+                longIndex += 1
+            }
+        }
+        return true
+    }
+
+    // Every card shown by `groupContent(_:)` must have an entry here, or it is
+    // unfindable. When adding a settings card, add its entry (title, detail, and the
+    // words a user would actually type — including synonyms not shown in the UI).
     private static let all: [SettingsSearchResult] = [
         .init(
             id: "access",
-            title: "Voce access",
+            title: "Access",
             detail: "Subscription email, verification code, entitlement, and account access.",
             group: .setup,
-            keywords: ["login", "email", "code", "base", "pro", "billing", "subscription", "account"]
+            keywords: [
+                "login", "sign in", "email", "code", "base", "pro", "billing",
+                "subscription", "account", "upgrade", "plan", "checkout", "portal",
+                "manage subscription", "verify", "entitlement"
+            ]
         ),
         .init(
             id: "permissions",
             title: "Permissions",
             detail: "Microphone, speech recognition, accessibility, and input monitoring access.",
             group: .setup,
-            keywords: ["privacy", "system settings", "input", "monitoring", "mic", "speech", "accessibility"]
+            keywords: [
+                "privacy", "system settings", "input", "monitoring", "mic",
+                "microphone", "speech", "accessibility", "access", "grant", "allow"
+            ]
         ),
         .init(
             id: "recording-shortcuts",
             title: "Recording shortcuts",
             detail: "Tap to Talk, Hold to Talk, global hotkeys, Return to submit, dictionary quick fix, and snippet creation.",
-            group: .setup,
-            keywords: ["shortcut", "key", "hotkey", "keyboard", "option", "hold", "tap", "press", "return", "submit"]
+            group: .behavior,
+            keywords: [
+                "shortcut", "key", "hotkey", "keyboard", "option", "hold", "tap",
+                "press", "return", "submit", "record", "hands free", "push to talk",
+                "voce actions", "fn", "transcribing"
+            ]
         ),
         .init(
             id: "dictation-engine",
-            title: "Dictation engine",
-            detail: "Choose local or cloud transcription, language, and cloud model behavior.",
-            group: .setup,
-            keywords: ["cloud", "local", "model", "transcription", "speech", "openai", "language", "locale", "whisper"]
+            title: "Speech",
+            detail: "Choose local or cloud transcription, language, per-app overrides, and cloud model behavior.",
+            group: .speech,
+            keywords: [
+                "cloud", "local", "model", "transcription", "speech", "openai",
+                "language", "locale", "whisper", "override", "pin", "per app",
+                "on device", "offline", "engine"
+            ]
         ),
         .init(
             id: "media",
-            title: "Media controls",
+            title: "Media",
             detail: "Pause and resume music or video while dictating.",
             group: .behavior,
-            keywords: ["spotify", "youtube", "music", "pause", "resume", "playback", "sound", "audio"]
+            keywords: [
+                "spotify", "youtube", "music", "pause", "resume", "playback",
+                "sound", "audio", "video", "browser", "chrome", "arc", "play",
+                "interrupt", "volume"
+            ]
         ),
         .init(
             id: "ai-workflows",
             title: "AI workflows",
             detail: "Configure AI cleanup, finish keys, workflow shortcuts, and spoken triggers.",
             group: .ai,
-            keywords: ["cleanup", "refinement", "refine", "apple intelligence", "trigger", "workflow", "prompt", "finish"]
+            keywords: [
+                "cleanup", "refinement", "refine", "apple intelligence", "trigger",
+                "workflow", "prompt", "finish", "cloud refinement", "rewrite",
+                "polish", "formatting"
+            ]
         ),
         .init(
             id: "appearance",
             title: "Appearance",
             detail: "Choose app theme, light or dark mode behavior, and the dictation bubble style.",
             group: .general,
-            keywords: ["theme", "dark", "light", "bubble", "tech", "meter", "visual", "mode"]
+            keywords: [
+                "theme", "dark", "light", "bubble", "tech", "meter", "visual",
+                "mode", "style", "color", "system"
+            ]
         ),
         .init(
             id: "profile",
@@ -639,30 +812,73 @@ private struct SettingsSearchResult: Identifiable {
         .init(
             id: "app-behavior",
             title: "App behavior",
-            detail: "Launch at login, Dock icon visibility, and app-level behavior.",
+            detail: "Launch at login, Dock icon visibility, welcome replay, and app-level behavior.",
             group: .general,
-            keywords: ["startup", "login", "dock", "window", "menu bar", "launch"]
+            keywords: [
+                "startup", "login", "dock", "window", "menu bar", "launch",
+                "welcome", "onboarding", "icon", "autostart", "boot", "hide"
+            ]
+        ),
+        .init(
+            id: "typing-speed",
+            title: "Typing speed",
+            detail: "Measure your typing baseline; Voce uses your best score for time-saved estimates.",
+            group: .general,
+            keywords: [
+                "wpm", "words per minute", "typing", "speed", "test", "baseline",
+                "measure", "time saved", "benchmark", "stats"
+            ]
+        ),
+        .init(
+            id: "updates",
+            title: "Updates",
+            detail: "Check for a new version of Voce and install the latest release.",
+            group: .general,
+            keywords: [
+                "update", "updates", "upgrade", "version", "latest", "release",
+                "check for updates", "check now", "new version", "software update",
+                "install", "changelog", "what's new"
+            ]
+        ),
+        .init(
+            id: "licenses",
+            title: "Licenses",
+            detail: "Open-source license notices and acknowledgements.",
+            group: .general,
+            keywords: [
+                "license", "mit", "open source", "acknowledgements", "credits",
+                "legal", "copyright", "notice", "attribution"
+            ]
         ),
         .init(
             id: "walkthrough",
             title: "Walkthrough",
             detail: "Replay the teaching flow for dictation, shortcuts, and dictionary fixes.",
             group: .help,
-            keywords: ["tutorial", "guide", "practice", "learn", "training", "onboarding"]
+            keywords: [
+                "tutorial", "guide", "practice", "learn", "training", "onboarding",
+                "lesson", "replay", "how to"
+            ]
         ),
         .init(
             id: "support",
             title: "Support",
             detail: "Report a bug, send feedback, request a feature, and include diagnostics.",
             group: .help,
-            keywords: ["bug", "feedback", "feature", "diagnostics", "email", "help", "contact"]
+            keywords: [
+                "bug", "feedback", "feature", "diagnostics", "email", "help",
+                "contact", "report", "issue", "problem", "crash"
+            ]
         ),
         .init(
             id: "faq",
             title: "FAQ",
             detail: "Quick answers for starting dictation, fixing words, and pasted transcripts.",
             group: .help,
-            keywords: ["question", "answer", "fix word", "clipboard", "paste", "dictating"]
+            keywords: [
+                "question", "answer", "fix word", "clipboard", "paste", "dictating",
+                "troubleshooting", "not working"
+            ]
         )
     ]
 }
@@ -776,7 +992,7 @@ private struct HelpFAQSection: View {
         case (false, true):
             return "Highlight the wrong word, press \(dictionaryHotkeyLabel), then enter the correct replacement in the Teach Voce popover."
         case (false, false):
-            return "Turn on Voce actions in Recording Settings, then highlight the wrong word and tap \u{2318}\u{2325} together to fix it."
+            return "Turn on Voce actions in Recording shortcuts, then highlight the wrong word and tap \u{2318}\u{2325} together to fix it."
         }
     }
 }

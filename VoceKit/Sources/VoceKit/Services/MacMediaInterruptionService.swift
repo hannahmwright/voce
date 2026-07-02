@@ -320,6 +320,21 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         self.maximumDisplayIDRefreshRetryCount = maximumDisplayIDRefreshRetryCount
     }
 
+    /// Regression canary exposing whether the production-critical wiring of the
+    /// macOS 15.4+ media-interruption fix is intact, without running an interruption.
+    ///
+    /// The behavioral test suite exercises the internal injectable initializer, so a
+    /// broken `public init()` (probe not wired, escalation disabled) would otherwise
+    /// ship unnoticed. `audibleSignalOperational` proves the CoreAudio
+    /// process-audibility probe is connected and returning data on this OS — the
+    /// primary owner-identification signal now that MediaRemote metadata is
+    /// entitlement-gated. `escalatesToMediaKey` proves the unverified-command
+    /// escalation path (the fallback when MediaRemote commands silently no-op) is
+    /// enabled.
+    var mediaInterruptionWiringCanary: (audibleSignalOperational: Bool, escalatesToMediaKey: Bool) {
+        (audibleProcessBundleIDs() != nil, escalatesToMediaKeyOnUnverifiedCommand)
+    }
+
     public func beginInterruption() async -> MediaInterruptionToken? {
         pendingResumeTask?.cancel()
         pendingResumeTask = nil
@@ -681,13 +696,32 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         }
 
         switch detection {
-        case .playing, .likelyPlaying:
+        case .playing:
             Self.logger.notice(
                 "Media interruption resume skipped because playback already appears active: \(detection.logValue, privacy: .public)"
             )
             Self.logger.debug(
                 "Skipping media interruption resume because playback already appears active: \(detection.logValue, privacy: .public)"
             )
+        case .likelyPlaying:
+            if let owner = interruptedPlaybackOwnerForResume,
+               let audibleNow = audibleProcessBundleIDs(),
+               !Self.ownerIsAudible(owner, in: audibleNow) {
+                Self.logger.notice(
+                    """
+                    Media interruption resume proceeding despite weak active detection because \
+                    \(owner.logValue, privacy: .public) is not audible.
+                    """
+                )
+                await sendResumeCommandWithVerification()
+            } else {
+                Self.logger.notice(
+                    "Media interruption resume skipped because playback already appears active: \(detection.logValue, privacy: .public)"
+                )
+                Self.logger.debug(
+                    "Skipping media interruption resume because playback already appears active: \(detection.logValue, privacy: .public)"
+                )
+            }
         case .unknown:
             // MediaRemote stays ambiguous on entitlement-gated systems (macOS 15.4+).
             // If CoreAudio proves the interrupted app is silent, resume anyway —
