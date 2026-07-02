@@ -1962,6 +1962,62 @@ func weakDetectionStillSkipsNonBrowserOwnersWithUnavailableStateProbe() async {
     #expect(keyRecorder.sendCalls == 0)
 }
 
+@MainActor
+@Test("Weak detection refreshes a transiently missing display id before giving up")
+func weakDetectionRefreshesTransientlyMissingDisplayID() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    // detect#1: likelyPlaying with displayID nil (probe raced session registration).
+    // detect#2 (refresh): displayID resolves to Chrome.
+    // detect#3: post-pause verification confirms notPlaying.
+    let detector = SequencedPlaybackDetector(
+        [.likelyPlaying, .likelyPlaying, .notPlaying],
+        displayIDs: [nil, MediaDisplayID.chrome, MediaDisplayID.chrome]
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil, "A display id that resolves on refresh must lead to a verified pause.")
+    #expect(await chrome.pauseCalls == 1)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("Weak detection with a blocked app resolved on refresh is skipped")
+func weakDetectionBlockedAppResolvedOnRefreshIsSkipped() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let detector = SequencedPlaybackDetector(
+        [.likelyPlaying, .likelyPlaying],
+        fallback: .likelyPlaying,
+        displayIDs: [nil, MediaDisplayID.zoom],
+        fallbackDisplayID: MediaDisplayID.zoom
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "A blocked call app resolved by the refresh must never be interrupted.")
+    #expect(commandRecorder.commands.isEmpty)
+    #expect(keyRecorder.sendCalls == 0)
+}
+
 /// Detector that suspends a specific detect() call until released, allowing tests to
 /// interleave a new interruption inside another task's detection suspension point.
 @MainActor
@@ -2036,6 +2092,315 @@ func resumeEscalationSkippedWhenNewInterruptionBeginsDuringVerification() async 
     #expect(
         keyRecorder.sendCalls == 0,
         "Stale resume verification must not press the media key after a new interruption became active."
+    )
+}
+
+// MARK: - CoreAudio audible-process owner identification (macOS 15.4+ MediaRemote lockdown)
+//
+// MediaRemote's now-playing metadata (display id, rate, state) is entitlement-gated
+// starting with macOS 15.4 and permanently returns nil for non-entitled processes.
+// Detection degrades to `.likelyPlaying` with a forever-nil display id, so the owner
+// must be identified from CoreAudio process audibility instead: which process has a
+// running audio output IO proc right now.
+
+/// Sequenced audible-process provider: one list per call, then the fallback.
+@MainActor
+private final class AudibleProcessSequence {
+    private var lists: [[String]?]
+    private let fallback: [String]?
+    private(set) var calls = 0
+
+    init(_ lists: [[String]?], fallback: [String]? = nil) {
+        self.lists = lists
+        self.fallback = fallback
+    }
+
+    func next() -> [String]? {
+        calls += 1
+        if !lists.isEmpty {
+            return lists.removeFirst()
+        }
+        return fallback
+    }
+}
+
+@MainActor
+@Test("Audible Chrome helper process identifies the owner when the display id is permanently nil")
+func audibleChromeHelperIdentifiesOwnerWithPermanentlyNilDisplayID() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let detector = SequencedPlaybackDetector(
+        [.likelyPlaying, .notPlaying],
+        fallback: .notPlaying,
+        displayIDs: [nil],
+        fallbackDisplayID: nil
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.google.Chrome.helper"] },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil, "An audibly playing Chrome must be paused even with a nil display id.")
+    #expect(await chrome.pauseCalls == 1)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0, "Verified command pause must not press the media key.")
+    #expect(
+        detector.detectCalls == 2,
+        "CoreAudio identification must skip the display id refresh retries (no extra detects)."
+    )
+}
+
+@MainActor
+@Test("Audible Arc helper process identifies Arc despite no scriptable controller")
+func audibleArcHelperIdentifiesArc() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.likelyPlaying, .notPlaying],
+            fallback: .notPlaying
+        ),
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["company.thebrowser.browser.helper"] },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil, "An audibly playing Arc must be paused via the generic command pathway.")
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("A blocked audible call app suppresses the interruption entirely")
+func blockedAudibleCallAppSuppressesInterruption() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let detector = SequencedPlaybackDetector([.likelyPlaying], fallback: .likelyPlaying)
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.google.Chrome.helper", "us.zoom.xos"] },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "Never touch audio while a call/meeting app is audible.")
+    #expect(commandRecorder.commands.isEmpty)
+    #expect(keyRecorder.sendCalls == 0)
+    #expect(detector.detectCalls == 1, "A blocked audible app must short-circuit without retries.")
+}
+
+@MainActor
+@Test("Audible processes without an owner mapping never cause a phantom toggle")
+func unmappedAudibleProcessesNeverCausePhantomToggle() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([], fallback: .likelyPlaying),
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.carriez.rustdesk", "com.apple.corespeech"] },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "Unknown audible processes are not evidence of pausable media.")
+    #expect(commandRecorder.commands.isEmpty)
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("Audible Spotify is confirmed via its scriptable state and paused precisely")
+func audibleSpotifyConfirmedViaScriptableState() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let spotify = FakeSpotifyPlaybackController([.playing], fallbackState: .playing)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([.likelyPlaying], fallback: .notPlaying),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.spotify.client"] },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(await spotify.pauseCalls == 1, "Spotify keeps its precise app-specific pause path.")
+    #expect(commandRecorder.commands.isEmpty, "No generic command when the scriptable pause succeeds.")
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("An audible but paused Spotify stream falls through to the audible browser")
+func audiblePausedSpotifyFallsThroughToAudibleBrowser() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let spotify = FakeSpotifyPlaybackController([.paused], fallbackState: .paused)
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.likelyPlaying, .notPlaying],
+            fallback: .notPlaying
+        ),
+        spotifyPlaybackController: spotify,
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.google.Chrome.helper", "com.spotify.client"] },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(await spotify.pauseCalls == 0, "A warm-but-paused Spotify stream must not be toggled.")
+    #expect(await chrome.pauseCalls == 1)
+    #expect(commandRecorder.commands == [.pause])
+}
+
+@MainActor
+@Test("Pause verifies via owner silence when the detector stays ambiguous")
+func pauseVerifiesViaOwnerSilenceWhenDetectorStaysAmbiguous() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    // begin: Chrome audible; post-command verify: still audible (escalate to key);
+    // post-key verify: silent (pause verified through CoreAudio ground truth).
+    let audible = AudibleProcessSequence(
+        [["com.google.Chrome.helper"], ["com.google.Chrome.helper"], []],
+        fallback: []
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([], fallback: .likelyPlaying),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { audible.next() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(
+        token != nil,
+        "Owner silence per CoreAudio must verify the pause even when MediaRemote stays ambiguous."
+    )
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 1, "The unverified command must escalate to the media key once.")
+}
+
+@MainActor
+@Test("Resume skips the media key when the owner is audibly playing again")
+func resumeSkipsMediaKeyWhenOwnerAudiblyPlayingAgain() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    // Detects: 1 begin (likelyPlaying), 2 post-pause verify (notPlaying),
+    // 3 resume detection (notPlaying). The post-resume detect must never happen
+    // because audibility already proves the resume worked.
+    let detector = SequencedPlaybackDetector(
+        [.likelyPlaying, .notPlaying, .notPlaying],
+        fallback: .notPlaying
+    )
+    // Audible calls: 1 begin (Chrome audible), 2 post-resume verification (audible
+    // again — the play command worked, a key press would pause it right back).
+    let audible = AudibleProcessSequence(
+        [["com.google.Chrome.helper"], ["com.google.Chrome.helper"]],
+        fallback: ["com.google.Chrome.helper"]
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { audible.next() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for audible Chrome playback.")
+        return
+    }
+    #expect(commandRecorder.commands == [.pause])
+
+    service.endInterruption(token: token)
+    let resumeSent = await waitUntil {
+        commandRecorder.commands == [.pause, .play]
+    }
+
+    #expect(resumeSent)
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(
+        keyRecorder.sendCalls == 0,
+        "The owner audibly playing again proves the resume command worked; a key press would double-toggle."
+    )
+}
+
+@MainActor
+@Test("Resume proceeds despite unknown detection when the owner is verifiably silent")
+func resumeProceedsOnUnknownDetectionWhenOwnerSilent() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    // Detects: 1 begin, 2 post-pause verify, 3-5 resume detection (unknown ×3,
+    // exhausting the retries), 6 post-resume verify (still notPlaying → key).
+    let detector = SequencedPlaybackDetector(
+        [.likelyPlaying, .notPlaying, .unknown, .unknown, .unknown, .notPlaying],
+        fallback: .notPlaying
+    )
+    // Audible: begin (Chrome audible), then silent for the unknown-detection check
+    // and the post-resume verification.
+    let audible = AudibleProcessSequence(
+        [["com.google.Chrome.helper"]],
+        fallback: []
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { audible.next() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for audible Chrome playback.")
+        return
+    }
+
+    service.endInterruption(token: token)
+    let resumed = await waitUntil {
+        commandRecorder.commands == [.pause, .play] && keyRecorder.sendCalls == 1
+    }
+
+    #expect(
+        resumed,
+        "Unknown MediaRemote state with a verifiably silent owner must still resume (command + key escalation)."
     )
 }
 #endif
