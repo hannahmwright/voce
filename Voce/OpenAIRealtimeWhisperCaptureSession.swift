@@ -764,7 +764,7 @@ private actor RealtimeSessionReadiness {
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 let timeout = CloudDictationError.timedOut
-                await self.fail(timeout)
+                self.fail(timeout)
                 once.resume(.failure(timeout))
             }
         }
@@ -891,7 +891,7 @@ private actor RealtimeTranscriptAccumulator {
             Task {
                 try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 let timeout = CloudDictationError.timedOut
-                await self.fail(timeout)
+                self.fail(timeout)
                 once.resume(.failure(timeout))
             }
         }
