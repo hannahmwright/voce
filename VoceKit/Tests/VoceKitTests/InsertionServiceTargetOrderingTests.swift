@@ -42,8 +42,8 @@ func insertionServicePrioritizesClipboardForTerminalTargets() async {
     #expect(await recorder.snapshot() == [.clipboardPaste])
 }
 
-@Test("InsertionService keeps configured order for non-terminal targets")
-func insertionServicePreservesOrderForNonTerminalTargets() async {
+@Test("InsertionService prioritizes clipboard for non-terminal targets")
+func insertionServicePrioritizesClipboardForNonTerminalTargets() async {
     let recorder = MethodCallRecorder()
     let service = InsertionService(transports: [
         ClosureInsertionTransport(method: .direct) { _, _ in
@@ -64,7 +64,7 @@ func insertionServicePreservesOrderForNonTerminalTargets() async {
 
     #expect(result.status == .copiedOnly)
     #expect(result.method == .clipboardPaste)
-    #expect(await recorder.snapshot() == [.direct, .accessibility, .clipboardPaste])
+    #expect(await recorder.snapshot() == [.clipboardPaste])
 }
 
 @Test("Clipboard transport returns copied-only with auto-paste skip reason")

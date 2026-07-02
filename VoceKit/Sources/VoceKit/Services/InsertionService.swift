@@ -11,13 +11,6 @@ public enum AutoPasteOutcome: Sendable, Equatable {
 }
 
 public struct InsertionService: InsertionServiceProtocol, Sendable {
-    private static let terminalClipboardFirstBundleIDs: Set<String> = [
-        "dev.warp.warp-stable",
-        "com.openai.codex",
-        "com.apple.terminal",
-        "com.googlecode.iterm2"
-    ]
-
     private let transports: [any InsertionTransport]
 
     private struct TransportFailure: Sendable {
@@ -103,6 +96,10 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             return nil
         }
 
+        guard !failures.isEmpty else {
+            return .refocusToPaste
+        }
+
         let failedMethods = Set(failures.map(\.method))
         guard failedMethods.contains(.direct), failedMethods.contains(.accessibility) else {
             return nil
@@ -130,11 +127,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             || normalized.contains("failed to update focused element text")
     }
 
-    private func prioritizedTransports(for target: AppContext) -> [any InsertionTransport] {
-        guard Self.terminalClipboardFirstBundleIDs.contains(target.bundleIdentifier.lowercased()) else {
-            return transports
-        }
-
+    private func prioritizedTransports(for _: AppContext) -> [any InsertionTransport] {
         var clipboard: [any InsertionTransport] = []
         var others: [any InsertionTransport] = []
 

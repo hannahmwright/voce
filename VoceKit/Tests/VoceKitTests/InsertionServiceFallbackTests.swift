@@ -18,8 +18,8 @@ private actor CallRecorder {
     }
 }
 
-@Test("InsertionService falls back from direct to accessibility before clipboard")
-func insertionServiceFallsBackToAccessibility() async {
+@Test("InsertionService falls back from clipboard to configured secondary transports")
+func insertionServiceFallsBackFromClipboardToSecondaryTransports() async {
     let recorder = CallRecorder()
     let service = InsertionService(transports: [
         ClosureInsertionTransport(method: .direct) { _, _ in
@@ -31,36 +31,43 @@ func insertionServiceFallsBackToAccessibility() async {
         },
         ClosureInsertionTransport(method: .clipboardPaste) { _, _ in
             await recorder.append(.clipboardPaste)
+            throw TestInsertionError.failed
         }
     ])
 
     let result = await service.insert(text: "hello", target: .unknown)
     #expect(result.status == .inserted)
     #expect(result.method == .accessibility)
-    #expect(await recorder.snapshot() == [.direct, .accessibility])
+    #expect(await recorder.snapshot() == [.clipboardPaste, .direct, .accessibility])
 }
 
-@Test("InsertionService falls back to clipboard when direct and accessibility fail")
-func insertionServiceFallsBackToClipboard() async {
+@Test("InsertionService returns copied-only when clipboard auto-paste is unavailable")
+func insertionServiceReturnsCopiedOnlyWhenClipboardAutoPasteIsUnavailable() async {
     let recorder = CallRecorder()
-    let service = InsertionService(transports: [
-        ClosureInsertionTransport(method: .direct) { _, _ in
-            await recorder.append(.direct)
-            throw TestInsertionError.failed
-        },
-        ClosureInsertionTransport(method: .accessibility) { _, _ in
-            await recorder.append(.accessibility)
-            throw TestInsertionError.failed
-        },
-        ClosureInsertionTransport(method: .clipboardPaste) { _, _ in
-            await recorder.append(.clipboardPaste)
-        }
-    ])
+    let clipboard = MemoryClipboardService()
+    let service = InsertionService(
+        transports: [
+            ClosureInsertionTransport(method: .direct) { _, _ in
+                await recorder.append(.direct)
+                throw TestInsertionError.failed
+            },
+            ClosureInsertionTransport(method: .accessibility) { _, _ in
+                await recorder.append(.accessibility)
+                throw TestInsertionError.failed
+            },
+            ClipboardInsertionTransport(clipboard: clipboard) { _ in
+                await recorder.append(.clipboardPaste)
+                return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
+            }
+        ]
+    )
 
     let result = await service.insert(text: "hello", target: .unknown)
     #expect(result.status == .copiedOnly)
     #expect(result.method == .clipboardPaste)
-    #expect(await recorder.snapshot() == [.direct, .accessibility, .clipboardPaste])
+    #expect(result.recoveryAction == .refocusToPaste)
+    #expect(await clipboard.latestValue == "hello")
+    #expect(await recorder.snapshot() == [.clipboardPaste])
 }
 
 @Test("InsertionService suggests seamless refocus paste after focus-loss fallback")
