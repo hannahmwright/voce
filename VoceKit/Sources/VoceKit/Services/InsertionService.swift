@@ -78,13 +78,30 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             }
         }
 
+        let failureSummary = failures
+            .map { "\($0.method.rawValue): \($0.message)" }
+            .joined(separator: " | ")
+
+        // Last resort: every transport failed, including the clipboard
+        // transport's own copy attempt. Retry a plain copy (no auto-paste) so
+        // the transcript is never lost — the user can still paste manually.
+        for transport in transports {
+            guard let clipboardTransport = transport as? ClipboardInsertionTransport else { continue }
+            if (try? await clipboardTransport.copyToClipboard(text: text)) != nil {
+                return InsertResult(
+                    status: .copiedOnly,
+                    method: .clipboardPaste,
+                    insertedText: text,
+                    errorMessage: "Insertion failed; copied to clipboard instead. \(failureSummary)"
+                )
+            }
+        }
+
         return InsertResult(
             status: .failed,
             method: .none,
             insertedText: text,
-            errorMessage: failures
-                .map { "\($0.method.rawValue): \($0.message)" }
-                .joined(separator: " | ")
+            errorMessage: failureSummary
         )
     }
 
@@ -168,6 +185,13 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 
     public func insert(text: String, target: AppContext) async throws {
         _ = try await insertAndReturnOutcome(text: text, target: target)
+    }
+
+    /// Copies to the clipboard without attempting auto-paste. Used by
+    /// `InsertionService` as a last-resort fallback when every transport
+    /// (including this one's initial copy) has failed.
+    public func copyToClipboard(text: String) async throws {
+        try await clipboard.setString(text)
     }
 
     public func insertAndReturnOutcome(text: String, target: AppContext) async throws -> AutoPasteOutcome {

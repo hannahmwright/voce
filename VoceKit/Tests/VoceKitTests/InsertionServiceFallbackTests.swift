@@ -93,6 +93,66 @@ func insertionServiceSuggestsRefocusPasteRecovery() async {
     #expect(await clipboard.latestValue == "hello")
 }
 
+/// Clipboard double whose first `setString` throws (simulating a transient
+/// pasteboard failure) while later attempts succeed.
+private actor FlakyClipboardService: ClipboardService {
+    private(set) var latestValue: String?
+    private var attempts = 0
+
+    func setString(_ text: String) async throws {
+        attempts += 1
+        guard attempts > 1 else { throw TestInsertionError.failed }
+        latestValue = text
+    }
+}
+
+/// Clipboard double that always throws.
+private actor BrokenClipboardService: ClipboardService {
+    func setString(_ text: String) async throws {
+        throw TestInsertionError.failed
+    }
+}
+
+@Test("InsertionService retries the clipboard copy when every transport fails")
+func insertionServiceCopiesToClipboardWhenAllTransportsFail() async {
+    let clipboard = FlakyClipboardService()
+    let service = InsertionService(transports: [
+        ClosureInsertionTransport(method: .direct) { _, _ in
+            throw TestInsertionError.failed
+        },
+        ClosureInsertionTransport(method: .accessibility) { _, _ in
+            throw TestInsertionError.failed
+        },
+        ClipboardInsertionTransport(clipboard: clipboard) { _ in
+            .attempted
+        }
+    ])
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.method == .clipboardPaste)
+    #expect(result.errorMessage?.contains("copied to clipboard instead") == true)
+    #expect(await clipboard.latestValue == "hello")
+}
+
+@Test("InsertionService still reports failure when the clipboard copy retry also fails")
+func insertionServiceReportsFailureWhenClipboardRetryFails() async {
+    let service = InsertionService(transports: [
+        ClosureInsertionTransport(method: .direct) { _, _ in
+            throw TestInsertionError.failed
+        },
+        ClipboardInsertionTransport(clipboard: BrokenClipboardService()) { _ in
+            .attempted
+        }
+    ])
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .failed)
+    #expect(result.method == InsertionMethod.none)
+}
+
 @Test("InsertionService does not suggest refocus paste for permission failures")
 func insertionServiceSkipsRefocusPasteRecoveryForPermissionFailures() async {
     let clipboard = MemoryClipboardService()
