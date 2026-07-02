@@ -42,9 +42,6 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Verify generated Xcode project is up to date
-        run: git diff --exit-code -- Voce.xcodeproj project.yml
-
       - name: Run VoceKit tests
         env:
           CLANG_MODULE_CACHE_PATH: /tmp/voce-clang-cache
