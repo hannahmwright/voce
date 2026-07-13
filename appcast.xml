@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.58</title>
+      <sparkle:version>61</sparkle:version>
+      <sparkle:shortVersionString>0.4.58</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.58</h2>
+        <ul>
+          <li>Fixes system-wide typing lag while Voce is running by moving keyboard shortcut monitoring onto a dedicated high-priority thread, so keystrokes are never held up by app activity</li>
+          <li>Keeps shortcut monitoring responsive when Voce is idle in the background by opting out of macOS App Nap while shortcuts are active</li>
+          <li>Improves shortcut monitoring reliability with automatic recovery and better diagnostics if macOS suspends the keyboard listener</li>
+        </ul>
+      ]]></description>
+      <pubDate>Mon, 13 Jul 2026 21:14:59 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.58/Voce-0.4.58.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="vj3RzzTbUPYz289HiDbm7HOtf9cR3QUBakrHJeabv74hKp5AH7iMfImDuvMAU1w3DSUEuY6PdHxtTpmQTAYIBg=="
+        length="19259307"
+      />
+    </item>
+    <item>
       <title>Version 0.4.57</title>
       <sparkle:version>60</sparkle:version>
       <sparkle:shortVersionString>0.4.57</sparkle:shortVersionString>
