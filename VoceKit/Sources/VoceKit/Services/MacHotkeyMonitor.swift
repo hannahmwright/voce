@@ -1,31 +1,188 @@
 #if os(macOS)
 import AppKit
+import os
 
 /// Shared state between MacHotkeyMonitor and its CGEventTap C callback.
-/// All access occurs on the main thread (tap is on the main run loop),
-/// but the class must be nonisolated because the C callback is nonisolated.
+///
+/// The tap callback runs on a dedicated event-tap thread (see
+/// `HotkeyEventTapThread`) while configuration writes arrive from the main
+/// actor, so every field is guarded by a lock. Fields are individually
+/// atomic; the callback needs no cross-field invariants — a settings write
+/// racing a keystroke simply takes effect on the next event.
 private final class TapContext: @unchecked Sendable {
-    weak var monitor: MacHotkeyMonitor?
-    var hotkey: HandsFreeToggleHotkey?
-    var onToggle: (() -> Void)?
-    var onSubmit: (() -> Void)?
-    var aiFinishHotkey: HandsFreeHotkey?
-    var aiWorkflowFinishHotkeys: [HandsFreeHotkey] = []
-    var onAIFinish: ((HandsFreeHotkey?) -> Void)?
-    var onCaptureSelectionCorrection: (() -> Void)?
-    var onCaptureSelectionSnippet: (() -> Void)?
-    var selectionCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault
-    var selectionSnippetHotkey: VoceKeyboardShortcut = .snippetCreationDefault
-    var isSubmitEnabled = false
-    var isAIFinishEnabled = false
-    var machPort: CFMachPort?
+    private let lock = NSLock()
+
+    private weak var _monitor: MacHotkeyMonitor?
+    private var _hotkey: HandsFreeToggleHotkey?
+    private var _onToggle: (() -> Void)?
+    private var _onSubmit: (() -> Void)?
+    private var _aiFinishHotkey: HandsFreeHotkey?
+    private var _aiWorkflowFinishHotkeys: [HandsFreeHotkey] = []
+    private var _onAIFinish: ((HandsFreeHotkey?) -> Void)?
+    private var _onCaptureSelectionCorrection: (() -> Void)?
+    private var _onCaptureSelectionSnippet: (() -> Void)?
+    private var _selectionCorrectionHotkey: VoceKeyboardShortcut = .dictionaryCorrectionDefault
+    private var _selectionSnippetHotkey: VoceKeyboardShortcut = .snippetCreationDefault
+    private var _isSubmitEnabled = false
+    private var _isAIFinishEnabled = false
+    private var _machPort: CFMachPort?
     /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
     /// disable/re-enable cycles that can occur when the system times out the tap.
-    var lastReenableTime: CFAbsoluteTime = 0
+    private var _lastReenableTime: CFAbsoluteTime = 0
+
+    var monitor: MacHotkeyMonitor? {
+        get { lock.withLock { _monitor } }
+        set { lock.withLock { _monitor = newValue } }
+    }
+    var hotkey: HandsFreeToggleHotkey? {
+        get { lock.withLock { _hotkey } }
+        set { lock.withLock { _hotkey = newValue } }
+    }
+    var onToggle: (() -> Void)? {
+        get { lock.withLock { _onToggle } }
+        set { lock.withLock { _onToggle = newValue } }
+    }
+    var onSubmit: (() -> Void)? {
+        get { lock.withLock { _onSubmit } }
+        set { lock.withLock { _onSubmit = newValue } }
+    }
+    var aiFinishHotkey: HandsFreeHotkey? {
+        get { lock.withLock { _aiFinishHotkey } }
+        set { lock.withLock { _aiFinishHotkey = newValue } }
+    }
+    var aiWorkflowFinishHotkeys: [HandsFreeHotkey] {
+        get { lock.withLock { _aiWorkflowFinishHotkeys } }
+        set { lock.withLock { _aiWorkflowFinishHotkeys = newValue } }
+    }
+    var onAIFinish: ((HandsFreeHotkey?) -> Void)? {
+        get { lock.withLock { _onAIFinish } }
+        set { lock.withLock { _onAIFinish = newValue } }
+    }
+    var onCaptureSelectionCorrection: (() -> Void)? {
+        get { lock.withLock { _onCaptureSelectionCorrection } }
+        set { lock.withLock { _onCaptureSelectionCorrection = newValue } }
+    }
+    var onCaptureSelectionSnippet: (() -> Void)? {
+        get { lock.withLock { _onCaptureSelectionSnippet } }
+        set { lock.withLock { _onCaptureSelectionSnippet = newValue } }
+    }
+    var selectionCorrectionHotkey: VoceKeyboardShortcut {
+        get { lock.withLock { _selectionCorrectionHotkey } }
+        set { lock.withLock { _selectionCorrectionHotkey = newValue } }
+    }
+    var selectionSnippetHotkey: VoceKeyboardShortcut {
+        get { lock.withLock { _selectionSnippetHotkey } }
+        set { lock.withLock { _selectionSnippetHotkey = newValue } }
+    }
+    var isSubmitEnabled: Bool {
+        get { lock.withLock { _isSubmitEnabled } }
+        set { lock.withLock { _isSubmitEnabled = newValue } }
+    }
+    var isAIFinishEnabled: Bool {
+        get { lock.withLock { _isAIFinishEnabled } }
+        set { lock.withLock { _isAIFinishEnabled = newValue } }
+    }
+    var machPort: CFMachPort? {
+        get { lock.withLock { _machPort } }
+        set { lock.withLock { _machPort = newValue } }
+    }
+
+    /// Atomically applies the re-enable debounce and claims the port.
+    /// Returns the mach port to re-enable, or nil when debounced or when the
+    /// tap is being torn down (`machPort` already cleared by uninstall).
+    func claimReenablePort(debounce: CFAbsoluteTime) -> CFMachPort? {
+        lock.withLock {
+            let now = CFAbsoluteTimeGetCurrent()
+            guard let port = _machPort, now - _lastReenableTime >= debounce else { return nil }
+            _lastReenableTime = now
+            return port
+        }
+    }
+}
+
+/// Owns the run loop that services the CGEventTap.
+///
+/// The tap is an *active* tap (`.defaultTap`) on every keyDown in the login
+/// session: the window server holds each keystroke — in every app — until
+/// our callback returns. Servicing it on the main run loop couples
+/// system-wide typing latency to the app's main-thread health (busy UI,
+/// App Nap throttling, transcription work), which users experience as
+/// keyboard lag in other apps whenever Voce is running. This dedicated
+/// `.userInteractive` thread does nothing but pump the tap's run-loop
+/// source, so keystrokes flow through in microseconds regardless of what
+/// the rest of the app is doing.
+///
+/// Lifecycle: `shutdown()` may be called from any thread. It disables the
+/// tap immediately, then performs invalidation and the run-loop stop *on
+/// this thread*, serialized behind any in-flight callback. The thread also
+/// retains the `TapContext`, so the tap's unretained refcon pointer stays
+/// valid for the last possible callback even if the owning monitor
+/// deallocates first.
+private final class HotkeyEventTapThread: Thread {
+    private let tap: CFMachPort
+    private let source: CFRunLoopSource
+    private let contextRetainer: AnyObject
+    private let lock = NSLock()
+    private var runLoop: CFRunLoop?
+    private var shutdownRequested = false
+
+    init(tap: CFMachPort, source: CFRunLoopSource, retaining context: AnyObject) {
+        self.tap = tap
+        self.source = source
+        self.contextRetainer = context
+        super.init()
+        name = "com.voce.hotkey-event-tap"
+        qualityOfService = .userInteractive
+    }
+
+    override func main() {
+        let currentRunLoop = CFRunLoopGetCurrent()
+        let shouldRun: Bool = lock.withLock {
+            runLoop = currentRunLoop
+            return !shutdownRequested
+        }
+        guard shouldRun else {
+            // shutdown() won the race before this run loop existed, so it
+            // couldn't queue the teardown block. Tear down here instead.
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            return
+        }
+
+        CFRunLoopAddSource(currentRunLoop, source, .commonModes)
+        // Runs until the shutdown block calls CFRunLoopStop. If shutdown()
+        // queued its block before this line, the loop executes it on the
+        // first turn and exits immediately — it never spins empty.
+        CFRunLoopRun()
+    }
+
+    func shutdown() {
+        // Stop event delivery immediately (tapEnable is thread-safe) so a
+        // replacement tap installed right after this call can't briefly
+        // double-handle the same keystroke.
+        CGEvent.tapEnable(tap: tap, enable: false)
+
+        let capturedRunLoop: CFRunLoop? = lock.withLock {
+            shutdownRequested = true
+            return runLoop
+        }
+        // Thread hasn't reached main() yet; it will observe
+        // shutdownRequested and tear down on its own.
+        guard let capturedRunLoop else { return }
+
+        CFRunLoopPerformBlock(capturedRunLoop, CFRunLoopMode.commonModes.rawValue) { [tap, source] in
+            CFMachPortInvalidate(tap)
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+            CFRunLoopStop(CFRunLoopGetCurrent())
+        }
+        CFRunLoopWakeUp(capturedRunLoop)
+    }
 }
 
 @MainActor
 public final class MacHotkeyMonitor: HotkeyService {
+    nonisolated static let logger = Logger(subsystem: "io.voceapp.vocekit", category: "HotkeyMonitor")
+
     public var onPressToTalkStart: (() -> Void)?
     public var onPressToTalkStop: (() -> Void)?
     public var onToggleHandsFree: (() -> Void)? {
@@ -220,7 +377,9 @@ public final class MacHotkeyMonitor: HotkeyService {
     private var hasStarted = false
 
     private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var tapThread: HotkeyEventTapThread?
+    /// App Nap opt-out token, held while the event tap is installed.
+    private var eventTapActivityToken: NSObjectProtocol?
     private let tapContext = TapContext()
     public init() {
         tapContext.monitor = self
@@ -625,6 +784,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             callback: Self.eventTapCallback,
             userInfo: refcon
         ) else {
+            Self.logger.error("CGEvent.tapCreate failed — Input Monitoring/Accessibility not granted for this binary")
             onRegistrationStatusChanged?(
                 .unavailable(reason: "Input Monitoring permission required for shortcuts.")
             )
@@ -636,24 +796,62 @@ public final class MacHotkeyMonitor: HotkeyService {
         eventTap = tap
         tapContext.machPort = tap
 
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            tapContext.machPort = nil
+            CFMachPortInvalidate(tap)
+            eventTap = nil
+            onRegistrationStatusChanged?(
+                .unavailable(reason: "Could not install the keyboard shortcut listener.")
+            )
+            return
+        }
 
+        // Service the tap on a dedicated thread — never the main run loop.
+        // An active tap makes the window server hold every keystroke until
+        // the callback returns; tying that to the main run loop couples
+        // system-wide typing latency to main-thread health and App Nap.
+        let thread = HotkeyEventTapThread(tap: tap, source: source, retaining: tapContext)
+        tapThread = thread
+        thread.start()
+
+        beginEventTapActivity()
+        Self.logger.notice("Event tap installed on dedicated thread; App Nap disabled")
         onRegistrationStatusChanged?(.registered)
     }
 
     private func uninstallEventTap() {
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-            runLoopSource = nil
-        }
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            CFMachPortInvalidate(tap)
-            eventTap = nil
-        }
+        // Clear the port first so the callback's timeout re-enable path
+        // can't race the teardown and revive a dying tap.
         tapContext.machPort = nil
+        if let tapThread {
+            tapThread.shutdown()
+            self.tapThread = nil
+            Self.logger.notice("Event tap uninstalled; tap thread shutting down")
+        }
+        eventTap = nil
+        endEventTapActivity()
+    }
+
+    // MARK: - App Nap
+
+    /// While the event tap is installed, opt out of App Nap. A napped app's
+    /// threads get coalesced timers and lowered priority; with an active tap
+    /// in the keystroke path that shows up as system-wide keyboard lag
+    /// whenever Voce sits idle in the background. `.latencyCritical` asks for
+    /// full timer/scheduling precision; `.userInitiatedAllowingIdleSystemSleep`
+    /// prevents the nap without keeping the Mac awake.
+    private func beginEventTapActivity() {
+        guard eventTapActivityToken == nil else { return }
+        eventTapActivityToken = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "Keyboard shortcut event tap must stay responsive"
+        )
+    }
+
+    private func endEventTapActivity() {
+        guard let token = eventTapActivityToken else { return }
+        ProcessInfo.processInfo.endActivity(token)
+        eventTapActivityToken = nil
     }
 
     private func updateHandsFreeStatus() {
@@ -756,9 +954,12 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     // MARK: - CGEventTap Callback
 
-    /// C-compatible callback for the CGEventTap. Runs on the main thread
-    /// (tap is installed on the main run loop). Accesses TapContext via userInfo
-    /// to avoid @MainActor isolation issues.
+    /// C-compatible callback for the CGEventTap. Runs on the dedicated
+    /// event-tap thread (`HotkeyEventTapThread`), NOT the main thread — the
+    /// window server is holding the keystroke for every app until this
+    /// returns, so it must stay fast and must never wait on the main actor.
+    /// All real work is dispatched to the main queue; TapContext reads are
+    /// lock-guarded.
     /// Minimum interval between tap re-enables to prevent rapid disable/enable cycling.
     private static let reenableDebounceInterval: CFAbsoluteTime = 0.1
 
@@ -768,10 +969,11 @@ public final class MacHotkeyMonitor: HotkeyService {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let userInfo {
                 let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
-                let now = CFAbsoluteTimeGetCurrent()
-                if let machPort = ctx.machPort,
-                   now - ctx.lastReenableTime >= reenableDebounceInterval {
-                    ctx.lastReenableTime = now
+                if let machPort = ctx.claimReenablePort(debounce: reenableDebounceInterval) {
+                    // Timeout disables mean the system considered us too slow
+                    // to service the keystroke path — exactly the signal
+                    // behind "typing lags while Voce runs" reports.
+                    logger.warning("Event tap disabled by system (\(type == .tapDisabledByTimeout ? "timeout" : "user input", privacy: .public)) — re-enabling")
                     CGEvent.tapEnable(tap: machPort, enable: true)
                 }
             }
@@ -846,8 +1048,8 @@ public final class MacHotkeyMonitor: HotkeyService {
             return Unmanaged.passUnretained(event)
         }
 
-        // Callback already runs on the main run loop; dispatch async to avoid
-        // re-entrancy while the tap callback is still unwinding.
+        // Hop to the main queue: handlers are MainActor and this callback
+        // runs on the event-tap thread.
         let triggerStyle = configuredHotkey.triggerStyle
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
