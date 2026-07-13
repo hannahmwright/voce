@@ -961,9 +961,13 @@ public final class MacHotkeyMonitor: HotkeyService {
     /// All real work is dispatched to the main queue; TapContext reads are
     /// lock-guarded.
     /// Minimum interval between tap re-enables to prevent rapid disable/enable cycling.
-    private static let reenableDebounceInterval: CFAbsoluteTime = 0.1
+    private nonisolated static let reenableDebounceInterval: CFAbsoluteTime = 0.1
 
-    private static let eventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
+    // `nonisolated` is load-bearing on the callback and every helper it
+    // calls: MacHotkeyMonitor is @MainActor, so un-annotated statics are
+    // MainActor-isolated and carry a runtime executor assertion — which
+    // traps (SIGTRAP) when the callback fires on the event-tap thread.
+    private nonisolated static let eventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
         // Re-enable tap if macOS disabled it due to timeout or user input,
         // with a debounce to avoid rapid re-enable cycling.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -1082,7 +1086,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         lastActiveRecordingKeyTime = CFAbsoluteTimeGetCurrent()
     }
 
-    private static func matchingAIWorkflowHotkey(
+    private nonisolated static func matchingAIWorkflowHotkey(
         keyCode: UInt16,
         defaultHotkey: HandsFreeHotkey?,
         workflowHotkeys: [HandsFreeHotkey]
@@ -1103,7 +1107,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         return nil
     }
 
-    private static func matchesSelectionCorrectionHotkey(
+    private nonisolated static func matchesSelectionCorrectionHotkey(
         keyCode: UInt16,
         flags: CGEventFlags,
         shortcut: VoceKeyboardShortcut
@@ -1117,7 +1121,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             && flags.intersection(userMods) == cgFlags(for: shortcut.modifiers)
     }
 
-    private static func cgFlags(for modifiers: [VoceKeyboardShortcut.Modifier]) -> CGEventFlags {
+    private nonisolated static func cgFlags(for modifiers: [VoceKeyboardShortcut.Modifier]) -> CGEventFlags {
         modifiers.reduce(into: CGEventFlags()) { partialResult, modifier in
             partialResult.insert(modifier.cgFlag)
         }
