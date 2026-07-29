@@ -14,7 +14,7 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
     init(
         session: URLSession = .shared,
         apiKeyProvider: @escaping @Sendable () throws -> String,
-        transcriptionModel: String = "gpt-realtime-whisper",
+        transcriptionModel: String = OpenAIRealtimeTranscriptionConfiguration.defaultModel,
         refinementModel: String = "gpt-4o-mini"
     ) {
         self.session = session
@@ -115,10 +115,11 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
         locale: String,
         prompt: String
     ) async throws {
-        let transcription: [String: Any] = [
-            "model": transcriptionModel,
-            "language": locale
-        ]
+        let transcription = OpenAIRealtimeTranscriptionConfiguration.payload(
+            model: transcriptionModel,
+            localeIdentifier: locale,
+            hints: []
+        )
 
         try await sendJSON(
             [

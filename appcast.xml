@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.59</title>
+      <sparkle:version>62</sparkle:version>
+      <sparkle:shortVersionString>0.4.59</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.59</h2>
+        <ul>
+          <li>Upgrades live dictation to GPT Live Transcribe for more accurate transcription while preserving Voce's low-latency streaming experience</li>
+          <li>Uses your personal lexicon as transcription keyword hints to improve names, acronyms, product terms, and unusual spellings</li>
+          <li>Improves transcription context handling for expected languages and real-world audio</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 29 Jul 2026 18:03:37 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.59/Voce-0.4.59.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="3qwipGXjqs7QAe0Ngov9eUkmr9k6yE6yykrGzPHa1vtG/v5ECgmnnI2EmOS0CB9kfFLbJBV7tzHn8vcKqbbgAQ=="
+        length="19258915"
+      />
+    </item>
+    <item>
       <title>Version 0.4.58</title>
       <sparkle:version>61</sparkle:version>
       <sparkle:shortVersionString>0.4.58</sparkle:shortVersionString>
