@@ -7,6 +7,39 @@ import XCTest
 /// validation: dictate a long passage and release the hotkey immediately on
 /// the final word, then confirm the transcript includes it.
 final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
+    func testShippingDefaultUsesLiveTranscribe() {
+        XCTAssertEqual(
+            OpenAIRealtimeTranscriptionConfiguration.defaultModel,
+            "gpt-live-transcribe"
+        )
+    }
+
+    func testLiveTranscribeConfigurationUsesModernContextFields() throws {
+        let configuration = OpenAIRealtimeTranscriptionConfiguration.payload(
+            model: "gpt-live-transcribe",
+            localeIdentifier: "en-US",
+            hints: ["Voce", " AC-42 ", "voce", "invalid\nkeyword", "<invalid>"]
+        )
+
+        XCTAssertEqual(configuration["model"] as? String, "gpt-live-transcribe")
+        XCTAssertEqual(configuration["languages"] as? [String], ["en"])
+        XCTAssertEqual(configuration["keywords"] as? [String], ["Voce", "AC-42"])
+        XCTAssertNil(configuration["language"])
+    }
+
+    func testLegacyRealtimeWhisperConfigurationRemainsUnchanged() throws {
+        let configuration = OpenAIRealtimeTranscriptionConfiguration.payload(
+            model: "gpt-realtime-whisper",
+            localeIdentifier: "en-US",
+            hints: ["Voce"]
+        )
+
+        XCTAssertEqual(configuration["model"] as? String, "gpt-realtime-whisper")
+        XCTAssertEqual(configuration["language"] as? String, "en")
+        XCTAssertNil(configuration["languages"])
+        XCTAssertNil(configuration["keywords"])
+    }
+
     func testRealtimePCMConversionDurationAccountingForCommonBufferSizes() throws {
         let sourceFormat = try XCTUnwrap(AVAudioFormat(
             commonFormat: .pcmFormatFloat32,

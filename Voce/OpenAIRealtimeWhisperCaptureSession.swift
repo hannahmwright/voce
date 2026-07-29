@@ -75,7 +75,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     init(
         session: URLSession = .shared,
         authTokenProvider: @escaping @Sendable () async throws -> String,
-        model: String = "gpt-realtime-whisper",
+        model: String = OpenAIRealtimeTranscriptionConfiguration.defaultModel,
         localeIdentifier: String,
         transcriptionHints: [LexiconEntry],
         onPartialText: @escaping @Sendable (String) -> Void,
@@ -461,10 +461,11 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 
     private func sendSessionUpdate(writer: RealtimeWebSocketWriter) async throws {
-        let transcription: [String: Any] = [
-            "model": model,
-            "language": Self.effectiveLanguageCode(from: localeIdentifier)
-        ]
+        let transcription = OpenAIRealtimeTranscriptionConfiguration.payload(
+            model: model,
+            localeIdentifier: localeIdentifier,
+            hints: transcriptionHints.map(\.preferred)
+        )
         try await writer.sendJSON([
             "type": "session.update",
             "session": [
@@ -608,11 +609,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         guard let audioFile = try? AVAudioFile(forReading: url) else { return 0 }
         let durationSeconds = Double(audioFile.length) / max(audioFile.processingFormat.sampleRate, 1)
         return Int((durationSeconds * 1_000).rounded())
-    }
-
-    private static func effectiveLanguageCode(from localeIdentifier: String) -> String {
-        let components = localeIdentifier.split(separator: "-")
-        return components.first.map(String.init) ?? "en"
     }
 
     fileprivate static func normalizeText(_ text: String) -> String {

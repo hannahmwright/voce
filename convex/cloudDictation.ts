@@ -92,7 +92,7 @@ function transcriptionModel() {
 }
 
 function realtimeTranscriptionModel() {
-  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-realtime-whisper";
+  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-live-transcribe";
 }
 
 function refinementModel() {
@@ -338,6 +338,51 @@ function effectiveLanguageCode(localeIdentifier: string) {
   return languageCode || "en";
 }
 
+function realtimeTranscriptionKeywords(hints: string[]) {
+  const seen = new Set<string>();
+  const keywords: string[] = [];
+
+  for (const hint of hints) {
+    const keyword = hint.trim();
+    if (!keyword || /[<>\r\n]/.test(keyword)) {
+      continue;
+    }
+
+    const deduplicationKey = keyword.toLocaleLowerCase();
+    if (seen.has(deduplicationKey)) {
+      continue;
+    }
+    seen.add(deduplicationKey);
+    keywords.push(keyword);
+    if (keywords.length === 200) {
+      break;
+    }
+  }
+
+  return keywords;
+}
+
+function realtimeTranscriptionConfiguration(
+  model: string,
+  localeIdentifier: string,
+  hints: string[],
+) {
+  const language = effectiveLanguageCode(localeIdentifier);
+  if (model === "gpt-live-transcribe" || model === "gpt-transcribe") {
+    const keywords = realtimeTranscriptionKeywords(hints);
+    return {
+      model,
+      languages: [language],
+      ...(keywords.length > 0 ? { keywords } : {}),
+    };
+  }
+
+  return {
+    model,
+    language,
+  };
+}
+
 export async function runCloudDictationPreflight(localeIdentifier: string) {
   const response = await openAIJSONRequest(
     "/v1/chat/completions",
@@ -420,10 +465,11 @@ export async function createRealtimeTranscriptionSession(args: {
           noise_reduction: {
             type: "near_field",
           },
-          transcription: {
+          transcription: realtimeTranscriptionConfiguration(
             model,
-            language: effectiveLanguageCode(args.localeIdentifier),
-          },
+            args.localeIdentifier,
+            args.hints,
+          ),
           turn_detection: null,
         },
       },

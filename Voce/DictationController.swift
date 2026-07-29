@@ -1543,7 +1543,7 @@ final class DictationController: ObservableObject {
         if let model, !model.isEmpty {
             return model
         }
-        return "gpt-realtime-whisper"
+        return OpenAIRealtimeTranscriptionConfiguration.defaultModel
     }
 
     private func prefetchRealtimeWhisperClientSecretIfNeeded() {

@@ -24,7 +24,8 @@ enum CloudSpeechProviderFactory {
                         throw error
                     }
                 },
-                transcriptionModel: environmentValue("VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL") ?? "gpt-realtime-whisper",
+                transcriptionModel: environmentValue("VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL")
+                    ?? OpenAIRealtimeTranscriptionConfiguration.defaultModel,
                 refinementModel: environmentValue("VOCE_OPENAI_REFINEMENT_MODEL") ?? "gpt-4o-mini"
             )
         }
