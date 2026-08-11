@@ -5,6 +5,7 @@ import VoceKit
 struct GeneralSettingsSection: View {
     @Binding var preferences: AppPreferences
     let launchAtLoginWarning: String
+    let isActive: Bool
     @EnvironmentObject private var updaterController: UpdaterController
     @State private var isTypingSpeedTestVisible = false
     @State private var typingTestMeasuredWPM: Double = 0
@@ -115,7 +116,7 @@ struct GeneralSettingsSection: View {
 
             settingsCard("Typing speed") {
                 VStack(alignment: .leading, spacing: VoceDesign.md) {
-                    if isTypingSpeedTestVisible {
+                    if isTypingSpeedTestVisible, isActive {
                         TypingSpeedTestView(
                             bestWordsPerMinute: $preferences.metricsBestTypingWordsPerMinute,
                             measuredWordsPerMinute: $typingTestMeasuredWPM,
@@ -207,6 +208,11 @@ struct GeneralSettingsSection: View {
                     .font(VoceDesign.captionEmphasis())
                     .foregroundStyle(VoceDesign.textPrimary)
                 }
+            }
+        }
+        .onChange(of: isActive) { _, isActive in
+            if !isActive {
+                isTypingSpeedTestVisible = false
             }
         }
     }
@@ -490,19 +496,28 @@ struct TypingSpeedTestView: View {
         .onChange(of: isTypingFocused) { _, _ in
             startFocusIndicatorAnimation()
         }
-        .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { tick in
-            guard isRunning else { return }
-            now = tick
-            if elapsedSeconds >= Self.durationSeconds {
-                finishTest(at: tick)
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled else { return }
+                guard isRunning else { continue }
+                let tick = Date()
+                now = tick
+                if elapsedSeconds >= Self.durationSeconds {
+                    finishTest(at: tick)
+                }
             }
         }
-        .onReceive(Timer.publish(every: 0.6, on: .main, in: .common).autoconnect()) { _ in
-            guard !isRunning, !hasFinished else {
-                focusIndicatorVisible = true
-                return
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(600))
+                guard !Task.isCancelled else { return }
+                guard !isRunning, !hasFinished else {
+                    focusIndicatorVisible = true
+                    continue
+                }
+                focusIndicatorVisible.toggle()
             }
-            focusIndicatorVisible.toggle()
         }
     }
 

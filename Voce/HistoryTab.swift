@@ -21,6 +21,7 @@ struct HistoryTab: View {
 
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
     @State private var searchQuery: String = ""
     @State private var expandedIDs: Set<UUID> = []
     @State private var hoveredID: UUID?
@@ -111,8 +112,13 @@ struct HistoryTab: View {
             }
         }
         .padding(.vertical, VoceDesign.lg)
-        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
-            currentTime = now
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                currentTime = Date()
+            }
         }
     }
 

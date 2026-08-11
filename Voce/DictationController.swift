@@ -433,6 +433,7 @@ final class DictationController: ObservableObject {
         activeStartTask = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
+        activeRealtimeWhisperSession?.preserveRecoveryCheckpoint()
         activeRealtimeWhisperSession?.cancel()
         activeRealtimeWhisperSession = nil
         if let token = activeMediaToken {
@@ -482,6 +483,7 @@ final class DictationController: ObservableObject {
         await inferLifetimeTrackingStartIfNeeded()
         overlay.prepareWindow()
         hasBootstrapped = true
+        await recoverInterruptedRealtimeDictationIfNeeded()
         scheduleVoceProEntitlementRefresh(immediate: true)
         prefetchRealtimeWhisperClientSecretIfNeeded()
     }
@@ -1480,10 +1482,10 @@ final class DictationController: ObservableObject {
         let localeIdentifier = preferences.dictation.localeIdentifier
         let transcriptionHints = preferences.visibleLexiconEntries
         let resolvedModel = realtimeWhisperTranscriptionModel
-        let authTokenProvider: @Sendable () async throws -> String
+        let authTokenProvider: @Sendable (_ forceRefresh: Bool) async throws -> String
         if usesDirectCloudCredentials {
             let apiKeySource = preferences.dictation.cloud.apiKeySource
-            authTokenProvider = {
+            authTokenProvider = { _ in
                 do {
                     return try CloudProviderCredentialStore.shared.resolveOpenAIAPIKey(
                         source: apiKeySource
@@ -1500,13 +1502,21 @@ final class DictationController: ObservableObject {
             )
             let directFallbackEnabled = canUseDirectCloudOverageFallback
             let fallbackAPIKeySource = preferences.dictation.cloud.apiKeySource
-            authTokenProvider = {
+            authTokenProvider = { forceRefresh in
                 do {
-                    return try await tokenProvider.clientSecret(
-                        localeIdentifier: localeIdentifier,
-                        hints: transcriptionHints,
-                        model: resolvedModel
-                    )
+                    if forceRefresh {
+                        return try await tokenProvider.renewedClientSecret(
+                            localeIdentifier: localeIdentifier,
+                            hints: transcriptionHints,
+                            model: resolvedModel
+                        )
+                    } else {
+                        return try await tokenProvider.clientSecret(
+                            localeIdentifier: localeIdentifier,
+                            hints: transcriptionHints,
+                            model: resolvedModel
+                        )
+                    }
                 } catch CloudDictationError.hostedCloudMinutesExhausted where directFallbackEnabled {
                     await MainActor.run {
                         self.activeCloudUsageMetering = .directOpenAI
@@ -1614,6 +1624,9 @@ final class DictationController: ObservableObject {
         hints: [LexiconEntry],
         model: String
     ) {
+        // This refresh only warms the credential cache for a future WebSocket
+        // handshake. An active realtime session keeps its established socket,
+        // so credential renewal never restarts or interrupts an in-flight dictation.
         realtimeWhisperClientSecretRefreshTask?.cancel()
         realtimeWhisperClientSecretRefreshTask = nil
 
@@ -2015,10 +2028,13 @@ final class DictationController: ObservableObject {
             activeStyleOverride = nil
 
             recordingStateMachine.markTranscriptionFailed()
-            status = streamingFailureStatusMessage(for: error)
-            lastError = error.localizedDescription
-            overlay.hide()
             clipboardRecoveryPrompt.hide()
+            if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
+                status = streamingFailureStatusMessage(for: error)
+                lastError = error.localizedDescription
+                overlay.show(state: .failure(message: error.localizedDescription))
+                dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+            }
             await applyDeferredRebuildIfNeeded()
         }
     }
@@ -2115,7 +2131,13 @@ final class DictationController: ObservableObject {
                 previewSession?.cancel()
                 realtimeSession?.cancel()
                 recordingStateMachine.markTranscriptionFailed()
-                status = "No active recording session."
+                let error = CloudDictationError.providerError("No active recording session.")
+                if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
+                    status = "No active recording session."
+                    lastError = status
+                    overlay.show(state: .failure(message: status))
+                    dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                }
                 return
             }
             beginBackgroundProcessingSession()
@@ -2315,9 +2337,11 @@ final class DictationController: ObservableObject {
                     }
                 }
                 await refreshHistory()
+                realtimeSession?.discardRecoveryCheckpoint()
                 await applyDeferredRebuildIfNeeded()
             } catch {
                 if shouldSuppressEmptyTranscriptError(error, captureDurationMS: captureDurationMS) {
+                    realtimeSession?.discardRecoveryCheckpoint()
                     handleShortSilentCapture()
                     await applyDeferredRebuildIfNeeded()
                     return
@@ -2328,17 +2352,102 @@ final class DictationController: ObservableObject {
                 Self.logger.error(
                     "Streaming transcription failed after \(captureDurationMS, privacy: .public)ms capture: \(error.localizedDescription, privacy: .public)"
                 )
-                if isBackgroundProcessing, isRecording {
-                    restoreActiveRecordingStatus()
-                } else {
-                    status = "Transcription failed"
-                    lastError = error.localizedDescription
-                    overlay.hide()
-                    clipboardRecoveryPrompt.hide()
+                clipboardRecoveryPrompt.hide()
+                if !isRecording {
                     recordingStateMachine.markTranscriptionFailed()
+                }
+                if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
+                    if isRecording {
+                        restoreActiveRecordingStatus()
+                    } else {
+                        status = "Transcription failed"
+                        lastError = error.localizedDescription
+                        overlay.show(state: .failure(message: error.localizedDescription))
+                        dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                    }
                 }
                 await applyDeferredRebuildIfNeeded()
             }
+        }
+    }
+
+    @discardableResult
+    private func recoverRealtimeDictationToClipboard(
+        from session: OpenAIRealtimeWhisperCaptureSession?,
+        error: Error
+    ) async -> Bool {
+        guard let session else { return false }
+        let recoveredText = session.recoveryTranscript()
+        guard !recoveredText.isEmpty else {
+            session.discardRecoveryCheckpoint()
+            return false
+        }
+
+        do {
+            try await clipboardService.setString(recoveredText)
+            session.discardRecoveryCheckpoint()
+            lastTranscript = recoveredText
+            lastError = error.localizedDescription
+            status = "Dictation interrupted. What you said was saved to your clipboard."
+            let message = "\(error.localizedDescription)\n\nWhat you said so far was saved to your clipboard."
+            overlay.show(state: .failure(message: message))
+            finishRecoveryNoticeSoon()
+            return true
+        } catch let clipboardError {
+            session.preserveRecoveryCheckpoint()
+            lastError = "\(error.localizedDescription) Clipboard recovery also failed: \(clipboardError.localizedDescription)"
+            status = "Dictation interrupted. Recovery was saved for the next Voce launch."
+            overlay.show(
+                state: .failure(
+                    message: "\(lastError)\n\nVoce kept a recovery copy and will retry when it next opens."
+                )
+            )
+            finishRecoveryNoticeSoon()
+            return true
+        }
+    }
+
+    private func finishRecoveryNoticeSoon() {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self else { return }
+            if self.isRecording {
+                self.restoreActiveRecordingStatus()
+            } else {
+                self.overlay.hide()
+            }
+        }
+    }
+
+    private func recoverInterruptedRealtimeDictationIfNeeded() async {
+        let recoveries = OpenAIRealtimeWhisperCaptureSession.pendingRecoveryTranscripts()
+        guard !recoveries.isEmpty else { return }
+        let recoveredText = recoveries
+            .map(\.text)
+            .joined(separator: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !recoveredText.isEmpty else {
+            OpenAIRealtimeWhisperCaptureSession.discardPendingRecoveryTranscripts(recoveries)
+            return
+        }
+
+        do {
+            try await clipboardService.setString(recoveredText)
+            OpenAIRealtimeWhisperCaptureSession.discardPendingRecoveryTranscripts(recoveries)
+            lastTranscript = recoveredText
+            lastError = "The previous dictation ended before Voce could finish it."
+            status = "Recovered interrupted dictation to your clipboard."
+            overlay.show(
+                state: .failure(
+                    message: "The previous dictation ended unexpectedly.\n\nWhat Voce captured was recovered to your clipboard."
+                )
+            )
+            dismissOverlaySoon(delayNanoseconds: 8_000_000_000)
+        } catch {
+            lastError = "Voce found an interrupted dictation but could not copy it: \(error.localizedDescription)"
+            status = "Interrupted dictation recovery is still saved."
+            overlay.show(state: .failure(message: lastError))
+            dismissOverlaySoon(delayNanoseconds: 8_000_000_000)
         }
     }
 

@@ -62,6 +62,29 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
         )
     }
 
+    /// Fetches a new client secret even when the cached secret is still valid.
+    /// Long-running dictations use this before opening each rollover socket so
+    /// a new Realtime session never depends on an older session's credential.
+    func renewedClientSecret(
+        localeIdentifier: String,
+        hints: [LexiconEntry],
+        model: String
+    ) async throws -> String {
+        let key = RealtimeTranscriptionClientSecretCache.Key(
+            subscriberEmail: subscriberEmail,
+            localeIdentifier: localeIdentifier,
+            model: model,
+            hints: hints.map(\.preferred)
+        )
+        let secret = try await requestClientSecret(
+            localeIdentifier: localeIdentifier,
+            hints: hints,
+            model: model
+        )
+        await Self.cache.store(secret, for: key)
+        return secret.value
+    }
+
     @discardableResult
     func prefetchClientSecret(
         localeIdentifier: String,
@@ -215,6 +238,14 @@ private actor RealtimeTranscriptionClientSecretCache {
         } catch {
             inFlightRequests[key] = nil
             throw error
+        }
+    }
+
+    func store(_ secret: CachedSecret, for key: Key) {
+        if secret.isFresh(now: Date(), refreshLeadTime: Self.refreshLeadTime) {
+            cachedSecrets[key] = secret
+        } else {
+            cachedSecrets[key] = nil
         }
     }
 }

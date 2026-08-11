@@ -6,6 +6,7 @@ struct HomeTab: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    let isActive: Bool
     let onOpenTapToTalkSettings: () -> Void
     @State private var expandedIDs: Set<UUID> = []
     @State private var hoveredID: UUID?
@@ -57,8 +58,13 @@ struct HomeTab: View {
         .onChange(of: controller.status) { _, newStatus in
             handleStatusToast(newStatus)
         }
-        .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { now in
-            currentTime = now
+        .task(id: isActive) {
+            guard isActive else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                currentTime = Date()
+            }
         }
         .overlay(alignment: .topTrailing) {
             if let copyToastMessage {

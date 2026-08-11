@@ -4,6 +4,7 @@ set -euo pipefail
 MODE="${1:-run}"
 APP_NAME="Voce Dev"
 BUNDLE_ID="io.voceapp.voce.dev"
+TEAM_ID="74L5GC3J4V"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED_DATA="$ROOT_DIR/build/dev-run"
@@ -18,14 +19,22 @@ xcodebuild \
   -scheme VoceDev \
   -configuration Debug \
   -derivedDataPath "$DERIVED_DATA" \
-  build \
-  CODE_SIGN_STYLE=Manual \
-  CODE_SIGN_IDENTITY=-
+  build
 
 test -d "$BUILT_BUNDLE"
 rm -rf "$INSTALL_BUNDLE"
 /usr/bin/ditto "$BUILT_BUNDLE" "$INSTALL_BUNDLE"
 /usr/bin/codesign --verify --deep --strict "$INSTALL_BUNDLE"
+
+SIGNING_INFO="$(/usr/bin/codesign -dvvv "$INSTALL_BUNDLE" 2>&1)"
+if grep -q '^Signature=adhoc$' <<<"$SIGNING_INFO"; then
+  echo "Refusing to install an ad-hoc-signed dev build." >&2
+  exit 1
+fi
+if ! grep -q "^TeamIdentifier=$TEAM_ID$" <<<"$SIGNING_INFO"; then
+  echo "Unexpected signing team for dev build." >&2
+  exit 1
+fi
 
 INSTALLED_BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$INSTALL_BUNDLE/Contents/Info.plist")"
 if [[ "$INSTALLED_BUNDLE_ID" != "$BUNDLE_ID" ]]; then
@@ -38,6 +47,8 @@ open_app() {
 }
 
 case "$MODE" in
+  --install-only|install)
+    ;;
   run)
     open_app
     ;;
@@ -58,7 +69,7 @@ case "$MODE" in
     pgrep -x "$APP_NAME" >/dev/null
     ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [--install-only|run|--debug|--logs|--telemetry|--verify]" >&2
     exit 2
     ;;
 esac

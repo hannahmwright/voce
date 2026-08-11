@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.dismiss) private var dismiss
     private let initialLaunchTarget: SettingsLaunchTarget?
+    private let isActive: Bool
     @Binding private var accessVerificationCode: String
     private let accessVerificationCodeWasSent: Bool
     private let accessAuthIsWorking: Bool
@@ -24,6 +25,7 @@ struct SettingsView: View {
 
     init(
         initialLaunchTarget: SettingsLaunchTarget? = nil,
+        isActive: Bool = true,
         accessVerificationCode: Binding<String> = .constant(""),
         accessVerificationCodeWasSent: Bool = false,
         accessAuthIsWorking: Bool = false,
@@ -33,6 +35,7 @@ struct SettingsView: View {
         onClose: (() -> Void)? = nil
     ) {
         self.initialLaunchTarget = initialLaunchTarget
+        self.isActive = isActive
         _accessVerificationCode = accessVerificationCode
         self.accessVerificationCodeWasSent = accessVerificationCodeWasSent
         self.accessAuthIsWorking = accessAuthIsWorking
@@ -443,7 +446,8 @@ struct SettingsView: View {
         case .general:
             GeneralSettingsSection(
                 preferences: $preferencesDraft,
-                launchAtLoginWarning: controller.launchAtLoginWarning
+                launchAtLoginWarning: controller.launchAtLoginWarning,
+                isActive: isActive
             )
         case .help:
             GuidedWalkthroughSettingsSection(

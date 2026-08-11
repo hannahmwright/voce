@@ -3,6 +3,197 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+enum TemporaryPasteboardDisposition: Sendable, Equatable {
+    case restoreSnapshot
+    case preserveTranscript
+    case keepCurrentClipboard
+}
+
+enum TemporaryPasteboardRestorePolicy {
+    static func disposition(
+        pasteWasAttempted: Bool,
+        stagedTextWasConsumed: Bool,
+        stagedChangeCount: Int,
+        currentChangeCount: Int
+    ) -> TemporaryPasteboardDisposition {
+        guard stagedChangeCount == currentChangeCount else {
+            return .keepCurrentClipboard
+        }
+        guard pasteWasAttempted, stagedTextWasConsumed else {
+            return .preserveTranscript
+        }
+        return .restoreSnapshot
+    }
+}
+
+private struct TemporaryPasteboardValue: Sendable {
+    let type: String
+    let data: Data?
+    let string: String?
+}
+
+private struct TemporaryPasteboardItemSnapshot: Sendable {
+    let values: [TemporaryPasteboardValue]
+}
+
+private struct TemporaryPasteboardSnapshot: Sendable {
+    let items: [TemporaryPasteboardItemSnapshot]
+
+    @MainActor
+    init(pasteboard: NSPasteboard) {
+        items = pasteboard.pasteboardItems?.map { item in
+            TemporaryPasteboardItemSnapshot(
+                values: item.types.compactMap { type in
+                    if let data = item.data(forType: type) {
+                        return TemporaryPasteboardValue(type: type.rawValue, data: data, string: nil)
+                    }
+                    if let string = item.string(forType: type) {
+                        return TemporaryPasteboardValue(type: type.rawValue, data: nil, string: string)
+                    }
+                    return nil
+                }
+            )
+        } ?? []
+    }
+
+    @MainActor
+    func restore(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        guard !items.isEmpty else { return }
+
+        let restoredItems = items.map { snapshot in
+            let item = NSPasteboardItem()
+            for value in snapshot.values {
+                let type = NSPasteboard.PasteboardType(value.type)
+                if let data = value.data {
+                    item.setData(data, forType: type)
+                } else if let string = value.string {
+                    item.setString(string, forType: type)
+                }
+            }
+            return item
+        }
+        pasteboard.writeObjects(restoredItems)
+    }
+}
+
+struct TemporaryPasteboardTransaction: Sendable {
+    private let snapshot: TemporaryPasteboardSnapshot
+    let stagedChangeCount: Int
+
+    @MainActor
+    static func begin(
+        text: String,
+        provider: TemporaryPasteboardDataProvider,
+        pasteboard: NSPasteboard = .general
+    ) -> TemporaryPasteboardTransaction {
+        let snapshot = TemporaryPasteboardSnapshot(pasteboard: pasteboard)
+        pasteboard.clearContents()
+
+        let item = NSPasteboardItem()
+        let providerAccepted = item.setDataProvider(provider, forTypes: [.string])
+        let itemWritten = providerAccepted && pasteboard.writeObjects([item])
+        if !itemWritten {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        }
+
+        return TemporaryPasteboardTransaction(
+            snapshot: snapshot,
+            stagedChangeCount: pasteboard.changeCount
+        )
+    }
+
+    @MainActor
+    func finish(
+        pasteWasAttempted: Bool,
+        stagedTextWasConsumed: Bool,
+        text: String,
+        pasteboard: NSPasteboard = .general
+    ) -> TemporaryPasteboardDisposition {
+        let disposition = TemporaryPasteboardRestorePolicy.disposition(
+            pasteWasAttempted: pasteWasAttempted,
+            stagedTextWasConsumed: stagedTextWasConsumed,
+            stagedChangeCount: stagedChangeCount,
+            currentChangeCount: pasteboard.changeCount
+        )
+
+        switch disposition {
+        case .restoreSnapshot:
+            snapshot.restore(to: pasteboard)
+        case .preserveTranscript:
+            guard pasteboard.changeCount == stagedChangeCount else {
+                return .keepCurrentClipboard
+            }
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+        case .keepCurrentClipboard:
+            break
+        }
+        return disposition
+    }
+}
+
+final class TemporaryPasteboardDataProvider: NSObject, NSPasteboardItemDataProvider, @unchecked Sendable {
+    private let textData: Data
+    private let stateLock = NSLock()
+    private var consumed = false
+
+    init(text: String) {
+        textData = Data(text.utf8)
+    }
+
+    nonisolated func pasteboard(
+        _ pasteboard: NSPasteboard?,
+        item: NSPasteboardItem,
+        provideDataForType type: NSPasteboard.PasteboardType
+    ) {
+        item.setData(textData, forType: type)
+        stateLock.lock()
+        consumed = true
+        stateLock.unlock()
+    }
+
+    func waitUntilConsumed() async -> Bool {
+        for _ in 0..<75 {
+            if wasConsumed() {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return wasConsumed()
+    }
+
+    private func wasConsumed() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return consumed
+    }
+}
+
+private func readFocusedTextValue() -> String? {
+    let systemWide = AXUIElementCreateSystemWide()
+    var focusedRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+        systemWide,
+        kAXFocusedUIElementAttribute as CFString,
+        &focusedRef
+    ) == .success, let focusedRef else {
+        return nil
+    }
+    guard CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else { return nil }
+    let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
+    var valueRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+        element,
+        kAXValueAttribute as CFString,
+        &valueRef
+    ) == .success else {
+        return nil
+    }
+    return valueRef as? String
+}
+
 /// Preferred tap location for synthetic event posting.
 /// Defaults to `.cgAnnotatedSessionEventTap` (avoids traversing other event taps).
 /// Set `MURMUR_SYNTH_EVENT_TAP=hid` in the environment to revert to `.cghidEventTap`.
@@ -49,14 +240,14 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
 
         await Self.activateTargetApp(target)
 
-        let preValue = Self.readFocusedElementValue()
+        let preValue = readFocusedTextValue()
 
         try await typeUnicode(text)
 
         // Only verify if we could read the pre-value (AX permission + element supports it)
         if preValue != nil {
             try await Task.sleep(nanoseconds: 150_000_000) // 150ms
-            let postValue = Self.readFocusedElementValue()
+            let postValue = readFocusedTextValue()
             if let postValue, postValue == preValue {
                 // Positive evidence: value readable and unchanged → insertion failed
                 throw MacInsertionError.attributeUpdateFailed
@@ -89,29 +280,6 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
                 return
             }
         }
-    }
-
-    private static func readFocusedElementValue() -> String? {
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            systemWide,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRef
-        ) == .success, let focusedRef else {
-            return nil
-        }
-        guard CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else { return nil }
-        let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
-        var valueRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            &valueRef
-        ) == .success else {
-            return nil
-        }
-        return valueRef as? String
     }
 
     private func typeUnicode(_ text: String) async throws {
@@ -285,8 +453,16 @@ public enum MacPasteHelper {
             return .skipped(reason: "Could not focus target app before auto-paste.")
         }
 
+        let valueBeforePaste = readFocusedTextValue()
+
         for attempt in 0..<2 {
             if simulateCommandV() {
+                if let valueBeforePaste {
+                    try? await Task.sleep(nanoseconds: 150_000_000)
+                    if let valueAfterPaste = readFocusedTextValue(), valueAfterPaste == valueBeforePaste {
+                        return .skipped(reason: "The focused text field did not accept the pasted transcript.")
+                    }
+                }
                 return .attempted
             }
 

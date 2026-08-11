@@ -141,6 +141,90 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertFalse(completedSend.isCancelled)
     }
 
+    func testRecoveryCheckpointPersistsStreamingDeltasForNextLaunch() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voce-recovery-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let checkpoint = try RealtimeDictationRecoveryCheckpoint(directoryURL: directory)
+        checkpoint.append(delta: "This is ")
+        checkpoint.append(delta: "still recoverable.")
+        XCTAssertEqual(checkpoint.snapshot(), "This is still recoverable.")
+        checkpoint.preserveForNextLaunch()
+
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
+        XCTAssertEqual(recoveries.count, 1)
+        XCTAssertEqual(recoveries.first?.text, "This is still recoverable.")
+
+        RealtimeDictationRecoveryCheckpoint.discardPending(recoveries)
+        XCTAssertTrue(RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory).isEmpty)
+    }
+
+    func testRecoveryCheckpointReplacesDeltasWithCredibleFinalTranscript() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voce-recovery-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let checkpoint = try RealtimeDictationRecoveryCheckpoint(directoryURL: directory)
+        checkpoint.append(delta: "streaming draft")
+        checkpoint.replace(with: "Final transcript.")
+        checkpoint.preserveForNextLaunch()
+
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
+        XCTAssertEqual(recoveries.first?.text, "Final transcript.")
+    }
+
+    func testSubstantiallyTruncatedCompletedTranscriptKeepsCheckpointedPartial() {
+        let partial = Array(repeating: "important sentence", count: 20).joined(separator: " ")
+        let completed = "important sentence"
+
+        XCTAssertEqual(
+            OpenAIRealtimeWhisperCaptureSession.preferredCompletedTranscript(
+                partial: partial,
+                completed: completed
+            ),
+            partial
+        )
+    }
+
+    func testCredibleCompletedTranscriptSupersedesStreamingDraft() {
+        let partial = "This is a streaming draft without punctuation"
+        let completed = "This is a streaming draft, without punctuation."
+
+        XCTAssertEqual(
+            OpenAIRealtimeWhisperCaptureSession.preferredCompletedTranscript(
+                partial: partial,
+                completed: completed
+            ),
+            completed
+        )
+    }
+
+    func testLongFormTranscriptPreservesSegmentOrderAcrossRollover() async {
+        let transcript = RealtimeLongFormTranscript()
+        let first = UUID()
+        let second = UUID()
+
+        await transcript.registerSegment(first)
+        await transcript.registerSegment(second)
+        _ = await transcript.updatePartial(first, transcript: "The first session")
+        _ = await transcript.updatePartial(second, transcript: "continues seamlessly")
+        _ = await transcript.completeSegment(first, transcript: "The first session")
+        let combined = await transcript.completeSegment(
+            second,
+            transcript: "continues seamlessly."
+        )
+
+        XCTAssertEqual(combined, "The first session continues seamlessly.")
+    }
+
+    func testRealtimeConnectionRollsBeforeProviderMaximum() {
+        XCTAssertLessThan(
+            OpenAIRealtimeWhisperCaptureSession.connectionRolloverIntervalSeconds,
+            60 * 60
+        )
+    }
+
     private func fillSineWave(_ buffer: AVAudioPCMBuffer) {
         guard let channel = buffer.floatChannelData?[0] else { return }
         let sampleRate = Float(buffer.format.sampleRate)

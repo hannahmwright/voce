@@ -595,14 +595,13 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             hideContent()
             resetBorderToAccent()
 
-        case .failure:
+        case .failure(let message):
             setBubbleControlsEnabled(false)
             setPreparingIndicatorVisible(false)
             stopTimer()
             stopDotPulse()
             applyDefaultSurfaceAppearance()
-            applyLayout(.compact)
-            hideContent()
+            updateTranscript(message)
             animateAura(color: .systemRed)
             updateBorderColors(for: .systemRed)
         }
