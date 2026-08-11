@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.60</title>
+      <sparkle:version>63</sparkle:version>
+      <sparkle:shortVersionString>0.4.60</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.60</h2>
+        <ul>
+          <li>Reduces idle battery use while keeping global dictation shortcuts responsive</li>
+          <li>Makes long dictations resilient with ongoing recovery checkpoints and seamless realtime session renewal</li>
+          <li>Preserves your existing clipboard after a successful paste, while keeping dictated text on the clipboard if insertion fails or dictation is interrupted</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 11 Aug 2026 00:24:51 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.60/Voce-0.4.60.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="y4Wh3fYaZ5py4oYX9c8FXW5NXvv3HixQgC6kXp2QuyWKfsBxFE8+0HjFlfqJxtaAQn83/JPrUDtwXD3iB0EFDA=="
+        length="19517122"
+      />
+    </item>
+    <item>
       <title>Version 0.4.59</title>
       <sparkle:version>62</sparkle:version>
       <sparkle:shortVersionString>0.4.59</sparkle:shortVersionString>

@@ -14,11 +14,171 @@ struct RealtimePCMConversion {
     let outputFrameCount: Int
 }
 
+enum RealtimeDictationRecoveryError: Error, LocalizedError {
+    case unableToCreateCheckpoint
+
+    var errorDescription: String? {
+        switch self {
+        case .unableToCreateCheckpoint:
+            return "Voce could not create a recovery checkpoint for this dictation."
+        }
+    }
+}
+
+/// A durable, append-only transcript checkpoint for an active realtime
+/// dictation. Deltas are flushed as they arrive so a socket failure or app
+/// termination cannot erase everything the provider has already transcribed.
+final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
+    struct PendingRecovery: Sendable {
+        let url: URL
+        let text: String
+        let modifiedAt: Date
+    }
+
+    private let lock = NSLock()
+    private let url: URL
+    private var handle: FileHandle?
+    private var text = ""
+    private var lastSynchronizationAt = Date.distantPast
+
+    init(
+        directoryURL: URL = RealtimeDictationRecoveryCheckpoint.defaultDirectoryURL()
+    ) throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true
+            )
+            let url = directoryURL
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension("txt")
+            guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
+                throw RealtimeDictationRecoveryError.unableToCreateCheckpoint
+            }
+            self.url = url
+            self.handle = try FileHandle(forWritingTo: url)
+        } catch let error as RealtimeDictationRecoveryError {
+            throw error
+        } catch {
+            throw RealtimeDictationRecoveryError.unableToCreateCheckpoint
+        }
+    }
+
+    func append(delta: String) {
+        guard !delta.isEmpty else { return }
+        lock.withLock {
+            text += delta
+            guard let data = delta.data(using: .utf8), let handle else { return }
+            do {
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                let now = Date()
+                if now.timeIntervalSince(lastSynchronizationAt) >= 1 {
+                    try handle.synchronize()
+                    lastSynchronizationAt = now
+                }
+            } catch {
+                // The in-memory snapshot remains available to the immediate
+                // failure handler even if the durable flush fails.
+            }
+        }
+    }
+
+    func replace(with transcript: String) {
+        lock.withLock {
+            text = transcript
+            guard let data = transcript.data(using: .utf8), let handle else { return }
+            do {
+                try handle.truncate(atOffset: 0)
+                try handle.seek(toOffset: 0)
+                try handle.write(contentsOf: data)
+                try handle.synchronize()
+                lastSynchronizationAt = Date()
+            } catch {
+                // Keep the in-memory final transcript available for recovery.
+            }
+        }
+    }
+
+    func snapshot() -> String {
+        lock.withLock { text }
+    }
+
+    func discard() {
+        let checkpointURL = lock.withLock { () -> URL in
+            try? handle?.close()
+            handle = nil
+            return url
+        }
+        try? FileManager.default.removeItem(at: checkpointURL)
+    }
+
+    func preserveForNextLaunch() {
+        lock.withLock {
+            try? handle?.synchronize()
+            try? handle?.close()
+            handle = nil
+        }
+    }
+
+    static func pendingRecoveries(
+        directoryURL: URL = defaultDirectoryURL()
+    ) -> [PendingRecovery] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return urls.compactMap { url in
+            guard url.pathExtension == "txt",
+                  let text = try? String(contentsOf: url, encoding: .utf8),
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return nil
+            }
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            return PendingRecovery(
+                url: url,
+                text: text,
+                modifiedAt: values?.contentModificationDate ?? .distantPast
+            )
+        }.sorted { $0.modifiedAt < $1.modifiedAt }
+    }
+
+    static func discardPending(_ recoveries: [PendingRecovery]) {
+        for recovery in recoveries {
+            try? FileManager.default.removeItem(at: recovery.url)
+        }
+    }
+
+    static func defaultDirectoryURL() -> URL {
+        let applicationSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.temporaryDirectory
+        let bundleIdentifier = Bundle.main.bundleIdentifier ?? "io.voceapp.voce"
+        return applicationSupport
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
+            .appendingPathComponent("Dictation Recovery", isDirectory: true)
+    }
+
+    deinit {
+        try? handle?.close()
+    }
+}
+
 final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "OpenAIRealtimeWhisperCapture")
+    /// OpenAI currently caps one Realtime session at 60 minutes. Rollover at
+    /// 50 minutes leaves enough time to fetch a new credential and retry the
+    /// handshake without approaching the provider-enforced disconnect.
+    static let connectionRolloverIntervalSeconds: TimeInterval = 50 * 60
 
     private let session: URLSession
-    private let authTokenProvider: @Sendable () async throws -> String
+    private let authTokenProvider: @Sendable (_ forceRefresh: Bool) async throws -> String
     private let model: String
     private let localeIdentifier: String
     private let transcriptionHints: [LexiconEntry]
@@ -32,6 +192,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private var outputURL: URL?
     private var capturedFrameCount: AVAudioFramePosition = 0
     private var captureStartedAt: ContinuousClock.Instant?
+    private var lastAudibleAt: ContinuousClock.Instant?
     private var hasStopped = false
     private var latestWriteError: Error?
     private var socket: URLSessionWebSocketTask?
@@ -40,6 +201,11 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private var receiveTask: Task<Void, Never>?
     private var audioSendContinuation: AsyncStream<Data>.Continuation?
     private var audioSendTask: Task<Void, Never>?
+    private var audioRouter: RealtimeAudioRouter?
+    private var rolloverTask: Task<Void, Never>?
+    private var activeSegmentID: UUID?
+    private let longFormTranscript = RealtimeLongFormTranscript()
+    private var recoveryCheckpoint: RealtimeDictationRecoveryCheckpoint?
 
     // MARK: Diagnostics
     // This is intentionally narrow realtime instrumentation. It does not
@@ -74,7 +240,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
     init(
         session: URLSession = .shared,
-        authTokenProvider: @escaping @Sendable () async throws -> String,
+        authTokenProvider: @escaping @Sendable (_ forceRefresh: Bool) async throws -> String,
         model: String = OpenAIRealtimeTranscriptionConfiguration.defaultModel,
         localeIdentifier: String,
         transcriptionHints: [LexiconEntry],
@@ -93,11 +259,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 
     func start() async throws {
+        await longFormTranscript.reset()
         stateLock.withLock {
             hasStopped = false
             latestWriteError = nil
             capturedFrameCount = 0
             captureStartedAt = nil
+            lastAudibleAt = nil
             self.diagSessionID = UUID().uuidString
             diagStartAt = ContinuousClock().now
             diagFirstBufferLogged = false
@@ -115,11 +283,16 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
         let outputURL = Self.makeOutputURL()
+        let recoveryCheckpoint = try RealtimeDictationRecoveryCheckpoint()
+        stateLock.withLock {
+            self.recoveryCheckpoint = recoveryCheckpoint
+        }
 
         let audioFile: AVAudioFile
         do {
             audioFile = try AVAudioFile(forWriting: outputURL, settings: inputFormat.settings)
         } catch {
+            discardRecoveryCheckpoint()
             throw AppleSpeechPreviewError.failedToCreateOutputFile
         }
 
@@ -148,7 +321,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
             }
 
-            self.onAudioLevel(Self.normalizedAudioLevel(from: buffer))
+            let audioLevel = Self.normalizedAudioLevel(from: buffer)
+            self.onAudioLevel(audioLevel)
+            if audioLevel >= 0.08 {
+                self.stateLock.withLock {
+                    self.lastAudibleAt = ContinuousClock().now
+                }
+            }
             let isFirstBuffer = self.stateLock.withLock { () -> Bool in
                 guard !self.diagFirstBufferLogged else { return false }
                 self.diagFirstBufferLogged = true
@@ -181,48 +360,29 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         audioEngine = engine
         stateLock.withLock {
             captureStartedAt = ContinuousClock().now
+            lastAudibleAt = captureStartedAt
         }
         Self.logger.notice(
             "RealtimeDiag: engine started +\(self.diagElapsedMS(), privacy: .public)ms input=\(inputFormat.sampleRate, privacy: .public)Hz"
         )
 
-        let socket: URLSessionWebSocketTask
+        let connection: RealtimeConnection
         do {
-            socket = try await makeSocket()
+            connection = try await openConnection(forceCredentialRefresh: false)
         } catch {
             cleanupAfterStartFailure(socket: nil, inputNode: inputNode)
             throw error
         }
         Self.logger.notice("RealtimeDiag: socket created (token fetched) +\(self.diagElapsedMS(), privacy: .public)ms")
-        let writer = RealtimeWebSocketWriter(socket: socket)
-        let accumulator = RealtimeTranscriptAccumulator()
-        let sessionReadiness = RealtimeSessionReadiness()
-        self.socket = socket
-        self.socketWriter = writer
-        self.transcriptAccumulator = accumulator
-
-        socket.resume()
-        receiveTask = Task { [weak self, socket, accumulator, sessionReadiness] in
-            do {
-                try await self?.receiveEvents(
-                    from: socket,
-                    accumulator: accumulator,
-                    sessionReadiness: sessionReadiness
-                )
-            } catch {
-                await sessionReadiness.fail(error)
-                await accumulator.fail(error)
-                self?.recordTerminalError(error)
-            }
+        self.socket = connection.socket
+        self.socketWriter = connection.writer
+        self.transcriptAccumulator = connection.accumulator
+        self.receiveTask = connection.receiveTask
+        stateLock.withLock {
+            self.activeSegmentID = connection.segmentID
         }
-
-        do {
-            try await sendSessionUpdate(writer: writer)
-            try await sessionReadiness.waitUntilReady(timeoutSeconds: 5)
-        } catch {
-            cleanupAfterStartFailure(socket: socket, inputNode: inputNode)
-            throw error
-        }
+        let audioRouter = RealtimeAudioRouter(writer: connection.writer)
+        self.audioRouter = audioRouter
         Self.logger.notice("RealtimeDiag: session ready, sender starting +\(self.diagElapsedMS(), privacy: .public)ms")
         let (bufferedChunks, bufferedBytes, bufferedOutputFrames) = stateLock.withLock {
             (diagYieldedChunks, diagYieldedBytes, diagOutputFrames)
@@ -231,11 +391,11 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             "RealtimeDiag: buffered before sender chunks=\(bufferedChunks, privacy: .public) bytes=\(bufferedBytes, privacy: .public) outputFrames=\(bufferedOutputFrames, privacy: .public) (~\(Self.diagAudioSeconds(fromOutputFrames: bufferedOutputFrames), format: .fixed(precision: 1))s audio)"
         )
 
-        audioSendTask = Task { [weak self, writer] in
+        audioSendTask = Task { [weak self, audioRouter] in
             var isFirstAppend = true
             for await pcmData in sendStream {
                 do {
-                    try await writer.appendAudio(pcmData)
+                    try await audioRouter.appendAudio(pcmData)
                     if let self {
                         let (chunks, bytes) = self.stateLock.withLock { () -> (Int, Int) in
                             self.diagAppendedChunks += 1
@@ -262,10 +422,14 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 )
             }
         }
+        scheduleConnectionRollover()
     }
 
     func stop() async throws -> OpenAIRealtimeWhisperStopResult {
         Self.logger.notice("RealtimeDiag: stop initiated +\(self.diagElapsedMS(), privacy: .public)ms")
+        let pendingRollover = rolloverTask
+        rolloverTask = nil
+        pendingRollover?.cancel()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
@@ -283,6 +447,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             let outputURL = self.outputURL
             audioFile = nil
             captureStartedAt = nil
+            lastAudibleAt = nil
             return (outputURL, wallDurationSeconds)
         }
 
@@ -309,6 +474,9 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 throw error
             }
         }
+        // If a rollover was already between handshakes, let that atomic swap
+        // settle before selecting the connection that receives the final commit.
+        await pendingRollover?.value
 
         if let latestWriteError {
             cleanupOutputFile(at: outputURL)
@@ -318,7 +486,9 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             throw AppleSpeechPreviewError.missingOutputFile
         }
 
-        guard let writer = socketWriter, let accumulator = transcriptAccumulator else {
+        guard let writer = socketWriter,
+              let accumulator = transcriptAccumulator,
+              let activeSegmentID else {
             cleanupOutputFile(at: outputURL)
             throw CloudDictationError.invalidResponse
         }
@@ -331,12 +501,20 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         )
         try await writer.commit()
         Self.logger.notice("RealtimeDiag: commit sent +\(self.diagElapsedMS(), privacy: .public)ms")
-        let transcript = try await accumulator.waitForFinal(timeoutSeconds: 90)
+        let activeSegmentTranscript = try await accumulator.waitForFinal(timeoutSeconds: 90)
+        let transcript = await longFormTranscript.completeSegment(
+            activeSegmentID,
+            transcript: activeSegmentTranscript
+        )
+        stateLock.withLock { recoveryCheckpoint }?.replace(with: transcript)
         Self.logger.notice(
             "RealtimeDiag: final transcript received +\(self.diagElapsedMS(), privacy: .public)ms chars=\(transcript.count, privacy: .public) preview=\"\(Self.diagPreview(transcript), privacy: .public)\""
         )
         socket?.cancel(with: .normalClosure, reason: nil)
         receiveTask?.cancel()
+        stateLock.withLock {
+            self.activeSegmentID = nil
+        }
 
         let captureDurationMS = Self.captureDurationMS(for: outputURL)
         let wallDurationDescription = wallDurationSeconds.map { "\($0.formatted(.number.precision(.fractionLength(2))))s" } ?? "unknown"
@@ -362,11 +540,15 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
+        rolloverTask?.cancel()
+        rolloverTask = nil
         socket?.cancel(with: .goingAway, reason: nil)
         receiveTask?.cancel()
         audioSendTask?.cancel()
         audioSendTask = nil
+        audioRouter = nil
         stateLock.withLock {
+            activeSegmentID = nil
             audioSendContinuation?.finish()
             audioSendContinuation = nil
             audioFile = nil
@@ -374,6 +556,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             latestWriteError = nil
             capturedFrameCount = 0
             captureStartedAt = nil
+            lastAudibleAt = nil
         }
         cleanupOutputFile(at: outputURL)
     }
@@ -398,6 +581,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         receiveTask = nil
         socketWriter = nil
         transcriptAccumulator = nil
+        audioRouter = nil
+        stateLock.withLock {
+            activeSegmentID = nil
+        }
     }
 
     /// Waits for `task` to finish, returning `false` if it does not within the
@@ -432,9 +619,15 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         receiveTask = nil
         audioSendTask?.cancel()
         audioSendTask = nil
+        rolloverTask?.cancel()
+        rolloverTask = nil
         self.socket = nil
         socketWriter = nil
         transcriptAccumulator = nil
+        audioRouter = nil
+        stateLock.withLock {
+            activeSegmentID = nil
+        }
         let staleOutputURL = stateLock.withLock { () -> URL? in
             audioSendContinuation?.finish()
             audioSendContinuation = nil
@@ -444,9 +637,220 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             return url
         }
         cleanupOutputFile(at: staleOutputURL)
+        discardRecoveryCheckpoint()
     }
 
-    private func makeSocket() async throws -> URLSessionWebSocketTask {
+    private struct RealtimeConnection {
+        let segmentID: UUID
+        let socket: URLSessionWebSocketTask
+        let writer: RealtimeWebSocketWriter
+        let accumulator: RealtimeTranscriptAccumulator
+        let receiveTask: Task<Void, Never>
+    }
+
+    private func openConnection(
+        forceCredentialRefresh: Bool
+    ) async throws -> RealtimeConnection {
+        let segmentID = UUID()
+        await longFormTranscript.registerSegment(segmentID)
+        let socket: URLSessionWebSocketTask
+        do {
+            socket = try await makeSocket(forceCredentialRefresh: forceCredentialRefresh)
+        } catch {
+            await longFormTranscript.removeSegment(segmentID)
+            throw error
+        }
+        let writer = RealtimeWebSocketWriter(socket: socket)
+        let accumulator = RealtimeTranscriptAccumulator()
+        let sessionReadiness = RealtimeSessionReadiness()
+
+        socket.resume()
+        let receiveTask = Task { [weak self, socket, accumulator, sessionReadiness] in
+            do {
+                try await self?.receiveEvents(
+                    from: socket,
+                    segmentID: segmentID,
+                    accumulator: accumulator,
+                    sessionReadiness: sessionReadiness
+                )
+            } catch {
+                await sessionReadiness.fail(error)
+                await accumulator.fail(error)
+                guard !Task.isCancelled, let self else { return }
+                let isActiveConnection = self.stateLock.withLock {
+                    !self.hasStopped && self.activeSegmentID == segmentID
+                }
+                if isActiveConnection {
+                    self.recordTerminalError(error)
+                }
+            }
+        }
+
+        do {
+            try await sendSessionUpdate(writer: writer)
+            try await sessionReadiness.waitUntilReady(timeoutSeconds: 5)
+            return RealtimeConnection(
+                segmentID: segmentID,
+                socket: socket,
+                writer: writer,
+                accumulator: accumulator,
+                receiveTask: receiveTask
+            )
+        } catch {
+            receiveTask.cancel()
+            socket.cancel(with: .goingAway, reason: nil)
+            await longFormTranscript.removeSegment(segmentID)
+            throw error
+        }
+    }
+
+    private func scheduleConnectionRollover() {
+        rolloverTask?.cancel()
+        rolloverTask = Task { [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(Self.connectionRolloverIntervalSeconds * 1_000_000_000)
+            )
+            guard !Task.isCancelled else { return }
+            await self?.rolloverConnectionWithRetry()
+        }
+    }
+
+    private func rolloverConnectionWithRetry() async {
+        var lastError: Error?
+        for attempt in 1...12 {
+            guard !Task.isCancelled,
+                  stateLock.withLock({ !hasStopped }) else { return }
+            do {
+                try await rolloverConnection()
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                lastError = error
+                Self.logger.error(
+                    "Realtime connection rollover attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
+                )
+                if attempt < 12 {
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                }
+            }
+        }
+        if let lastError,
+           !Task.isCancelled,
+           stateLock.withLock({ !hasStopped }) {
+            recordTerminalError(lastError)
+        }
+    }
+
+    private func rolloverConnection() async throws {
+        guard let oldSocket = socket,
+              let oldWriter = socketWriter,
+              let oldAccumulator = transcriptAccumulator,
+              let oldReceiveTask = receiveTask,
+              let oldSegmentID = activeSegmentID,
+              let audioRouter else {
+            throw CloudDictationError.invalidResponse
+        }
+
+        let newConnection = try await openConnection(forceCredentialRefresh: true)
+        guard !Task.isCancelled,
+              stateLock.withLock({ !hasStopped }) else {
+            newConnection.receiveTask.cancel()
+            newConnection.socket.cancel(with: .goingAway, reason: nil)
+            await longFormTranscript.removeSegment(newConnection.segmentID)
+            throw CancellationError()
+        }
+
+        // Prefer a natural speech boundary so the provider never has to split
+        // one spoken word across two transcription sessions. Continuous speech
+        // still rolls after the bounded wait, well before OpenAI's 60-minute cap.
+        do {
+            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 3 * 60)
+        } catch {
+            newConnection.receiveTask.cancel()
+            newConnection.socket.cancel(with: .goingAway, reason: nil)
+            await longFormTranscript.removeSegment(newConnection.segmentID)
+            throw error
+        }
+
+        // Audio keeps flowing to the old socket while the new credential and
+        // handshake are prepared. The actor swap is ordered between append
+        // calls, so no captured PCM chunk is dropped at the boundary.
+        await audioRouter.replaceWriter(with: newConnection.writer)
+        self.socket = newConnection.socket
+        self.socketWriter = newConnection.writer
+        self.transcriptAccumulator = newConnection.accumulator
+        self.receiveTask = newConnection.receiveTask
+        stateLock.withLock {
+            activeSegmentID = newConnection.segmentID
+        }
+
+        do {
+            try await oldWriter.commit()
+            let segmentTranscript = try await oldAccumulator.waitForFinal(timeoutSeconds: 90)
+            let combined = await longFormTranscript.completeSegment(
+                oldSegmentID,
+                transcript: segmentTranscript
+            )
+            stateLock.withLock { recoveryCheckpoint }?.replace(with: combined)
+        } catch {
+            // The streamed deltas are already durable. If finalization of the
+            // retired segment fails, freeze its best partial text and keep the
+            // new socket recording instead of losing the entire dictation.
+            let partial = await oldAccumulator.snapshot()
+            let combined = await longFormTranscript.completeSegment(
+                oldSegmentID,
+                transcript: partial
+            )
+            stateLock.withLock { recoveryCheckpoint }?.replace(with: combined)
+            Self.logger.error(
+                "Retired realtime segment finalized from checkpoint after rollover error: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+
+        oldReceiveTask.cancel()
+        oldSocket.cancel(with: .normalClosure, reason: nil)
+        Self.logger.notice("Realtime connection rolled over without stopping microphone capture")
+
+        if !Task.isCancelled,
+           stateLock.withLock({ !hasStopped }) {
+            scheduleConnectionRollover()
+        }
+    }
+
+    private func waitForQuietRolloverBoundary(
+        maximumWaitSeconds: TimeInterval
+    ) async throws {
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        while true {
+            guard !Task.isCancelled,
+                  stateLock.withLock({ !hasStopped }) else {
+                throw CancellationError()
+            }
+            let isQuiet = stateLock.withLock { () -> Bool in
+                guard let lastAudibleAt else { return true }
+                let quietDuration = lastAudibleAt.duration(to: clock.now)
+                let quietSeconds = Double(quietDuration.components.seconds)
+                    + Double(quietDuration.components.attoseconds) / 1_000_000_000_000_000_000
+                return quietSeconds >= 0.45
+            }
+            if isQuiet {
+                return
+            }
+            let elapsed = startedAt.duration(to: clock.now)
+            let elapsedSeconds = Double(elapsed.components.seconds)
+                + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+            if elapsedSeconds >= maximumWaitSeconds {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+    }
+
+    private func makeSocket(
+        forceCredentialRefresh: Bool
+    ) async throws -> URLSessionWebSocketTask {
         var components = URLComponents(string: "wss://api.openai.com/v1/realtime")!
         components.queryItems = [
             URLQueryItem(name: "intent", value: "transcription")
@@ -456,7 +860,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 90
-        request.setValue("Bearer \(try await authTokenProvider())", forHTTPHeaderField: "Authorization")
+        request.setValue(
+            "Bearer \(try await authTokenProvider(forceCredentialRefresh))",
+            forHTTPHeaderField: "Authorization"
+        )
         return session.webSocketTask(with: request)
     }
 
@@ -490,6 +897,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
     private func receiveEvents(
         from socket: URLSessionWebSocketTask,
+        segmentID: UUID,
         accumulator: RealtimeTranscriptAccumulator,
         sessionReadiness: RealtimeSessionReadiness
     ) async throws {
@@ -548,13 +956,18 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                     Self.logger.notice("RealtimeDiag: first transcript delta +\(self.diagElapsedMS(), privacy: .public)ms")
                 }
                 let partial = await accumulator.appendDelta(delta)
+                stateLock.withLock { recoveryCheckpoint }?.append(delta: delta)
+                let combinedPartial = await longFormTranscript.updatePartial(
+                    segmentID,
+                    transcript: partial
+                )
                 if deltaCount <= 12 || deltaCount.isMultiple(of: 50) {
                     Self.logger.notice(
                         "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partial.count, privacy: .public) delta=\"\(Self.diagPreview(delta), privacy: .public)\""
                     )
                 }
-                if !partial.isEmpty {
-                    onPartialText(partial)
+                if !combinedPartial.isEmpty {
+                    onPartialText(combinedPartial)
                 }
             }
             if type == "conversation.item.input_audio_transcription.completed",
@@ -565,10 +978,15 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 )
                 if !firstCompletedDelivered {
                     firstCompletedDelivered = true
-                    let finalText = Self.normalizeText(transcript)
-                    await accumulator.complete(finalText)
-                    if !finalText.isEmpty {
-                        onPartialText(finalText)
+                    let completedText = Self.normalizeText(transcript)
+                    let finalText = await accumulator.complete(completedText)
+                    let combinedTranscript = await longFormTranscript.completeSegment(
+                        segmentID,
+                        transcript: finalText
+                    )
+                    stateLock.withLock { recoveryCheckpoint }?.replace(with: combinedTranscript)
+                    if !combinedTranscript.isEmpty {
+                        onPartialText(combinedTranscript)
                     }
                     Self.logger.notice(
                         "RealtimeDiag: completed event #\(completedCount, privacy: .public) delivered to accumulator; continuing receive loop for diagnostics"
@@ -599,6 +1017,37 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
+    func recoveryTranscript() -> String {
+        stateLock.withLock { recoveryCheckpoint }?.snapshot()
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    func discardRecoveryCheckpoint() {
+        let checkpoint = stateLock.withLock { () -> RealtimeDictationRecoveryCheckpoint? in
+            defer { recoveryCheckpoint = nil }
+            return recoveryCheckpoint
+        }
+        checkpoint?.discard()
+    }
+
+    func preserveRecoveryCheckpoint() {
+        let checkpoint = stateLock.withLock { () -> RealtimeDictationRecoveryCheckpoint? in
+            defer { recoveryCheckpoint = nil }
+            return recoveryCheckpoint
+        }
+        checkpoint?.preserveForNextLaunch()
+    }
+
+    static func pendingRecoveryTranscripts() -> [RealtimeDictationRecoveryCheckpoint.PendingRecovery] {
+        RealtimeDictationRecoveryCheckpoint.pendingRecoveries()
+    }
+
+    static func discardPendingRecoveryTranscripts(
+        _ recoveries: [RealtimeDictationRecoveryCheckpoint.PendingRecovery]
+    ) {
+        RealtimeDictationRecoveryCheckpoint.discardPending(recoveries)
+    }
+
     private static func makeOutputURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("voce-realtime-whisper-\(UUID().uuidString)")
@@ -616,6 +1065,23 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A completed event normally supersedes streaming deltas, but providers
+    /// can occasionally return a visibly truncated completion for a long turn.
+    /// Keep the partial stream when the completion would discard a substantial
+    /// portion of speech the user already saw and Voce already checkpointed.
+    static func preferredCompletedTranscript(partial: String, completed: String) -> String {
+        let normalizedPartial = normalizeText(partial)
+        let normalizedCompleted = normalizeText(completed)
+        guard !normalizedPartial.isEmpty else { return normalizedCompleted }
+        guard !normalizedCompleted.isEmpty else { return normalizedPartial }
+
+        let minimumCredibleCompletedLength = Int(Double(normalizedPartial.count) * 0.75)
+        if normalizedCompleted.count < minimumCredibleCompletedLength {
+            return normalizedPartial
+        }
+        return normalizedCompleted
     }
 
     private static func realtimeItemID(from payload: [String: Any]) -> String {
@@ -825,6 +1291,83 @@ private final class RealtimeCaptureConverterInputProvider: @unchecked Sendable {
     }
 }
 
+private actor RealtimeAudioRouter {
+    private var writer: RealtimeWebSocketWriter
+
+    init(writer: RealtimeWebSocketWriter) {
+        self.writer = writer
+    }
+
+    func appendAudio(_ data: Data) async throws {
+        try await writer.appendAudio(data)
+    }
+
+    func replaceWriter(with writer: RealtimeWebSocketWriter) {
+        self.writer = writer
+    }
+}
+
+actor RealtimeLongFormTranscript {
+    private struct Segment {
+        var partial = ""
+        var completed: String?
+    }
+
+    private var order: [UUID] = []
+    private var segments: [UUID: Segment] = [:]
+
+    func reset() {
+        order.removeAll(keepingCapacity: true)
+        segments.removeAll(keepingCapacity: true)
+    }
+
+    func registerSegment(_ id: UUID) {
+        guard segments[id] == nil else { return }
+        order.append(id)
+        segments[id] = Segment()
+    }
+
+    func removeSegment(_ id: UUID) {
+        order.removeAll { $0 == id }
+        segments[id] = nil
+    }
+
+    func updatePartial(_ id: UUID, transcript: String) -> String {
+        guard var segment = segments[id], segment.completed == nil else {
+            return renderedTranscript()
+        }
+        segment.partial = transcript
+        segments[id] = segment
+        return renderedTranscript()
+    }
+
+    func completeSegment(_ id: UUID, transcript: String) -> String {
+        guard var segment = segments[id] else {
+            return renderedTranscript()
+        }
+        if segment.completed == nil {
+            let completed = OpenAIRealtimeWhisperCaptureSession.preferredCompletedTranscript(
+                partial: segment.partial,
+                completed: transcript
+            )
+            segment.completed = completed
+            segment.partial = completed
+            segments[id] = segment
+        }
+        return renderedTranscript()
+    }
+
+    func renderedTranscript() -> String {
+        let transcripts = order.compactMap { id -> String? in
+            guard let segment = segments[id] else { return nil }
+            let text = segment.completed ?? segment.partial
+            let normalized = OpenAIRealtimeWhisperCaptureSession.normalizeText(text)
+            return normalized.isEmpty ? nil : normalized
+        }
+        return transcripts.joined(separator: " ")
+    }
+}
+
 private actor RealtimeWebSocketWriter {
     private let socket: URLSessionWebSocketTask
 
@@ -862,11 +1405,24 @@ private actor RealtimeTranscriptAccumulator {
         return OpenAIRealtimeWhisperCaptureSession.normalizeText(partialText)
     }
 
-    func complete(_ transcript: String) {
-        guard result == nil else { return }
-        result = .success(transcript)
-        continuation?.resume(returning: .success(transcript))
+    @discardableResult
+    func complete(_ transcript: String) -> String {
+        if let result {
+            switch result {
+            case .success(let completed):
+                return completed
+            case .failure:
+                return transcript
+            }
+        }
+        let finalTranscript = OpenAIRealtimeWhisperCaptureSession.preferredCompletedTranscript(
+            partial: partialText,
+            completed: transcript
+        )
+        result = .success(finalTranscript)
+        continuation?.resume(returning: .success(finalTranscript))
         continuation = nil
+        return finalTranscript
     }
 
     func fail(_ error: Error) {
@@ -874,6 +1430,10 @@ private actor RealtimeTranscriptAccumulator {
         result = .failure(error)
         continuation?.resume(returning: .failure(error))
         continuation = nil
+    }
+
+    func snapshot() -> String {
+        OpenAIRealtimeWhisperCaptureSession.normalizeText(partialText)
     }
 
     func waitForFinal(timeoutSeconds: TimeInterval) async throws -> String {

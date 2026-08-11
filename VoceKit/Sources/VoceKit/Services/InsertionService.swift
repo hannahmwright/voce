@@ -195,12 +195,19 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     }
 
     public func insertAndReturnOutcome(text: String, target: AppContext) async throws -> AutoPasteOutcome {
-        try await clipboard.setString(text)
-
         guard let autoPaste else {
+            try await clipboard.setString(text)
             return .skipped(reason: "Auto-paste callback not configured.")
         }
 
+        if let temporaryClipboard = clipboard as? any TemporaryClipboardPasteService {
+            return try await temporaryClipboard.performTemporaryPaste(text: text) {
+                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
+                return await autoPaste(target)
+            }
+        }
+
+        try await clipboard.setString(text)
         try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
         return await autoPaste(target)
     }
@@ -209,12 +216,57 @@ public struct ClipboardInsertionTransport: InsertionTransport {
 #if os(macOS)
 import AppKit
 
-public actor MacClipboardService: ClipboardService {
+public actor MacClipboardService: TemporaryClipboardPasteService {
     public init() {}
 
     public func setString(_ text: String) async throws {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        await MainActor.run {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+    }
+
+    public func performTemporaryPaste(
+        text: String,
+        paste: @escaping @Sendable () async -> AutoPasteOutcome
+    ) async throws -> AutoPasteOutcome {
+        let provider = TemporaryPasteboardDataProvider(text: text)
+        let transaction = await MainActor.run {
+            TemporaryPasteboardTransaction.begin(text: text, provider: provider)
+        }
+
+        let pasteOutcome = await paste()
+        let didConsumeStagedText: Bool
+        switch pasteOutcome {
+        case .attempted:
+            didConsumeStagedText = await provider.waitUntilConsumed()
+        case .skipped:
+            didConsumeStagedText = false
+        }
+
+        let disposition = await MainActor.run {
+            transaction.finish(
+                pasteWasAttempted: pasteOutcome == .attempted,
+                stagedTextWasConsumed: didConsumeStagedText,
+                text: text
+            )
+        }
+
+        if disposition == .keepCurrentClipboard {
+            let baseReason = pasteOutcome.skippedReason
+                ?? "Voce could not confirm that the target accepted the paste."
+            return .skipped(
+                reason: "\(baseReason) The clipboard changed during insertion, so Voce did not overwrite the newer clipboard contents."
+            )
+        }
+
+        guard pasteOutcome == .attempted, !didConsumeStagedText else {
+            return pasteOutcome
+        }
+
+        return .skipped(
+            reason: "Voce could not confirm that the target accepted the paste. The transcript was kept on your clipboard."
+        )
     }
 }
 #endif

@@ -40,6 +40,7 @@ struct ContentView: View {
     @State private var accessPromptCompleted = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         GeometryReader { proxy in
@@ -215,7 +216,7 @@ struct ContentView: View {
             VoceDesign.contentBackground
 
             ZStack {
-                HomeTab {
+                HomeTab(isActive: selectedTab == .home && scenePhase == .active) {
                     openSettings(.handsFreeGlobalHotkey)
                 }
                 .tabContentVisibility(selectedTab == .home)
@@ -237,6 +238,7 @@ struct ContentView: View {
 
                 SettingsView(
                     initialLaunchTarget: settingsLaunchTarget,
+                    isActive: selectedTab == .settings && scenePhase == .active,
                     accessVerificationCode: $accessVerificationCodeDraft,
                     accessVerificationCodeWasSent: accessVerificationCodeWasSent,
                     accessAuthIsWorking: accessAuthIsWorking,

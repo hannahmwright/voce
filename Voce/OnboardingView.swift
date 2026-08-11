@@ -4,6 +4,7 @@ import VoceKit
 
 struct OnboardingView: View {
     @EnvironmentObject private var controller: DictationController
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var practicePadFocused: Bool
     @FocusState private var typingTestFocused: Bool
@@ -156,9 +157,13 @@ struct OnboardingView: View {
 
             appendTranscriptToPracticePad(transcript)
         }
-        .onReceive(Timer.publish(every: 0.2, on: .main, in: .common).autoconnect()) { now in
-            guard currentStep == .typingSpeed else { return }
-            typingTestNow = now
+        .task(id: typingClockIsActive) {
+            guard typingClockIsActive else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled else { return }
+                typingTestNow = Date()
+            }
         }
         .onAppear {
             installWalkthroughShortcutMonitorIfNeeded()
@@ -166,6 +171,10 @@ struct OnboardingView: View {
         .onDisappear {
             removeWalkthroughShortcutMonitor()
         }
+    }
+
+    private var typingClockIsActive: Bool {
+        scenePhase == .active && currentStep == .typingSpeed
     }
 
     private var progressBar: some View {

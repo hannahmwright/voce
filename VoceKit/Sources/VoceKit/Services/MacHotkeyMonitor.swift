@@ -1,6 +1,186 @@
 #if os(macOS)
 import AppKit
+import Carbon
 import os
+
+struct IdleKeyCodeHotkeyRegistration: Equatable {
+    enum Action: UInt32, Equatable {
+        case handsFreeToggle = 1
+        case selectionCorrection = 2
+        case selectionSnippet = 3
+    }
+
+    let action: Action
+    let keyCode: UInt16
+    let modifiers: [VoceKeyboardShortcut.Modifier]
+}
+
+extension IdleKeyCodeHotkeyRegistration {
+    static func plan(
+        globalToggleHotkey: HandsFreeToggleHotkey?,
+        selectionCorrectionHotkey: VoceKeyboardShortcut,
+        selectionSnippetHotkey: VoceKeyboardShortcut,
+        hasSelectionCorrectionHandler: Bool,
+        hasSelectionSnippetHandler: Bool
+    ) -> [Self] {
+        var registrations: [Self] = []
+
+        if let globalToggleHotkey,
+           case .keyCode(let keyCode) = globalToggleHotkey.hotkey {
+            registrations.append(
+                .init(action: .handsFreeToggle, keyCode: keyCode, modifiers: [])
+            )
+        }
+
+        if hasSelectionCorrectionHandler, selectionCorrectionHotkey.isBound {
+            registrations.append(
+                .init(
+                    action: .selectionCorrection,
+                    keyCode: selectionCorrectionHotkey.keyCode,
+                    modifiers: selectionCorrectionHotkey.modifiers
+                )
+            )
+        }
+
+        if hasSelectionSnippetHandler, selectionSnippetHotkey.isBound {
+            registrations.append(
+                .init(
+                    action: .selectionSnippet,
+                    keyCode: selectionSnippetHotkey.keyCode,
+                    modifiers: selectionSnippetHotkey.modifiers
+                )
+            )
+        }
+
+        return registrations
+    }
+}
+
+@MainActor
+private final class CarbonHotkeyRegistrar {
+    private nonisolated static let signature: OSType = 0x564F4345 // "VOCE"
+
+    private var eventHandler: EventHandlerRef?
+    private var hotkeyRefs: [IdleKeyCodeHotkeyRegistration.Action: EventHotKeyRef] = [:]
+    private var callbacks: [IdleKeyCodeHotkeyRegistration.Action: () -> Void] = [:]
+
+    init() {
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        var installedHandler: EventHandlerRef?
+        let status = InstallEventHandler(
+            GetApplicationEventTarget(),
+            Self.eventHandlerCallback,
+            1,
+            &eventType,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &installedHandler
+        )
+        if status == noErr {
+            eventHandler = installedHandler
+        } else {
+            MacHotkeyMonitor.logger.error("Could not install Carbon hotkey handler: OSStatus \(status)")
+        }
+    }
+
+    func unregisterAll() {
+        for hotkeyRef in hotkeyRefs.values {
+            UnregisterEventHotKey(hotkeyRef)
+        }
+        hotkeyRefs.removeAll()
+        callbacks.removeAll()
+    }
+
+    func shutdown() {
+        unregisterAll()
+        if let eventHandler {
+            RemoveEventHandler(eventHandler)
+            self.eventHandler = nil
+        }
+    }
+
+    func register(
+        _ registration: IdleKeyCodeHotkeyRegistration,
+        callback: @escaping () -> Void
+    ) -> Bool {
+        guard eventHandler != nil else { return false }
+
+        var hotkeyRef: EventHotKeyRef?
+        let hotkeyID = EventHotKeyID(
+            signature: Self.signature,
+            id: registration.action.rawValue
+        )
+        let status = RegisterEventHotKey(
+            UInt32(registration.keyCode),
+            Self.carbonModifiers(for: registration.modifiers),
+            hotkeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotkeyRef
+        )
+        guard status == noErr, let hotkeyRef else {
+            MacHotkeyMonitor.logger.warning(
+                "Native hotkey registration failed for action \(registration.action.rawValue): OSStatus \(status); using event-tap fallback"
+            )
+            return false
+        }
+
+        hotkeyRefs[registration.action] = hotkeyRef
+        callbacks[registration.action] = callback
+        return true
+    }
+
+    private func invoke(actionID: UInt32) {
+        guard let action = IdleKeyCodeHotkeyRegistration.Action(rawValue: actionID) else { return }
+        callbacks[action]?()
+    }
+
+    private nonisolated static let eventHandlerCallback: EventHandlerUPP = { _, event, userData in
+        guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+
+        var hotkeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotkeyID
+        )
+        guard status == noErr, hotkeyID.signature == signature else {
+            return OSStatus(eventNotHandledErr)
+        }
+
+        let registrar = Unmanaged<CarbonHotkeyRegistrar>
+            .fromOpaque(userData)
+            .takeUnretainedValue()
+        MainActor.assumeIsolated {
+            registrar.invoke(actionID: hotkeyID.id)
+        }
+        return noErr
+    }
+
+    private static func carbonModifiers(
+        for modifiers: [VoceKeyboardShortcut.Modifier]
+    ) -> UInt32 {
+        modifiers.reduce(into: UInt32(0)) { result, modifier in
+            switch modifier {
+            case .control:
+                result |= UInt32(controlKey)
+            case .option:
+                result |= UInt32(optionKey)
+            case .command:
+                result |= UInt32(cmdKey)
+            case .shift:
+                result |= UInt32(shiftKey)
+            }
+        }
+    }
+
+}
 
 /// Shared state between MacHotkeyMonitor and its CGEventTap C callback.
 ///
@@ -378,8 +558,10 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     private var eventTap: CFMachPort?
     private var tapThread: HotkeyEventTapThread?
-    /// App Nap opt-out token, held while the event tap is installed.
+    /// App Nap opt-out token, held only while an active recording needs
+    /// latency-critical keys such as Return or an AI finish key.
     private var eventTapActivityToken: NSObjectProtocol?
+    private let carbonHotkeyRegistrar = CarbonHotkeyRegistrar()
     private let tapContext = TapContext()
     public init() {
         tapContext.monitor = self
@@ -406,6 +588,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     public func stop() {
         callbackGeneration &+= 1
         hasStarted = false
+        carbonHotkeyRegistrar.unregisterAll()
         uninstallEventTap()
         uninstallPressToTalkMonitors()
         uninstallActiveRecordingKeyMonitors()
@@ -770,8 +953,9 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     // MARK: - CGEventTap (Hands-Free Toggle)
 
-    private func installEventTap() {
-        guard eventTap == nil else { return }
+    @discardableResult
+    private func installEventTap() -> Bool {
+        guard eventTap == nil else { return true }
 
         let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
         let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
@@ -788,7 +972,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             onRegistrationStatusChanged?(
                 .unavailable(reason: "Input Monitoring permission required for shortcuts.")
             )
-            return
+            return false
         }
 
         // Keep this assignment immediately after tap creation so callback re-enable
@@ -803,7 +987,7 @@ public final class MacHotkeyMonitor: HotkeyService {
             onRegistrationStatusChanged?(
                 .unavailable(reason: "Could not install the keyboard shortcut listener.")
             )
-            return
+            return false
         }
 
         // Service the tap on a dedicated thread — never the main run loop.
@@ -814,9 +998,8 @@ public final class MacHotkeyMonitor: HotkeyService {
         tapThread = thread
         thread.start()
 
-        beginEventTapActivity()
-        Self.logger.notice("Event tap installed on dedicated thread; App Nap disabled")
-        onRegistrationStatusChanged?(.registered)
+        Self.logger.notice("Event tap installed on dedicated thread")
+        return true
     }
 
     private func uninstallEventTap() {
@@ -834,12 +1017,10 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     // MARK: - App Nap
 
-    /// While the event tap is installed, opt out of App Nap. A napped app's
-    /// threads get coalesced timers and lowered priority; with an active tap
-    /// in the keystroke path that shows up as system-wide keyboard lag
-    /// whenever Voce sits idle in the background. `.latencyCritical` asks for
-    /// full timer/scheduling precision; `.userInitiatedAllowingIdleSystemSleep`
-    /// prevents the nap without keeping the Mac awake.
+    /// Active recording keys are in the window server's synchronous keystroke
+    /// path and must remain responsive while the microphone is running. Keep
+    /// the activity scoped to that user-initiated recording window; idle
+    /// shortcuts use native hotkey registration and remain eligible for App Nap.
     private func beginEventTapActivity() {
         guard eventTapActivityToken == nil else { return }
         eventTapActivityToken = ProcessInfo.processInfo.beginActivity(
@@ -854,11 +1035,16 @@ public final class MacHotkeyMonitor: HotkeyService {
         eventTapActivityToken = nil
     }
 
+    private func setEventTapActivityEnabled(_ enabled: Bool) {
+        if enabled {
+            beginEventTapActivity()
+        } else {
+            endEventTapActivity()
+        }
+    }
+
     private func updateHandsFreeStatus() {
-        let needsEventTap = tapContext.onCaptureSelectionCorrection != nil
-            || tapContext.onCaptureSelectionSnippet != nil
-            || isSubmitActiveRecordingEnabled
-            || isAIFinishEnabled
+        carbonHotkeyRegistrar.unregisterAll()
 
         if isOptionPressToTalkEnabled,
            let globalToggleHotkey,
@@ -930,26 +1116,53 @@ public final class MacHotkeyMonitor: HotkeyService {
             }
         }
 
-        switch globalToggleHotkey?.hotkey {
-        case .keyCode?:
-            installEventTap()
-        case .modifier?:
-            if needsEventTap {
-                installEventTap()
-            } else {
-                uninstallEventTap()
-                onRegistrationStatusChanged?(.registered)
+        let idleRegistrations = IdleKeyCodeHotkeyRegistration.plan(
+            globalToggleHotkey: globalToggleHotkey,
+            selectionCorrectionHotkey: selectionCorrectionHotkey,
+            selectionSnippetHotkey: selectionSnippetHotkey,
+            hasSelectionCorrectionHandler: onCaptureSelectionCorrection != nil,
+            hasSelectionSnippetHandler: onCaptureSelectionSnippet != nil
+        )
+        var needsIdleEventTapFallback = false
+        for registration in idleRegistrations {
+            let didRegister: Bool
+            switch registration.action {
+            case .handsFreeToggle:
+                didRegister = carbonHotkeyRegistrar.register(registration) { [weak self] in
+                    guard let self,
+                          let configuredHotkey = self.globalToggleHotkey,
+                          case .keyCode = configuredHotkey.hotkey else { return }
+                    self.handleKeyCodeToggleTap(triggerStyle: configuredHotkey.triggerStyle)
+                }
+            case .selectionCorrection:
+                didRegister = carbonHotkeyRegistrar.register(registration) { [weak self] in
+                    self?.onCaptureSelectionCorrection?()
+                }
+            case .selectionSnippet:
+                didRegister = carbonHotkeyRegistrar.register(registration) { [weak self] in
+                    self?.onCaptureSelectionSnippet?()
+                }
             }
-        case nil:
-            if needsEventTap {
-                installEventTap()
-            } else {
-                uninstallEventTap()
-                onRegistrationStatusChanged?(
-                    .unavailable(reason: "Global hands-free key disabled in settings.")
-                )
-            }
+            needsIdleEventTapFallback = needsIdleEventTapFallback || !didRegister
         }
+
+        let needsRecordingEventTap = isSubmitActiveRecordingEnabled || isAIFinishEnabled
+        let needsEventTap = needsIdleEventTapFallback || needsRecordingEventTap
+
+        if needsEventTap {
+            guard installEventTap() else {
+                setEventTapActivityEnabled(false)
+                return
+            }
+        } else {
+            uninstallEventTap()
+            Self.logger.notice(
+                "Idle shortcuts registered natively; active event tap and App Nap exemption are not needed"
+            )
+        }
+
+        setEventTapActivityEnabled(needsRecordingEventTap && eventTap != nil)
+        onRegistrationStatusChanged?(.registered)
     }
 
     // MARK: - CGEventTap Callback
@@ -1065,6 +1278,7 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     deinit {
         MainActor.assumeIsolated {
+            carbonHotkeyRegistrar.shutdown()
             uninstallEventTap()
             uninstallPressToTalkMonitors()
             uninstallActiveRecordingKeyMonitors()

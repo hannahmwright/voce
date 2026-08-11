@@ -52,6 +52,18 @@ public protocol ClipboardService: Sendable {
     func setString(_ text: String) async throws
 }
 
+/// Provides a temporary clipboard transaction for reliable Cmd+V insertion.
+///
+/// The implementation may stage `text` on the clipboard while `paste` runs,
+/// restore the prior clipboard only after the destination consumes the staged
+/// value, and retain `text` when insertion cannot be confirmed.
+public protocol TemporaryClipboardPasteService: ClipboardService {
+    func performTemporaryPaste(
+        text: String,
+        paste: @escaping @Sendable () async -> AutoPasteOutcome
+    ) async throws -> AutoPasteOutcome
+}
+
 /// A strategy for inserting transcribed text into target applications.
 public protocol InsertionTransport: Sendable {
     /// The insertion method this transport implements (direct typing, accessibility API, or clipboard).
