@@ -15,7 +15,7 @@
           <li>Preserves dictated text on the system clipboard whenever insertion cannot be positively verified, including Messages failures</li>
         </ul>
       ]]></description>
-      <pubDate>Tue, 18 Aug 2026 23:16:26 +0000</pubDate>
+      <pubDate>Tue, 18 Aug 2026 23:21:56 +0000</pubDate>
       <enclosure
         url="https://github.com/hannahmwright/voce/releases/download/v0.4.61/Voce-0.4.61.dmg"
         type="application/octet-stream"
