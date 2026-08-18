@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.61</title>
+      <sparkle:version>64</sparkle:version>
+      <sparkle:shortVersionString>0.4.61</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.61</h2>
+        <ul>
+          <li>Pins dictation to the exact editable field that had focus when recording began, so transcripts do not drift into a different field after focus changes</li>
+          <li>Confirms that the intended field received the transcript before treating paste as successful</li>
+          <li>Preserves dictated text on the system clipboard whenever insertion cannot be positively verified, including Messages failures</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 18 Aug 2026 23:16:26 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.61/Voce-0.4.61.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="7DUUulAk2s2bBQNYXl34aGdSWveTuNnLFoy6XEkCM71p/FcBq/EhgfBcRFfMpJfDX1npYy5RNeVBO+jG8fawDg=="
+        length="19524335"
+      />
+    </item>
+    <item>
       <title>Version 0.4.60</title>
       <sparkle:version>63</sparkle:version>
       <sparkle:shortVersionString>0.4.60</sparkle:shortVersionString>

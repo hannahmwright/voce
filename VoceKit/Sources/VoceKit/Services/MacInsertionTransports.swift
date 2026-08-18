@@ -438,7 +438,11 @@ public enum MacPasteHelper {
         case unknownTarget
     }
 
-    public static func activateAndPaste(target: AppContext) async -> AutoPasteOutcome {
+    public static func activateAndPaste(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget? = nil
+    ) async -> AutoPasteOutcome {
         guard AXIsProcessTrusted() else {
             return .skipped(reason: "Accessibility permission is required for auto-paste.")
         }
@@ -453,27 +457,54 @@ public enum MacPasteHelper {
             return .skipped(reason: "Could not focus target app before auto-paste.")
         }
 
-        let valueBeforePaste = readFocusedTextValue()
-
-        for attempt in 0..<2 {
-            if simulateCommandV() {
-                if let valueBeforePaste {
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    if let valueAfterPaste = readFocusedTextValue(), valueAfterPaste == valueBeforePaste {
-                        return .skipped(reason: "The focused text field did not accept the pasted transcript.")
-                    }
-                }
-                return .attempted
-            }
-
-            let delay = UInt64(60_000_000 * UInt64(attempt + 1))
-            try? await Task.sleep(nanoseconds: delay)
+        guard let inputTarget = await resolveInputTarget(
+            target: target,
+            preferred: inputTarget
+        ) else {
+            return .skipped(reason: "Could not identify the editable field selected for dictation.")
         }
 
-        return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
+        guard await inputTarget.focusAndVerify() else {
+            return .skipped(reason: "The editable field selected for dictation is no longer focused.")
+        }
+
+        guard let valueBeforePaste = await inputTarget.valueSnapshot() else {
+            return .skipped(reason: "Could not read the editable field selected for dictation.")
+        }
+
+        guard simulateCommandV() else {
+            return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
+        }
+
+        // A pasteboard provider being asked for data is not proof that the
+        // application committed the paste. Wait for the exact captured field
+        // to expose the expected value before reporting success.
+        for _ in 0..<10 {
+            try? await Task.sleep(nanoseconds: 75_000_000)
+            if await inputTarget.verifyInsertion(of: text, from: valueBeforePaste) {
+                return .attempted
+            }
+        }
+
+        return .skipped(reason: "The editable field selected for dictation did not accept the pasted transcript.")
     }
 
-    public static func activateAndPressReturn(target: AppContext) async -> AutoPasteOutcome {
+    private static func resolveInputTarget(
+        target: AppContext,
+        preferred: FocusedInputTarget?
+    ) async -> FocusedInputTarget? {
+        guard let preferred else { return nil }
+        guard target.bundleIdentifier == "unknown"
+            || preferred.bundleIdentifier == target.bundleIdentifier else {
+            return nil
+        }
+        return preferred
+    }
+
+    public static func activateAndPressReturn(
+        target: AppContext,
+        inputTarget: FocusedInputTarget? = nil
+    ) async -> AutoPasteOutcome {
         guard AXIsProcessTrusted() else {
             return .skipped(reason: "Accessibility permission is required to submit with Return.")
         }
@@ -486,6 +517,13 @@ public enum MacPasteHelper {
             return .skipped(reason: "Target app was not found before submitting with Return.")
         case .focusNotAcquired:
             return .skipped(reason: "Could not focus target app before submitting with Return.")
+        }
+
+        guard let inputTarget = await resolveInputTarget(
+            target: target,
+            preferred: inputTarget
+        ), await inputTarget.focusAndVerify() else {
+            return .skipped(reason: "The editable field selected for dictation is no longer focused.")
         }
 
         for attempt in 0..<2 {

@@ -129,6 +129,32 @@ func unconsumedTemporaryPastePreservesTranscript() {
     #expect(pasteboard.string(forType: .string) == "recovery transcript")
 }
 
+@Test("A paste that was not positively verified preserves the transcript")
+@MainActor
+func unverifiedTemporaryPastePreservesTranscriptEvenIfDataWasRequested() {
+    let pasteboard = NSPasteboard(name: .init("io.voce.tests.\(UUID().uuidString)"))
+    defer { pasteboard.clearContents() }
+    pasteboard.clearContents()
+    pasteboard.setString("previous clipboard", forType: .string)
+
+    let provider = TemporaryPasteboardDataProvider(text: "unverified transcript")
+    let transaction = TemporaryPasteboardTransaction.begin(
+        text: "unverified transcript",
+        provider: provider,
+        pasteboard: pasteboard
+    )
+
+    let disposition = transaction.finish(
+        pasteWasAttempted: false,
+        stagedTextWasConsumed: true,
+        text: "unverified transcript",
+        pasteboard: pasteboard
+    )
+
+    #expect(disposition == .preserveTranscript)
+    #expect(pasteboard.string(forType: .string) == "unverified transcript")
+}
+
 @Test("A newer clipboard change is never overwritten by snapshot restoration")
 @MainActor
 func externalClipboardChangeWinsDuringTemporaryPaste() {

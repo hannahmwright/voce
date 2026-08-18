@@ -23,7 +23,8 @@ struct CompletionExecutionService {
         routedCompletion: RoutedCompletion,
         finalizedTranscript: FinalizedTranscript,
         workflows: [AIWorkflow],
-        dictationPolishingEnabled: Bool = false
+        dictationPolishingEnabled: Bool = false,
+        inputTarget: FocusedInputTarget? = nil
     ) async throws -> CompletionExecutionOutcome {
         switch routedCompletion.action {
         case .insert:
@@ -33,7 +34,8 @@ struct CompletionExecutionService {
             )
             var result = await insertionService.insert(
                 text: polished.text,
-                target: finalizedTranscript.appContext
+                target: finalizedTranscript.appContext,
+                inputTarget: inputTarget
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             return CompletionExecutionOutcome(
@@ -100,12 +102,16 @@ struct CompletionExecutionService {
             )
             var result = await insertionService.insert(
                 text: polished.text,
-                target: finalizedTranscript.appContext
+                target: finalizedTranscript.appContext,
+                inputTarget: inputTarget
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             var submitWarning: String?
             if result.status == .inserted {
-                let submitOutcome = await MacPasteHelper.activateAndPressReturn(target: finalizedTranscript.appContext)
+                let submitOutcome = await MacPasteHelper.activateAndPressReturn(
+                    target: finalizedTranscript.appContext,
+                    inputTarget: inputTarget
+                )
                 if case .skipped(let reason) = submitOutcome {
                     submitWarning = reason
                 }
@@ -129,7 +135,8 @@ struct CompletionExecutionService {
             let aiResult = try await aiGenerationService.generate(workflow: workflow, input: routedCompletion.inputText)
             var result = await insertionService.insert(
                 text: aiResult.outputText,
-                target: finalizedTranscript.appContext
+                target: finalizedTranscript.appContext,
+                inputTarget: inputTarget
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             return CompletionExecutionOutcome(

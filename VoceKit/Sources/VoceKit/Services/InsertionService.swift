@@ -23,12 +23,24 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
     }
 
     public func insert(text: String, target: AppContext) async -> InsertResult {
+        await insert(text: text, target: target, inputTarget: nil)
+    }
+
+    public func insert(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?
+    ) async -> InsertResult {
         var failures: [TransportFailure] = []
 
         for transport in prioritizedTransports(for: target) {
             if let clipboardTransport = transport as? ClipboardInsertionTransport {
                 do {
-                    let outcome = try await clipboardTransport.insertAndReturnOutcome(text: text, target: target)
+                    let outcome = try await clipboardTransport.insertAndReturnOutcome(
+                        text: text,
+                        target: target,
+                        inputTarget: inputTarget
+                    )
                     let status: InsertionStatus
                     let errorMessage: String?
                     let recoveryAction: InsertionRecoveryAction?
@@ -135,6 +147,7 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         return normalized.contains("could not focus target app")
             || normalized.contains("unable to synthesize cmd+v")
             || normalized.contains("target app was not found")
+            || normalized.contains("editable field selected for dictation")
     }
 
     private func isFocusLossCandidate(message: String) -> Bool {
@@ -174,6 +187,7 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     public let method: InsertionMethod = .clipboardPaste
     private let clipboard: ClipboardService
     private let autoPaste: (@Sendable (_ target: AppContext) async -> AutoPasteOutcome)?
+    private let autoPasteWithInputTarget: (@Sendable (_ text: String, _ target: AppContext, _ inputTarget: FocusedInputTarget?) async -> AutoPasteOutcome)?
 
     public init(
         clipboard: ClipboardService,
@@ -181,6 +195,16 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     ) {
         self.clipboard = clipboard
         self.autoPaste = autoPaste
+        self.autoPasteWithInputTarget = nil
+    }
+
+    public init(
+        clipboard: ClipboardService,
+        autoPasteWithInputTarget: @escaping @Sendable (_ text: String, _ target: AppContext, _ inputTarget: FocusedInputTarget?) async -> AutoPasteOutcome
+    ) {
+        self.clipboard = clipboard
+        self.autoPaste = nil
+        self.autoPasteWithInputTarget = autoPasteWithInputTarget
     }
 
     public func insert(text: String, target: AppContext) async throws {
@@ -195,7 +219,15 @@ public struct ClipboardInsertionTransport: InsertionTransport {
     }
 
     public func insertAndReturnOutcome(text: String, target: AppContext) async throws -> AutoPasteOutcome {
-        guard let autoPaste else {
+        try await insertAndReturnOutcome(text: text, target: target, inputTarget: nil)
+    }
+
+    public func insertAndReturnOutcome(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?
+    ) async throws -> AutoPasteOutcome {
+        guard autoPaste != nil || autoPasteWithInputTarget != nil else {
             try await clipboard.setString(text)
             return .skipped(reason: "Auto-paste callback not configured.")
         }
@@ -203,13 +235,27 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         if let temporaryClipboard = clipboard as? any TemporaryClipboardPasteService {
             return try await temporaryClipboard.performTemporaryPaste(text: text) {
                 try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
-                return await autoPaste(target)
+                return await paste(text: text, target: target, inputTarget: inputTarget)
             }
         }
 
         try await clipboard.setString(text)
         try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
-        return await autoPaste(target)
+        return await paste(text: text, target: target, inputTarget: inputTarget)
+    }
+
+    private func paste(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?
+    ) async -> AutoPasteOutcome {
+        if let autoPasteWithInputTarget {
+            return await autoPasteWithInputTarget(text, target, inputTarget)
+        }
+        if let autoPaste {
+            return await autoPaste(target)
+        }
+        return .skipped(reason: "Auto-paste callback not configured.")
     }
 }
 
