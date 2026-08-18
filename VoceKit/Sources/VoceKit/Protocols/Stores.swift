@@ -39,4 +39,23 @@ public protocol HistoryStoreProtocol: Sendable {
 public protocol InsertionServiceProtocol: Sendable {
     /// Inserts the given text into the target application using the configured transport chain.
     func insert(text: String, target: AppContext) async -> InsertResult
+
+    /// Inserts using the live editable element that was focused when dictation
+    /// began, when one was captured.
+    func insert(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?
+    ) async -> InsertResult
+}
+
+public extension InsertionServiceProtocol {
+    func insert(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?
+    ) async -> InsertResult {
+        _ = inputTarget
+        return await insert(text: text, target: target)
+    }
 }

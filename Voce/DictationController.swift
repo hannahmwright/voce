@@ -255,6 +255,7 @@ final class DictationController: ObservableObject {
     private var recordingStateMachine = RecordingStateMachine()
     private var currentSessionID: SessionID?
     private var activeAppContext: AppContext?
+    private var activeInputTarget: FocusedInputTarget?
     private var activeRecordingMode: RecordingMode?
     private var pendingCompletionActionOverride: CompletionAction?
     private var activeStyleOverride: StyleProfile?
@@ -1793,7 +1794,9 @@ final class DictationController: ObservableObject {
         status = "Checking microphone..."
         lastError = ""
         let capturedContext = AppContextProvider.current()
+        let capturedInputTarget = FocusedInputTarget.captureCurrent()
         activeAppContext = capturedContext
+        activeInputTarget = capturedInputTarget
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
         pendingCompletionActionOverride = nil
         activeStyleOverride = nil
@@ -1938,6 +1941,7 @@ final class DictationController: ObservableObject {
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
                 activeAppContext = nil
+                activeInputTarget = nil
                 activeFreeUsageLimitSeconds = nil
                 activeHostedCloudUsageLimitSeconds = nil
                 overlayPersistenceBundleIdentifier = nil
@@ -2023,6 +2027,7 @@ final class DictationController: ObservableObject {
             }
 
             activeAppContext = nil
+            activeInputTarget = nil
             overlayPersistenceBundleIdentifier = nil
             pendingCompletionActionOverride = nil
             activeStyleOverride = nil
@@ -2073,10 +2078,12 @@ final class DictationController: ObservableObject {
         let readyPreferredCompletionAction = pendingCompletionActionOverride
         let readyStyleOverride = activeStyleOverride
         let readyMediaToken = activeMediaToken
+        let readyInputTarget = activeInputTarget
 
         if readySessionID != nil {
             currentSessionID = nil
             activeAppContext = nil
+            activeInputTarget = nil
             pendingCompletionActionOverride = nil
             activeStyleOverride = nil
             activeMediaToken = nil
@@ -2101,6 +2108,7 @@ final class DictationController: ObservableObject {
             let preferredCompletionAction: CompletionAction?
             let styleOverride: StyleProfile?
             let mediaToken: MediaInterruptionToken?
+            let inputTarget: FocusedInputTarget?
 
             if let readyCoordinator, let readySessionID {
                 coordinator = readyCoordinator
@@ -2108,6 +2116,7 @@ final class DictationController: ObservableObject {
                 preferredCompletionAction = readyPreferredCompletionAction
                 styleOverride = readyStyleOverride
                 mediaToken = readyMediaToken
+                inputTarget = readyInputTarget
             } else {
                 // If stop happens while the microphone is still arming, wait
                 // only until setup either publishes a session ID or fails.
@@ -2120,6 +2129,8 @@ final class DictationController: ObservableObject {
 
                 currentSessionID = nil
                 activeAppContext = nil
+                inputTarget = activeInputTarget
+                activeInputTarget = nil
                 pendingCompletionActionOverride = nil
                 activeStyleOverride = nil
                 activeMediaToken = nil
@@ -2263,7 +2274,8 @@ final class DictationController: ObservableObject {
                         routedCompletion: routedCompletion,
                         finalizedTranscript: finalizedTranscript,
                         workflows: preferences.ai.workflows,
-                        dictationPolishingEnabled: shouldPolishPlainDictation(routedCompletion)
+                        dictationPolishingEnabled: shouldPolishPlainDictation(routedCompletion),
+                        inputTarget: inputTarget
                     )
                     let executionElapsed = executionBeganAt.duration(to: clock.now)
                     let executionElapsedSeconds = Double(executionElapsed.components.seconds)
@@ -3383,7 +3395,12 @@ final class DictationController: ObservableObject {
     }
 
     private func completeClipboardRecoveryPaste(into targetAppContext: AppContext) async -> Bool {
-        let outcome = await MacPasteHelper.activateAndPaste(target: targetAppContext)
+        let recoveryInputTarget = FocusedInputTarget.captureCurrent()
+        let outcome = await MacPasteHelper.activateAndPaste(
+            text: currentTranscriptText,
+            target: targetAppContext,
+            inputTarget: recoveryInputTarget
+        )
         switch outcome {
         case .attempted:
             status = "Transcript inserted."
@@ -3915,8 +3932,12 @@ private struct DictationRuntimeFactory {
             case .accessibility:
                 transports.append(AccessibilityInsertionTransport())
             case .clipboardPaste:
-                transports.append(ClipboardInsertionTransport(clipboard: clipboardService, autoPaste: { target in
-                    await MacPasteHelper.activateAndPaste(target: target)
+                transports.append(ClipboardInsertionTransport(clipboard: clipboardService, autoPasteWithInputTarget: { text, target, inputTarget in
+                    await MacPasteHelper.activateAndPaste(
+                        text: text,
+                        target: target,
+                        inputTarget: inputTarget
+                    )
                 }))
             case .none:
                 continue
@@ -3924,8 +3945,12 @@ private struct DictationRuntimeFactory {
         }
 
         if !transports.contains(where: { $0.method == .clipboardPaste }) {
-            transports.append(ClipboardInsertionTransport(clipboard: clipboardService, autoPaste: { target in
-                await MacPasteHelper.activateAndPaste(target: target)
+            transports.append(ClipboardInsertionTransport(clipboard: clipboardService, autoPasteWithInputTarget: { text, target, inputTarget in
+                await MacPasteHelper.activateAndPaste(
+                    text: text,
+                    target: target,
+                    inputTarget: inputTarget
+                )
             }))
         }
 
