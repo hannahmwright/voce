@@ -1383,7 +1383,7 @@ private struct HelpSupportSection: View {
                 }
             }
 
-            Text("Bug reports can include lightweight diagnostics like app version, macOS version, and current shortcut settings only when you explicitly enable that option.")
+            Text("Bug reports can include lightweight diagnostics like app version, macOS version, current shortcut settings, and recent insertion decisions only when you explicitly enable that option. Dictated text and clipboard contents are never included.")
                 .font(VoceDesign.caption())
                 .foregroundStyle(VoceDesign.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1423,7 +1423,8 @@ private struct HelpSupportSection: View {
             "pause_media_for_hold_to_talk=\(pauseDuringPressToTalk)",
             "ai_available=\(aiAvailable)",
             "hotkey_registration=\(hotkeyRegistrationMessage.isEmpty ? "ok" : hotkeyRegistrationMessage)",
-            mediaDiagnosticsText
+            mediaDiagnosticsText,
+            VoceDiagnosticStore.shared.reportText()
         ]
         return values.joined(separator: "\n")
     }
@@ -1513,7 +1514,7 @@ private struct SupportRequestFormSheet: View {
                     Toggle("Include lightweight diagnostics", isOn: $includeDiagnostics)
                         .font(VoceDesign.callout())
 
-                    Text("Voce always includes app version and macOS version. This toggle adds non-sensitive context like shortcut labels and display settings.")
+                    Text("Voce always includes app version and macOS version. This toggle adds non-sensitive context like shortcut labels, display settings, and recent insertion decisions. It never includes dictated text or clipboard contents.")
                         .font(VoceDesign.caption())
                         .foregroundStyle(VoceDesign.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

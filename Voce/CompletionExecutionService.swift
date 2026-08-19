@@ -24,7 +24,8 @@ struct CompletionExecutionService {
         finalizedTranscript: FinalizedTranscript,
         workflows: [AIWorkflow],
         dictationPolishingEnabled: Bool = false,
-        inputTarget: FocusedInputTarget? = nil
+        inputTarget: FocusedInputTarget? = nil,
+        automaticInsertionAllowed: () -> Bool = { true }
     ) async throws -> CompletionExecutionOutcome {
         switch routedCompletion.action {
         case .insert:
@@ -32,10 +33,11 @@ struct CompletionExecutionService {
                 finalizedTranscript.cleanText,
                 enabled: dictationPolishingEnabled
             )
-            var result = await insertionService.insert(
+            var result = await insertOrCopyForSafety(
                 text: polished.text,
                 target: finalizedTranscript.appContext,
-                inputTarget: inputTarget
+                inputTarget: inputTarget,
+                automaticInsertionAllowed: automaticInsertionAllowed
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             return CompletionExecutionOutcome(
@@ -100,10 +102,11 @@ struct CompletionExecutionService {
                 finalizedTranscript.cleanText,
                 enabled: dictationPolishingEnabled
             )
-            var result = await insertionService.insert(
+            var result = await insertOrCopyForSafety(
                 text: polished.text,
                 target: finalizedTranscript.appContext,
-                inputTarget: inputTarget
+                inputTarget: inputTarget,
+                automaticInsertionAllowed: automaticInsertionAllowed
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             var submitWarning: String?
@@ -133,10 +136,11 @@ struct CompletionExecutionService {
                 throw CompletionRoutingError.workflowNotFound(workflowID)
             }
             let aiResult = try await aiGenerationService.generate(workflow: workflow, input: routedCompletion.inputText)
-            var result = await insertionService.insert(
+            var result = await insertOrCopyForSafety(
                 text: aiResult.outputText,
                 target: finalizedTranscript.appContext,
-                inputTarget: inputTarget
+                inputTarget: inputTarget,
+                automaticInsertionAllowed: automaticInsertionAllowed
             )
             result.cleanupOutcome = finalizedTranscript.cleanupOutcome
             return CompletionExecutionOutcome(
@@ -149,6 +153,44 @@ struct CompletionExecutionService {
                 submitWarning: nil
             )
         }
+    }
+
+    private func insertOrCopyForSafety(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?,
+        automaticInsertionAllowed: () -> Bool
+    ) async -> InsertResult {
+        guard automaticInsertionAllowed() else {
+            VoceDiagnosticStore.shared.record(
+                category: "completion",
+                event: "stale_insertion_skipped",
+                details: ["target_bundle": target.bundleIdentifier]
+            )
+            do {
+                try await clipboardService.setString(text)
+                return InsertResult(
+                    status: .copiedOnly,
+                    method: .clipboardPaste,
+                    insertedText: text,
+                    errorMessage: "A newer dictation started before this transcript finished. It was copied to the clipboard instead."
+                )
+            } catch {
+                return InsertResult(
+                    status: .failed,
+                    method: .none,
+                    insertedText: text,
+                    errorMessage: error.localizedDescription
+                )
+            }
+        }
+
+        return await insertionService.insert(
+            text: text,
+            target: target,
+            inputTarget: inputTarget,
+            exactTargetRequired: true
+        )
     }
 
     private func polishedDictationTextIfNeeded(

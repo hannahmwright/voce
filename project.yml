@@ -29,8 +29,8 @@ targets:
         DEVELOPMENT_TEAM: 74L5GC3J4V
         CODE_SIGN_ENTITLEMENTS: Voce/Voce.entitlements
         SWIFT_VERSION: 6.0
-        MARKETING_VERSION: 0.4.61
-        CURRENT_PROJECT_VERSION: 64
+        MARKETING_VERSION: 0.4.62
+        CURRENT_PROJECT_VERSION: 65
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Voce/Info.plist
       configs:
@@ -61,8 +61,8 @@ targets:
         DEVELOPMENT_TEAM: 74L5GC3J4V
         CODE_SIGN_ENTITLEMENTS: Voce/Voce.entitlements
         SWIFT_VERSION: 6.0
-        MARKETING_VERSION: 0.4.61
-        CURRENT_PROJECT_VERSION: 64
+        MARKETING_VERSION: 0.4.62
+        CURRENT_PROJECT_VERSION: 65
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Voce/Info-Dev.plist
       configs:

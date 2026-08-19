@@ -174,3 +174,29 @@ func insertionServiceSkipsRefocusPasteRecoveryForPermissionFailures() async {
     #expect(result.recoveryAction == nil)
     #expect(await clipboard.latestValue == "hello")
 }
+
+@Test("Exact-target insertion never falls back to unverified typing transports")
+func exactTargetInsertionSkipsUnverifiedFallbacks() async {
+    let recorder = CallRecorder()
+    let service = InsertionService(transports: [
+        ClosureInsertionTransport(method: .direct) { _, _ in
+            await recorder.append(.direct)
+        },
+        ClosureInsertionTransport(method: .accessibility) { _, _ in
+            await recorder.append(.accessibility)
+        },
+        ClipboardInsertionTransport(clipboard: BrokenClipboardService()) { _ in
+            .attempted
+        },
+    ])
+
+    let result = await service.insert(
+        text: "hello",
+        target: AppContext(bundleIdentifier: "com.apple.MobileSMS", appName: "Messages"),
+        inputTarget: nil,
+        exactTargetRequired: true
+    )
+
+    #expect(result.status == .failed)
+    #expect(await recorder.snapshot().isEmpty)
+}
