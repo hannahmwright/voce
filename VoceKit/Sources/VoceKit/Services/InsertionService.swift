@@ -31,6 +31,20 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         target: AppContext,
         inputTarget: FocusedInputTarget?
     ) async -> InsertResult {
+        await insert(
+            text: text,
+            target: target,
+            inputTarget: inputTarget,
+            exactTargetRequired: false
+        )
+    }
+
+    public func insert(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?,
+        exactTargetRequired: Bool
+    ) async -> InsertResult {
         var failures: [TransportFailure] = []
 
         for transport in prioritizedTransports(for: target) {
@@ -73,6 +87,21 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                     )
                     continue
                 }
+            }
+
+            if exactTargetRequired {
+                VoceDiagnosticStore.shared.record(
+                    category: "insertion",
+                    event: "unverified_transport_skipped",
+                    details: ["method": transport.method.rawValue]
+                )
+                failures.append(
+                    TransportFailure(
+                        method: transport.method,
+                        message: "Skipped because this transport cannot verify the exact dictation field."
+                    )
+                )
+                continue
             }
 
             do {

@@ -47,6 +47,16 @@ public protocol InsertionServiceProtocol: Sendable {
         target: AppContext,
         inputTarget: FocusedInputTarget?
     ) async -> InsertResult
+
+    /// Inserts only through a transport that can verify the exact captured
+    /// input target. When unavailable, implementations must prefer a plain
+    /// clipboard copy over direct typing into the currently focused field.
+    func insert(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?,
+        exactTargetRequired: Bool
+    ) async -> InsertResult
 }
 
 public extension InsertionServiceProtocol {
@@ -57,5 +67,15 @@ public extension InsertionServiceProtocol {
     ) async -> InsertResult {
         _ = inputTarget
         return await insert(text: text, target: target)
+    }
+
+    func insert(
+        text: String,
+        target: AppContext,
+        inputTarget: FocusedInputTarget?,
+        exactTargetRequired: Bool
+    ) async -> InsertResult {
+        _ = exactTargetRequired
+        return await insert(text: text, target: target, inputTarget: inputTarget)
     }
 }

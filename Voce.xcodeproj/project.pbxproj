@@ -68,6 +68,7 @@
 		77442F974426E652BF2EA97B /* ScreenRecordingHazePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC01D00465146833DA74E06 /* ScreenRecordingHazePresenter.swift */; };
 		7A14C35BFF93A82E7EBDE100 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7D068135E11372BE4386D1 /* MenuBarController.swift */; };
 		7B23E2C9CE5F3118BCDF871A /* VoceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4341CE23927C00B47232FAD /* VoceApp.swift */; };
+		7DB68158B81D8D7D971710FF /* CompletionExecutionServiceSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CB68C158FC5F51EAD92FE8 /* CompletionExecutionServiceSafetyTests.swift */; };
 		7FDD306DDDC34622D1045135 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132DA21638FE9F910C3B310F /* DictationController.swift */; };
 		80B0AD66C040E7528402F625 /* AppPreferencesCloudDictationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17D413FBD4DC4BEAECF088ED /* AppPreferencesCloudDictationTests.swift */; };
 		8101B9344F157C3DA00685A7 /* AppPreferencesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32D6BB3AE4EEE92E50CFFE78 /* AppPreferencesStore.swift */; };
@@ -201,6 +202,7 @@
 		DBD0D5DE8C1F3673184AFB74 /* PermissionDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionDiagnostics.swift; sourceTree = "<group>"; };
 		DE1E0817140D6CD2E7B63543 /* VoceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VoceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		E0E456EE3D4ECEA42E9FDB1D /* CloudAudioUploadPreparation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudAudioUploadPreparation.swift; sourceTree = "<group>"; };
+		E5CB68C158FC5F51EAD92FE8 /* CompletionExecutionServiceSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionExecutionServiceSafetyTests.swift; sourceTree = "<group>"; };
 		E849A59AA56B8372F67A4321 /* PermissionsSettingsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsSettingsSection.swift; sourceTree = "<group>"; };
 		EA596049E5E1D02311496B9B /* ScratchPadTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScratchPadTab.swift; sourceTree = "<group>"; };
 		EBE5EAD5ECFA2403433B65F5 /* LaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginService.swift; sourceTree = "<group>"; };
@@ -245,6 +247,7 @@
 			isa = PBXGroup;
 			children = (
 				17D413FBD4DC4BEAECF088ED /* AppPreferencesCloudDictationTests.swift */,
+				E5CB68C158FC5F51EAD92FE8 /* CompletionExecutionServiceSafetyTests.swift */,
 				A9CE7D3C70D77C2E91691C18 /* OpenAICloudSpeechProviderClientPromptTests.swift */,
 				971EF335C2B9B796BA0F8BD6 /* OpenAIRealtimeWhisperConverterTests.swift */,
 				37FA84FD73FEC11ECAE25F1B /* SettingsSearchIndexCoverageTests.swift */,
@@ -561,6 +564,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				80B0AD66C040E7528402F625 /* AppPreferencesCloudDictationTests.swift in Sources */,
+				7DB68158B81D8D7D971710FF /* CompletionExecutionServiceSafetyTests.swift in Sources */,
 				B7D175531847C879DD254844 /* OpenAICloudSpeechProviderClientPromptTests.swift in Sources */,
 				55A2B36AD63CA62AA7CA5523 /* OpenAIRealtimeWhisperConverterTests.swift in Sources */,
 				F0C088B63C7BA184EF790119 /* SettingsSearchIndexCoverageTests.swift in Sources */,
@@ -646,7 +650,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = 74L5GC3J4V;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -655,7 +659,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.61;
+				MARKETING_VERSION = 0.4.62;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				PRODUCT_NAME = Voce;
 				SDKROOT = macosx;
@@ -744,7 +748,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = 74L5GC3J4V;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Voce/Info.plist;
@@ -752,7 +756,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.61;
+				MARKETING_VERSION = 0.4.62;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce;
 				PRODUCT_NAME = Voce;
 				SDKROOT = macosx;
@@ -831,7 +835,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = 74L5GC3J4V;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "Voce/Info-Dev.plist";
@@ -839,7 +843,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.61;
+				MARKETING_VERSION = 0.4.62;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce.dev;
 				PRODUCT_NAME = "Voce Dev";
 				SDKROOT = macosx;
@@ -855,7 +859,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 64;
+				CURRENT_PROJECT_VERSION = 65;
 				DEVELOPMENT_TEAM = 74L5GC3J4V;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -864,7 +868,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.4.61;
+				MARKETING_VERSION = 0.4.62;
 				PRODUCT_BUNDLE_IDENTIFIER = io.voceapp.voce.dev;
 				PRODUCT_NAME = "Voce Dev";
 				SDKROOT = macosx;

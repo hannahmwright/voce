@@ -3,6 +3,22 @@ import ApplicationServices
 import AppKit
 import Foundation
 
+enum FocusedInputTargetPolicy {
+    static func acceptsReadableText(
+        role: String?,
+        hasReadableValue: Bool,
+        valueIsSettable: Bool
+    ) -> Bool {
+        guard hasReadableValue else { return false }
+        let recognizedTextRoles = Set([
+            kAXTextAreaRole as String,
+            kAXTextFieldRole as String,
+            kAXComboBoxRole as String,
+        ])
+        return role.map(recognizedTextRoles.contains) == true || valueIsSettable
+    }
+}
+
 /// A live snapshot of the editable Accessibility element that was focused
 /// when dictation began. It is intentionally runtime-only and is never
 /// serialized with transcript history.
@@ -41,20 +57,50 @@ public final class FocusedInputTarget: @unchecked Sendable {
     /// Captures the focused element only when it is an editable Accessibility
     /// value. Search fields and message composers are handled identically.
     public static func captureCurrent() -> FocusedInputTarget? {
-        guard AXIsProcessTrusted(),
-              let element = currentFocusedElement(),
-              isEditable(element),
-              let processIdentifier = processIdentifier(of: element),
-              let process = NSRunningApplication(processIdentifier: processIdentifier),
-              let bundleIdentifier = process.bundleIdentifier else {
+        guard AXIsProcessTrusted() else {
+            recordCaptureFailure("accessibility_not_trusted")
             return nil
         }
+
+        guard let element = currentFocusedElement() else {
+            recordCaptureFailure("focused_element_unavailable")
+            return nil
+        }
+
+        if let failureReason = editabilityFailureReason(for: element) {
+            recordCaptureFailure(failureReason, element: element)
+            return nil
+        }
+
+        guard let processIdentifier = processIdentifier(of: element) else {
+            recordCaptureFailure("focused_element_pid_unavailable")
+            return nil
+        }
+
+        guard let process = NSRunningApplication(processIdentifier: processIdentifier),
+              let bundleIdentifier = process.bundleIdentifier else {
+            recordCaptureFailure("focused_app_bundle_unavailable")
+            return nil
+        }
+
+        let identity = identity(for: element)
+        VoceDiagnosticStore.shared.record(
+            category: "input_target",
+            event: "captured",
+            details: [
+                "bundle": bundleIdentifier,
+                "role": identity.role ?? "unknown",
+                "subrole": identity.subrole ?? "none",
+                "has_identifier": String(identity.identifier != nil),
+                "has_description": String(identity.description != nil),
+            ]
+        )
 
         return FocusedInputTarget(
             element: element,
             processIdentifier: processIdentifier,
             bundleIdentifier: bundleIdentifier,
-            identity: identity(for: element),
+            identity: identity,
             initialValue: value(of: element)
         )
     }
@@ -65,25 +111,17 @@ public final class FocusedInputTarget: @unchecked Sendable {
     }
 
     func focusAndVerify() async -> Bool {
-        if isCurrentFocus() {
-            return true
-        }
-
-        let focusStatus = AXUIElementSetAttributeValue(
-            element,
-            kAXFocusedAttribute as CFString,
-            kCFBooleanTrue
+        // Never force the captured element back into focus. A completion may
+        // arrive long after the user moved to a search field or another app;
+        // changing AXFocused in that situation steals the cursor and makes a
+        // stale transcript eligible to paste into the wrong place.
+        let isFocused = isCurrentFocus()
+        VoceDiagnosticStore.shared.record(
+            category: "input_target",
+            event: isFocused ? "focus_verified" : "focus_changed",
+            details: ["bundle": bundleIdentifier]
         )
-        guard focusStatus == .success else { return false }
-
-        for _ in 0..<6 {
-            try? await Task.sleep(nanoseconds: 50_000_000)
-            if isCurrentFocus() {
-                return true
-            }
-        }
-
-        return false
+        return isFocused
     }
 
     func valueSnapshot() -> ValueSnapshot? {
@@ -122,19 +160,11 @@ public final class FocusedInputTarget: @unchecked Sendable {
     }
 
     private func matches(_ candidate: AXUIElement) -> Bool {
-        if CFEqual(element, candidate) {
-            return true
-        }
-
-        guard Self.processIdentifier(of: candidate) == processIdentifier,
-              Self.identity(for: candidate) == identity else {
-            return false
-        }
-
-        // Descriptor fallback is useful when an app recreates its AX object,
-        // but only accept a strong identifier/description so two generic text
-        // fields cannot be confused with one another.
-        return identity.identifier != nil || identity.description != nil
+        // The exact Accessibility element is the only safe proof of intent.
+        // Roles, descriptions, and even identifiers may be reused by a
+        // message composer and an in-app search field. If an app recreates the
+        // element, fall back to clipboard-only rather than guessing.
+        CFEqual(element, candidate)
     }
 
     private static func currentFocusedElement() -> AXUIElement? {
@@ -153,18 +183,61 @@ public final class FocusedInputTarget: @unchecked Sendable {
         return unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
     }
 
-    private static func isEditable(_ element: AXUIElement) -> Bool {
+    private static func recordCaptureFailure(
+        _ reason: String,
+        element: AXUIElement? = nil
+    ) {
+        var details = ["reason": reason]
+        if let element {
+            details["role"] = stringAttribute(kAXRoleAttribute as CFString, on: element) ?? "unknown"
+            details["subrole"] = stringAttribute(kAXSubroleAttribute as CFString, on: element) ?? "none"
+            if let processIdentifier = processIdentifier(of: element),
+               let bundleIdentifier = NSRunningApplication(
+                   processIdentifier: processIdentifier
+               )?.bundleIdentifier {
+                details["bundle"] = bundleIdentifier
+            }
+        }
+        VoceDiagnosticStore.shared.record(
+            category: "input_target",
+            event: "capture_failed",
+            details: details
+        )
+    }
+
+    private static func editabilityFailureReason(for element: AXUIElement) -> String? {
+        let hasReadableValue = value(of: element) != nil
+        guard hasReadableValue else {
+            return "focused_element_value_unreadable"
+        }
+
+        let role = stringAttribute(kAXRoleAttribute as CFString, on: element)
         var isSettable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(
+        let settableStatus = AXUIElementIsAttributeSettable(
             element,
             kAXValueAttribute as CFString,
             &isSettable
-        ) == .success,
-        isSettable.boolValue else {
-            return false
+        )
+        let valueIsSettable = settableStatus == .success && isSettable.boolValue
+        guard FocusedInputTargetPolicy.acceptsReadableText(
+            role: role,
+            hasReadableValue: hasReadableValue,
+            valueIsSettable: valueIsSettable
+        ) else {
+            return "focused_element_not_editable"
         }
 
-        return value(of: element) != nil
+        if !valueIsSettable {
+            // Rich text composers can accept keyboard paste while reporting
+            // AXValue as non-settable. We only need a readable value because
+            // insertion itself uses Cmd+V and is positively verified later.
+            VoceDiagnosticStore.shared.record(
+                category: "input_target",
+                event: "readable_text_value_not_settable",
+                details: ["role": role ?? "unknown"]
+            )
+        }
+        return nil
     }
 
     private static func value(of element: AXUIElement) -> String? {
@@ -176,7 +249,13 @@ public final class FocusedInputTarget: @unchecked Sendable {
         ) == .success else {
             return nil
         }
-        return valueRef as? String
+        if let string = valueRef as? String {
+            return string
+        }
+        if let attributedString = valueRef as? NSAttributedString {
+            return attributedString.string
+        }
+        return nil
     }
 
     private static func selectedRange(of element: AXUIElement) -> CFRange? {

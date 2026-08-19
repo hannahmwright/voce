@@ -207,6 +207,7 @@ let voceSyntheticEventTapLocation: CGEventTapLocation = {
 public enum MacInsertionError: Error, LocalizedError {
     case eventSourceUnavailable
     case accessibilityPermissionMissing
+    case targetAppNotFrontmost
     case focusedElementUnavailable
     case unsupportedFocusedElement
     case attributeUpdateFailed
@@ -217,6 +218,8 @@ public enum MacInsertionError: Error, LocalizedError {
             return "Unable to access event source for direct typing insertion"
         case .accessibilityPermissionMissing:
             return "Accessibility permission is required for this insertion mode"
+        case .targetAppNotFrontmost:
+            return "The app selected for dictation is no longer active"
         case .focusedElementUnavailable:
             return "No focused text element was found"
         case .unsupportedFocusedElement:
@@ -238,7 +241,17 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
             throw MacInsertionError.accessibilityPermissionMissing
         }
 
-        await Self.activateTargetApp(target)
+        guard await Self.targetAppIsFrontmost(target) else {
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "direct_skipped",
+                details: [
+                    "reason": "target_app_not_frontmost",
+                    "target_bundle": target.bundleIdentifier,
+                ]
+            )
+            throw MacInsertionError.targetAppNotFrontmost
+        }
 
         let preValue = readFocusedTextValue()
 
@@ -257,28 +270,10 @@ public struct DirectTypingInsertionTransport: InsertionTransport {
         // preValue nil → can't verify, assume CGEvent delivered
     }
 
-    private static func activateTargetApp(_ target: AppContext) async {
-        guard target.bundleIdentifier != "unknown" else { return }
-
-        for attempt in 0..<3 {
-            let activationTriggered = await MainActor.run { () -> Bool in
-                guard let app = NSRunningApplication.runningApplications(
-                    withBundleIdentifier: target.bundleIdentifier
-                ).first else {
-                    return false
-                }
-                return app.activate()
-            }
-
-            let delay = UInt64(150_000_000 + (50_000_000 * attempt))
-            try? await Task.sleep(nanoseconds: delay)
-
-            let isFrontmost = await MainActor.run {
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
-            }
-            if isFrontmost || !activationTriggered {
-                return
-            }
+    private static func targetAppIsFrontmost(_ target: AppContext) async -> Bool {
+        guard target.bundleIdentifier != "unknown" else { return false }
+        return await MainActor.run {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
         }
     }
 
@@ -323,6 +318,21 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
         _ = target
         guard AXIsProcessTrusted() else {
             throw MacInsertionError.accessibilityPermissionMissing
+        }
+
+        guard target.bundleIdentifier != "unknown",
+              await MainActor.run(body: {
+                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
+              }) else {
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "accessibility_skipped",
+                details: [
+                    "reason": "target_app_not_frontmost",
+                    "target_bundle": target.bundleIdentifier,
+                ]
+            )
+            throw MacInsertionError.targetAppNotFrontmost
         }
 
         let systemWide = AXUIElementCreateSystemWide()
@@ -431,49 +441,60 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
 }
 
 public enum MacPasteHelper {
-    private enum ActivationResult {
-        case activated
-        case appNotFound
-        case focusNotAcquired
-        case unknownTarget
-    }
-
     public static func activateAndPaste(
         text: String,
         target: AppContext,
         inputTarget: FocusedInputTarget? = nil
     ) async -> AutoPasteOutcome {
         guard AXIsProcessTrusted() else {
-            return .skipped(reason: "Accessibility permission is required for auto-paste.")
-        }
-
-        let activationResult = await activateTargetApp(target)
-        switch activationResult {
-        case .activated, .unknownTarget:
-            break
-        case .appNotFound:
-            return .skipped(reason: "Target app was not found for auto-paste reactivation.")
-        case .focusNotAcquired:
-            return .skipped(reason: "Could not focus target app before auto-paste.")
+            return skipped(
+                code: "accessibility_not_trusted",
+                message: "Accessibility permission is required for auto-paste.",
+                target: target
+            )
         }
 
         guard let inputTarget = await resolveInputTarget(
             target: target,
             preferred: inputTarget
         ) else {
-            return .skipped(reason: "Could not identify the editable field selected for dictation.")
+            return skipped(
+                code: "input_target_unavailable",
+                message: "Could not identify the editable field selected for dictation.",
+                target: target
+            )
+        }
+
+        guard await inputTargetAppIsFrontmost(inputTarget) else {
+            return skipped(
+                code: "target_app_changed",
+                message: "The app selected for dictation is no longer active.",
+                target: target
+            )
         }
 
         guard await inputTarget.focusAndVerify() else {
-            return .skipped(reason: "The editable field selected for dictation is no longer focused.")
+            return skipped(
+                code: "focused_field_changed",
+                message: "The editable field selected for dictation is no longer focused.",
+                target: target
+            )
         }
 
         guard let valueBeforePaste = await inputTarget.valueSnapshot() else {
-            return .skipped(reason: "Could not read the editable field selected for dictation.")
+            return skipped(
+                code: "input_value_unavailable",
+                message: "Could not read the editable field selected for dictation.",
+                target: target
+            )
         }
 
         guard simulateCommandV() else {
-            return .skipped(reason: "Unable to synthesize Cmd+V for auto-paste.")
+            return skipped(
+                code: "command_v_unavailable",
+                message: "Unable to synthesize Cmd+V for auto-paste.",
+                target: target
+            )
         }
 
         // A pasteboard provider being asked for data is not proof that the
@@ -482,17 +503,27 @@ public enum MacPasteHelper {
         for _ in 0..<10 {
             try? await Task.sleep(nanoseconds: 75_000_000)
             if await inputTarget.verifyInsertion(of: text, from: valueBeforePaste) {
+                VoceDiagnosticStore.shared.record(
+                    category: "insertion",
+                    event: "paste_verified",
+                    details: ["target_bundle": target.bundleIdentifier]
+                )
                 return .attempted
             }
         }
 
-        return .skipped(reason: "The editable field selected for dictation did not accept the pasted transcript.")
+        return skipped(
+            code: "paste_not_verified",
+            message: "The editable field selected for dictation did not accept the pasted transcript.",
+            target: target
+        )
     }
 
+    @MainActor
     private static func resolveInputTarget(
         target: AppContext,
         preferred: FocusedInputTarget?
-    ) async -> FocusedInputTarget? {
+    ) -> FocusedInputTarget? {
         guard let preferred else { return nil }
         guard target.bundleIdentifier == "unknown"
             || preferred.bundleIdentifier == target.bundleIdentifier else {
@@ -506,28 +537,40 @@ public enum MacPasteHelper {
         inputTarget: FocusedInputTarget? = nil
     ) async -> AutoPasteOutcome {
         guard AXIsProcessTrusted() else {
-            return .skipped(reason: "Accessibility permission is required to submit with Return.")
-        }
-
-        let activationResult = await activateTargetApp(target)
-        switch activationResult {
-        case .activated, .unknownTarget:
-            break
-        case .appNotFound:
-            return .skipped(reason: "Target app was not found before submitting with Return.")
-        case .focusNotAcquired:
-            return .skipped(reason: "Could not focus target app before submitting with Return.")
+            return skipped(
+                code: "submit_accessibility_not_trusted",
+                message: "Accessibility permission is required to submit with Return.",
+                target: target
+            )
         }
 
         guard let inputTarget = await resolveInputTarget(
             target: target,
             preferred: inputTarget
-        ), await inputTarget.focusAndVerify() else {
-            return .skipped(reason: "The editable field selected for dictation is no longer focused.")
+        ) else {
+            return skipped(
+                code: "submit_input_target_unavailable",
+                message: "Could not identify the editable field selected for dictation before submitting.",
+                target: target
+            )
+        }
+
+        guard await inputTargetAppIsFrontmost(inputTarget),
+              await inputTarget.focusAndVerify() else {
+            return skipped(
+                code: "submit_focus_changed",
+                message: "The editable field selected for dictation is no longer focused.",
+                target: target
+            )
         }
 
         for attempt in 0..<2 {
             if simulateReturn() {
+                VoceDiagnosticStore.shared.record(
+                    category: "insertion",
+                    event: "return_sent",
+                    details: ["target_bundle": target.bundleIdentifier]
+                )
                 return .attempted
             }
 
@@ -535,41 +578,32 @@ public enum MacPasteHelper {
             try? await Task.sleep(nanoseconds: delay)
         }
 
-        return .skipped(reason: "Unable to synthesize Return for submit.")
+        return skipped(
+            code: "return_unavailable",
+            message: "Unable to synthesize Return for submit.",
+            target: target
+        )
     }
 
-    private static func activateTargetApp(_ target: AppContext) async -> ActivationResult {
-        guard target.bundleIdentifier != "unknown" else {
-            return .unknownTarget
-        }
+    @MainActor
+    private static func inputTargetAppIsFrontmost(_ inputTarget: FocusedInputTarget) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.bundleIdentifier == inputTarget.bundleIdentifier
+    }
 
-        for attempt in 0..<3 {
-            let didFindApp = await MainActor.run { () -> Bool in
-                guard let app = NSRunningApplication.runningApplications(
-                    withBundleIdentifier: target.bundleIdentifier
-                ).first else {
-                    return false
-                }
-                app.activate()
-                return true
-            }
-
-            guard didFindApp else {
-                return .appNotFound
-            }
-
-            let delay = UInt64(150_000_000 + (50_000_000 * attempt))
-            try? await Task.sleep(nanoseconds: delay)
-
-            let isFrontmost = await MainActor.run {
-                NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleIdentifier
-            }
-            if isFrontmost {
-                return .activated
-            }
-        }
-
-        return .focusNotAcquired
+    private static func skipped(
+        code: String,
+        message: String,
+        target: AppContext
+    ) -> AutoPasteOutcome {
+        VoceDiagnosticStore.shared.record(
+            category: "insertion",
+            event: "skipped",
+            details: [
+                "reason": code,
+                "target_bundle": target.bundleIdentifier,
+            ]
+        )
+        return .skipped(reason: message)
     }
 
     public static func simulateCommandV() -> Bool {

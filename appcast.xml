@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.62</title>
+      <sparkle:version>65</sparkle:version>
+      <sparkle:shortVersionString>0.4.62</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.62</h2>
+        <ul>
+          <li>Prevents delayed dictation from stealing cursor focus or pasting into a different field, including Messages search</li>
+          <li>Copies the transcript to the clipboard whenever the exact original field can no longer be safely verified</li>
+          <li>Adds privacy-safe insertion diagnostics to bug reports so focus and paste failures can be investigated without collecting dictated text</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 19 Aug 2026 00:55:16 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.62/Voce-0.4.62.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="oMTfH1gautL0IUyJqL3VsfuYOCe/qyfA3OGkbLRVAwaEG2fPm5B7WBVRaw35i3wghAwM0jsMG/01OqMb0UlLCQ=="
+        length="19571297"
+      />
+    </item>
+    <item>
       <title>Version 0.4.61</title>
       <sparkle:version>64</sparkle:version>
       <sparkle:shortVersionString>0.4.61</sparkle:shortVersionString>

@@ -254,6 +254,8 @@ final class DictationController: ObservableObject {
 
     private var recordingStateMachine = RecordingStateMachine()
     private var currentSessionID: SessionID?
+    private var latestDictationSequence: UInt64 = 0
+    private var activeDictationSequence: UInt64?
     private var activeAppContext: AppContext?
     private var activeInputTarget: FocusedInputTarget?
     private var activeRecordingMode: RecordingMode?
@@ -432,6 +434,7 @@ final class DictationController: ObservableObject {
         overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
         activeStartTask = nil
+        activeDictationSequence = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
         activeRealtimeWhisperSession?.preserveRecoveryCheckpoint()
@@ -1793,8 +1796,20 @@ final class DictationController: ObservableObject {
         clipboardRecoveryPrompt.hide()
         status = "Checking microphone..."
         lastError = ""
+        latestDictationSequence &+= 1
+        let dictationSequence = latestDictationSequence
+        activeDictationSequence = dictationSequence
         let capturedContext = AppContextProvider.current()
         let capturedInputTarget = FocusedInputTarget.captureCurrent()
+        VoceDiagnosticStore.shared.record(
+            category: "dictation",
+            event: "started",
+            details: [
+                "sequence": String(dictationSequence),
+                "target_bundle": capturedContext.bundleIdentifier,
+                "input_target_captured": String(capturedInputTarget != nil),
+            ]
+        )
         activeAppContext = capturedContext
         activeInputTarget = capturedInputTarget
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
@@ -1940,6 +1955,9 @@ final class DictationController: ObservableObject {
                 handsFreeOn = false
                 menuBar.updateIcon(isRecording: false, handsFreeOn: false)
                 activeRecordingMode = nil
+                if activeDictationSequence == dictationSequence {
+                    activeDictationSequence = nil
+                }
                 activeAppContext = nil
                 activeInputTarget = nil
                 activeFreeUsageLimitSeconds = nil
@@ -2020,6 +2038,7 @@ final class DictationController: ObservableObject {
                 await coordinator.cancel(sessionID: sessionID)
             }
             currentSessionID = nil
+            activeDictationSequence = nil
 
             if let token = activeMediaToken {
                 mediaInterruption.endInterruption(token: token)
@@ -2075,6 +2094,7 @@ final class DictationController: ObservableObject {
 
         let readyCoordinator = coordinator
         let readySessionID = currentSessionID
+        let readyDictationSequence = activeDictationSequence
         let readyPreferredCompletionAction = pendingCompletionActionOverride
         let readyStyleOverride = activeStyleOverride
         let readyMediaToken = activeMediaToken
@@ -2082,6 +2102,7 @@ final class DictationController: ObservableObject {
 
         if readySessionID != nil {
             currentSessionID = nil
+            activeDictationSequence = nil
             activeAppContext = nil
             activeInputTarget = nil
             pendingCompletionActionOverride = nil
@@ -2105,6 +2126,7 @@ final class DictationController: ObservableObject {
 
             let coordinator: SessionCoordinator?
             let sessionID: SessionID?
+            let dictationSequence: UInt64?
             let preferredCompletionAction: CompletionAction?
             let styleOverride: StyleProfile?
             let mediaToken: MediaInterruptionToken?
@@ -2113,6 +2135,7 @@ final class DictationController: ObservableObject {
             if let readyCoordinator, let readySessionID {
                 coordinator = readyCoordinator
                 sessionID = readySessionID
+                dictationSequence = readyDictationSequence
                 preferredCompletionAction = readyPreferredCompletionAction
                 styleOverride = readyStyleOverride
                 mediaToken = readyMediaToken
@@ -2123,11 +2146,13 @@ final class DictationController: ObservableObject {
                 await pendingStart?.value
                 coordinator = self.coordinator
                 sessionID = currentSessionID
+                dictationSequence = activeDictationSequence ?? readyDictationSequence
                 preferredCompletionAction = pendingCompletionActionOverride
                 styleOverride = activeStyleOverride
                 mediaToken = activeMediaToken
 
                 currentSessionID = nil
+                activeDictationSequence = nil
                 activeAppContext = nil
                 inputTarget = activeInputTarget
                 activeInputTarget = nil
@@ -2138,7 +2163,7 @@ final class DictationController: ObservableObject {
                 startPendingRecordingAfterAudioSecuredIfNeeded()
             }
 
-            guard let coordinator, let sessionID else {
+            guard let coordinator, let sessionID, let dictationSequence else {
                 previewSession?.cancel()
                 realtimeSession?.cancel()
                 recordingStateMachine.markTranscriptionFailed()
@@ -2265,6 +2290,15 @@ final class DictationController: ObservableObject {
 
                 do {
                     let executionBeganAt = clock.now
+                    VoceDiagnosticStore.shared.record(
+                        category: "completion",
+                        event: "execution_started",
+                        details: [
+                            "sequence": String(dictationSequence),
+                            "latest_sequence": String(latestDictationSequence),
+                            "target_bundle": finalizedTranscript.appContext.bundleIdentifier,
+                        ]
+                    )
                     let executor = CompletionExecutionService(
                         insertionService: insertionService,
                         clipboardService: clipboardService,
@@ -2275,13 +2309,26 @@ final class DictationController: ObservableObject {
                         finalizedTranscript: finalizedTranscript,
                         workflows: preferences.ai.workflows,
                         dictationPolishingEnabled: shouldPolishPlainDictation(routedCompletion),
-                        inputTarget: inputTarget
+                        inputTarget: inputTarget,
+                        automaticInsertionAllowed: {
+                            self.latestDictationSequence == dictationSequence
+                        }
                     )
                     let executionElapsed = executionBeganAt.duration(to: clock.now)
                     let executionElapsedSeconds = Double(executionElapsed.components.seconds)
                         + Double(executionElapsed.components.attoseconds) / 1_000_000_000_000_000_000
                     Self.logger.notice(
                         "Completion execution finished in \(executionElapsedSeconds, format: .fixed(precision: 2))s"
+                    )
+                    VoceDiagnosticStore.shared.record(
+                        category: "completion",
+                        event: "execution_finished",
+                        details: [
+                            "sequence": String(dictationSequence),
+                            "status": execution.insertResult.status.rawValue,
+                            "method": execution.insertResult.method.rawValue,
+                            "target_bundle": finalizedTranscript.appContext.bundleIdentifier,
+                        ]
                     )
 
                     lastTranscript = execution.finalText
