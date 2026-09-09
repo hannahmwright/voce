@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.63</title>
+      <sparkle:version>66</sparkle:version>
+      <sparkle:shortVersionString>0.4.63</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.63</h2>
+        <ul>
+          <li>Fixes an iMessage compatibility issue that could prevent dictation from pasting when macOS did not expose the composer text</li>
+          <li>Prevents repeated pastes and a stuck recovery popup when a paste was sent but could not be confirmed</li>
+          <li>Adds a close button and Escape dismissal to the recovery popup, with at most one recovery paste attempt</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 09 Sep 2026 02:29:46 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.63/Voce-0.4.63.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="eLZuC6Kuq0ni2yPv66I9w70U5A2FvfczHmZydo8zemvW6+oLaa9RtxYn6sc329k5Ie4qo/GgbAXovcoNLBMfAA=="
+        length="20304196"
+      />
+    </item>
+    <item>
       <title>Version 0.4.62</title>
       <sparkle:version>65</sparkle:version>
       <sparkle:shortVersionString>0.4.62</sparkle:shortVersionString>

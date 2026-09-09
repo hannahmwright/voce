@@ -200,3 +200,24 @@ func exactTargetInsertionSkipsUnverifiedFallbacks() async {
     #expect(result.status == .failed)
     #expect(await recorder.snapshot().isEmpty)
 }
+
+@Test("A sent but unverified paste never arms refocus recovery or fallback typing")
+func unverifiedPasteDoesNotRetry() async {
+    let clipboard = MemoryClipboardService()
+    let recorder = CallRecorder()
+    let service = InsertionService(transports: [
+        ClipboardInsertionTransport(clipboard: clipboard) { _ in
+            await recorder.append(.clipboardPaste)
+            // The old wording accidentally qualified as a focus failure.
+            return .unverified(reason: "The editable field selected for dictation did not accept the pasted transcript.")
+        },
+        ClosureInsertionTransport(method: .direct) { _, _ in await recorder.append(.direct) },
+        ClosureInsertionTransport(method: .accessibility) { _, _ in await recorder.append(.accessibility) }
+    ])
+    let transcript = String(repeating: "Long dictation paragraph. ", count: 1000)
+    let result = await service.insert(text: transcript, target: .unknown)
+    #expect(result.status == .copiedOnly)
+    #expect(result.recoveryAction == .checkBeforePasting)
+    #expect(await recorder.snapshot() == [.clipboardPaste])
+    #expect(await clipboard.latestValue == transcript)
+}

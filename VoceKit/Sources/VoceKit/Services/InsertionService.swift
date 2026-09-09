@@ -2,11 +2,15 @@ import Foundation
 
 public enum AutoPasteOutcome: Sendable, Equatable {
     case attempted
+    /// Cmd+V was sent, but insertion could not be confirmed. Never auto-retry.
+    case unverified(reason: String)
     case skipped(reason: String)
 
     public var skippedReason: String? {
-        guard case .skipped(let reason) = self else { return nil }
-        return reason
+        switch self {
+        case .attempted: return nil
+        case .skipped(let reason), .unverified(let reason): return reason
+        }
     }
 }
 
@@ -63,6 +67,10 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         status = .inserted
                         errorMessage = nil
                         recoveryAction = nil
+                    case .unverified(let reason):
+                        status = .copiedOnly
+                        errorMessage = reason
+                        recoveryAction = .checkBeforePasting
                     case .skipped(let reason):
                         status = .copiedOnly
                         errorMessage = reason
@@ -315,7 +323,7 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         switch pasteOutcome {
         case .attempted:
             didConsumeStagedText = await provider.waitUntilConsumed()
-        case .skipped:
+        case .skipped, .unverified:
             didConsumeStagedText = false
         }
 
@@ -330,16 +338,18 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         if disposition == .keepCurrentClipboard {
             let baseReason = pasteOutcome.skippedReason
                 ?? "Voce could not confirm that the target accepted the paste."
-            return .skipped(
-                reason: "\(baseReason) The clipboard changed during insertion, so Voce did not overwrite the newer clipboard contents."
-            )
+            let reason = "\(baseReason) The clipboard changed during insertion, so Voce did not overwrite the newer clipboard contents."
+            if case .skipped = pasteOutcome {
+                return .skipped(reason: reason)
+            }
+            return .unverified(reason: reason)
         }
 
         guard pasteOutcome == .attempted, !didConsumeStagedText else {
             return pasteOutcome
         }
 
-        return .skipped(
+        return .unverified(
             reason: "Voce could not confirm that the target accepted the paste. The transcript was kept on your clipboard."
         )
     }

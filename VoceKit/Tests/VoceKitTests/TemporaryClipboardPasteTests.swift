@@ -182,3 +182,14 @@ func externalClipboardChangeWinsDuringTemporaryPaste() {
     #expect(disposition == .keepCurrentClipboard)
     #expect(pasteboard.string(forType: .string) == "newer user copy")
 }
+
+@Test("Unverified auto-paste preserves the transcript and its no-retry outcome")
+func unverifiedAutoPastePreservesTranscript() async throws {
+    let clipboard = TransactionalMemoryClipboard(value: "previous clipboard")
+    let expected = AutoPasteOutcome.unverified(reason: "Paste sent but not confirmed")
+    let transport = ClipboardInsertionTransport(clipboard: clipboard) { _ in expected }
+    let outcome = try await transport.insertAndReturnOutcome(text: "recovery transcript", target: .unknown)
+    #expect(outcome == expected)
+    #expect(await clipboard.value == "recovery transcript")
+    #expect(await clipboard.restoreCount == 0)
+}

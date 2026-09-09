@@ -88,6 +88,7 @@ public enum InsertionStatus: String, Sendable, Codable, Equatable {
 }
 
 public enum InsertionRecoveryAction: String, Sendable, Codable, Equatable {
+    case checkBeforePasting
     case refocusToPaste
 }
 

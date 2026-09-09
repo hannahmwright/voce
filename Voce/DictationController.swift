@@ -7,10 +7,12 @@ import SwiftUI
 import VoceKit
 
 @MainActor
-private final class ClipboardRecoveryPromptPresenter: NSObject {
+final class ClipboardRecoveryPromptPresenter: NSObject {
     private var panel: NSPanel?
     private var globalClickMonitor: Any?
-    private var pendingPasteTask: Task<Void, Never>?
+    private var globalKeyMonitor: Any?
+    private var localKeyMonitor: Any?
+    private(set) var pendingPasteTask: Task<Void, Never>?
     private var pasteAfterRefocus: (() async -> Bool)?
     private var copyToClipboard: (() -> Void)?
 
@@ -18,6 +20,7 @@ private final class ClipboardRecoveryPromptPresenter: NSObject {
         onCopy: @escaping () -> Void,
         onPasteAfterRefocus: @escaping () async -> Bool
     ) {
+        hide()
         ensurePanel()
         copyToClipboard = onCopy
         pasteAfterRefocus = onPasteAfterRefocus
@@ -30,6 +33,10 @@ private final class ClipboardRecoveryPromptPresenter: NSObject {
     func hide() {
         pendingPasteTask?.cancel()
         pendingPasteTask = nil
+        dismissPanel()
+    }
+
+    private func dismissPanel() {
         pasteAfterRefocus = nil
         copyToClipboard = nil
 
@@ -38,20 +45,35 @@ private final class ClipboardRecoveryPromptPresenter: NSObject {
             self.globalClickMonitor = nil
         }
 
+        if let globalKeyMonitor {
+            NSEvent.removeMonitor(globalKeyMonitor)
+            self.globalKeyMonitor = nil
+        }
+        if let localKeyMonitor {
+            NSEvent.removeMonitor(localKeyMonitor)
+            self.localKeyMonitor = nil
+        }
         panel?.orderOut(nil)
     }
 
     @objc
-    private func handleCopyButton() {
+    func handleCopyButton() {
         copyToClipboard?()
         hide()
     }
+
+    @objc
+    func handleDismissButton() {
+        hide()
+    }
+
+    var isVisible: Bool { panel?.isVisible == true }
 
     private func ensurePanel() {
         guard panel == nil else { return }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 248, height: 52),
+            contentRect: NSRect(x: 0, y: 0, width: 280, height: 52),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -98,14 +120,24 @@ private final class ClipboardRecoveryPromptPresenter: NSObject {
         button.translatesAutoresizingMaskIntoConstraints = false
         button.setButtonType(.momentaryPushIn)
 
+        let dismiss = NSButton(title: "", target: self, action: #selector(handleDismissButton))
+        dismiss.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Dismiss")
+        dismiss.isBordered = false
+        dismiss.toolTip = "Dismiss (Esc)"
+        dismiss.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(label)
         root.addSubview(button)
+        root.addSubview(dismiss)
 
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
             label.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             button.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor, constant: 12),
-            button.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            button.trailingAnchor.constraint(equalTo: dismiss.leadingAnchor, constant: -8),
+            dismiss.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            dismiss.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            dismiss.widthAnchor.constraint(equalToConstant: 20),
+            dismiss.heightAnchor.constraint(equalToConstant: 28),
             button.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             button.heightAnchor.constraint(equalToConstant: 28),
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: 62)
@@ -125,23 +157,37 @@ private final class ClipboardRecoveryPromptPresenter: NSObject {
                 self?.handleGlobalClick()
             }
         }
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return }
+            Task { @MainActor [weak self] in self?.hide() }
+        }
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            self?.hide()
+            return nil
+        }
     }
 
     private func handleGlobalClick() {
         guard let panel, panel.isVisible else { return }
         guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
+        recoverAfterRefocusClick()
+    }
+
+    // One recovery attempt per prompt. An uncertain result must never re-arm
+    // the global click listener and paste the same transcript repeatedly.
+    func recoverAfterRefocusClick() {
         guard pendingPasteTask == nil else { return }
         guard let pasteAfterRefocus else { return }
 
         pendingPasteTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 180_000_000)
             guard !Task.isCancelled else { return }
-            let didPaste = await pasteAfterRefocus()
             guard let self else { return }
+            self.dismissPanel()
+            _ = await pasteAfterRefocus()
+            guard !Task.isCancelled else { return }
             self.pendingPasteTask = nil
-            if didPaste {
-                self.hide()
-            }
         }
     }
 
@@ -3273,6 +3319,9 @@ final class DictationController: ObservableObject {
     }
 
     private func copiedOnlyStatusMessage(for result: InsertResult) -> String {
+        if result.recoveryAction == .checkBeforePasting {
+            return "Paste sent. Check the input before pasting again."
+        }
         if result.recoveryAction == .refocusToPaste {
             return "Click the input again."
         }
@@ -3381,9 +3430,13 @@ final class DictationController: ObservableObject {
                 baseStatus = "AI result inserted."
                 lastError = ""
             case .copiedOnly:
-                baseStatus = result.recoveryAction == .refocusToPaste
-                    ? "Click the input again."
-                    : "AI result copied to clipboard. Paste with Cmd+V."
+                if result.recoveryAction == .checkBeforePasting {
+                    baseStatus = "Paste sent. Check the input before pasting again."
+                } else {
+                    baseStatus = result.recoveryAction == .refocusToPaste
+                        ? "Click the input again."
+                        : "AI result copied to clipboard. Paste with Cmd+V."
+                }
                 lastError = result.errorMessage ?? ""
                 presentClipboardRecoveryPromptIfNeeded(for: result, targetAppContext: targetAppContext)
             case .failed:
@@ -3414,19 +3467,19 @@ final class DictationController: ObservableObject {
     ) {
         guard result.recoveryAction == .refocusToPaste else { return }
 
+        let transcript = result.insertedText
         clipboardRecoveryPrompt.show(
             onCopy: { [weak self] in
-                self?.copyCurrentTranscriptToClipboardForRecovery()
+                self?.copyTranscriptToClipboardForRecovery(transcript)
             },
             onPasteAfterRefocus: { [weak self] in
                 guard let self else { return false }
-                return await self.completeClipboardRecoveryPaste(into: targetAppContext)
+                return await self.completeClipboardRecoveryPaste(text: transcript, into: targetAppContext)
             }
         )
     }
 
-    private func copyCurrentTranscriptToClipboardForRecovery() {
-        let transcript = currentTranscriptText
+    private func copyTranscriptToClipboardForRecovery(_ transcript: String) {
         guard !transcript.isEmpty else { return }
 
         Task {
@@ -3441,19 +3494,38 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func completeClipboardRecoveryPaste(into targetAppContext: AppContext) async -> Bool {
+    private func completeClipboardRecoveryPaste(text: String, into targetAppContext: AppContext) async -> Bool {
         let recoveryInputTarget = FocusedInputTarget.captureCurrent()
-        let outcome = await MacPasteHelper.activateAndPaste(
-            text: currentTranscriptText,
-            target: targetAppContext,
-            inputTarget: recoveryInputTarget
+        let transport = ClipboardInsertionTransport(
+            clipboard: clipboardService,
+            autoPasteWithInputTarget: { text, target, inputTarget in
+                await MacPasteHelper.activateAndPaste(text: text, target: target, inputTarget: inputTarget)
+            }
         )
+        let outcome: AutoPasteOutcome
+        do {
+            outcome = try await transport.insertAndReturnOutcome(
+                text: text, target: targetAppContext, inputTarget: recoveryInputTarget
+            )
+        } catch {
+            guard !Task.isCancelled else { return false }
+            status = "Paste unavailable. Copy the transcript from History to paste manually."
+            lastError = error.localizedDescription
+            return false
+        }
+        guard !Task.isCancelled else { return false }
         switch outcome {
         case .attempted:
             status = "Transcript inserted."
             lastError = ""
             return true
-        case .skipped:
+        case .unverified(let reason):
+            status = "Paste sent. Check the input before pasting again."
+            lastError = reason
+            return false
+        case .skipped(let reason):
+            status = "Auto-paste unavailable. Copy the transcript from History to paste manually."
+            lastError = reason
             return false
         }
     }

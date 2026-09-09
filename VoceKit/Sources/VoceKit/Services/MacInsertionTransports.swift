@@ -489,6 +489,18 @@ public enum MacPasteHelper {
             )
         }
 
+        if !valueBeforePaste.hasVerificationSignal {
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "paste_verification_limited",
+                details: ["target_bundle": target.bundleIdentifier]
+            )
+        }
+
+        guard !Task.isCancelled else {
+            return .skipped(reason: "Paste cancelled before sending Cmd+V.")
+        }
+
         guard simulateCommandV() else {
             return skipped(
                 code: "command_v_unavailable",
@@ -502,19 +514,33 @@ public enum MacPasteHelper {
         // to expose the expected value before reporting success.
         for _ in 0..<10 {
             try? await Task.sleep(nanoseconds: 75_000_000)
-            if await inputTarget.verifyInsertion(of: text, from: valueBeforePaste) {
+            if let evidence = await inputTarget.insertionEvidence(
+                for: text,
+                from: valueBeforePaste
+            ) {
                 VoceDiagnosticStore.shared.record(
                     category: "insertion",
                     event: "paste_verified",
-                    details: ["target_bundle": target.bundleIdentifier]
+                    details: [
+                        "evidence": evidence.rawValue,
+                        "target_bundle": target.bundleIdentifier,
+                    ]
                 )
                 return .attempted
             }
         }
 
-        return skipped(
+        if !valueBeforePaste.hasVerificationSignal {
+            return unverified(
+                code: "paste_attempted_unverified",
+                message: "Voce attempted to paste, but macOS did not expose enough Accessibility state to verify the result. The transcript was kept on your clipboard.",
+                target: target
+            )
+        }
+
+        return unverified(
             code: "paste_not_verified",
-            message: "The editable field selected for dictation did not accept the pasted transcript.",
+            message: "Voce sent the paste but could not confirm the result. Check the input before pasting again. The transcript was kept on your clipboard.",
             target: target
         )
     }
@@ -588,6 +614,19 @@ public enum MacPasteHelper {
     @MainActor
     private static func inputTargetAppIsFrontmost(_ inputTarget: FocusedInputTarget) -> Bool {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier == inputTarget.bundleIdentifier
+    }
+
+    private static func unverified(
+        code: String,
+        message: String,
+        target: AppContext
+    ) -> AutoPasteOutcome {
+        VoceDiagnosticStore.shared.record(
+            category: "insertion",
+            event: "paste_unverified",
+            details: ["reason": code, "target_bundle": target.bundleIdentifier]
+        )
+        return .unverified(reason: message)
     }
 
     private static func skipped(
