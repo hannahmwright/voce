@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: swift-tests-${{ github.ref }}
@@ -57,3 +58,26 @@ jobs:
             -scheme Voce \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
+
+      # Explicitly report the verified result so manually dispatched release
+      # runs satisfy the protected branch even when check rollup is missing.
+      - name: Report required test status
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_JOB_STATUS: ${{ job.status }}
+        run: |
+          if [[ "$CI_JOB_STATUS" == "success" ]]; then
+            state=success
+            description="VoceKit tests and macOS build passed"
+          else
+            state=failure
+            description="VoceKit tests or macOS build did not pass"
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$CI_HEAD_SHA" \
+            -f state="$state" \
+            -f context=test \
+            -f description="$description" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --silent
