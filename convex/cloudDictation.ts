@@ -303,7 +303,7 @@ Preserve dictionary spellings when present or strongly implied.
 Use bullets only when the transcript clearly represents requirements, tasks, criteria, ingredients, steps, or grouped attributes. Otherwise return a paragraph.
 Do not add headings, summarize away substance, or add marketing language or PM-speak.
 Keep punctuation clean and natural.
-    `.trim() + (args.transcript.includes("")
+    `.trim() + (args.transcript.includes("\uE000")
       ? "\nThe transcript contains placeholder tokens made of private-use characters, each starting with U+E000 and ending with U+E001. They stand for text inserted later. Copy every placeholder verbatim, exactly once, in its original position; never translate, remove, merge, split or duplicate them."
       : ""),
     user: `
