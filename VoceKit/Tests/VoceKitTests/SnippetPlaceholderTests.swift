@@ -8,7 +8,8 @@ private func finalize(
     snippets: [Snippet],
     structureMode: StructureMode = .natural,
     cleanupEngine: any CleanupEngine = RuleBasedCleanupEngine(),
-    lexicon: [LexiconEntry] = []
+    lexicon: [LexiconEntry] = [],
+    appContext: AppContext = .unknown
 ) async throws -> FinalizedTranscript {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
     try Data().write(to: audioURL)
@@ -32,7 +33,7 @@ private func finalize(
         fallbackCleanupEngine: RuleBasedCleanupEngine()
     )
 
-    let sessionID = try await coordinator.startPressToTalk(appContext: .unknown)
+    let sessionID = try await coordinator.startPressToTalk(appContext: appContext)
     return try await coordinator.stopPressToTalk(sessionID: sessionID)
 }
 
@@ -42,6 +43,27 @@ private struct PlaceholderDroppingCleanupEngine: CleanupEngine {
         var text = raw.text
         text.unicodeScalars.removeAll { (0xE000...0xF8FF).contains($0.value) }
         return CleanTranscript(text: "REFINED " + text)
+    }
+}
+
+/// Simulates a cloud refiner that duplicates the text (and so each placeholder).
+private struct PlaceholderDuplicatingCleanupEngine: CleanupEngine {
+    func cleanup(raw: RawTranscript, profile: StyleProfile, lexicon: PersonalLexicon) async throws -> CleanTranscript {
+        CleanTranscript(text: "REFINED " + raw.text + " " + raw.text)
+    }
+}
+
+/// Records whether it was called.
+private actor CallRecorder {
+    var calls = 0
+    func record() { calls += 1 }
+}
+
+private struct RecordingCleanupEngine: CleanupEngine {
+    let recorder: CallRecorder
+    func cleanup(raw: RawTranscript, profile: StyleProfile, lexicon: PersonalLexicon) async throws -> CleanTranscript {
+        await recorder.record()
+        return CleanTranscript(text: "REFINED " + raw.text)
     }
 }
 
@@ -72,22 +94,62 @@ func lexiconDoesNotRewriteTrigger() async throws {
     #expect(result.cleanText == "thanks Best,\nHannah")
 }
 
-@Test("Expansion at sentence start is capitalized")
-func expansionAtSentenceStartIsCapitalized() async throws {
+@Test("Expansions are inserted verbatim except at the very start of a capitalizing profile")
+func expansionsAreVerbatimExceptAtTextStart() async throws {
     let brb = Snippet(trigger: "brb", expansion: "be right back")
+    let ty = Snippet(trigger: "ty", expansion: "thank you")
+    let terminal = AppContext(bundleIdentifier: "com.apple.Terminal", appName: "Terminal")
 
-    let natural = try await finalize(transcript: "brb see you", snippets: [brb])
     let paragraph = try await finalize(transcript: "brb see you", snippets: [brb], structureMode: .paragraph)
-    let midSentence = try await finalize(transcript: "ok brb see you", snippets: [brb])
+    let natural = try await finalize(transcript: "brb see you", snippets: [brb], structureMode: .natural)
+    let gitStatus = try await finalize(
+        transcript: "gs",
+        snippets: [Snippet(trigger: "gs", expansion: "git status")],
+        structureMode: .paragraph,
+        appContext: terminal
+    )
     let email = try await finalize(
         transcript: "mail me at",
-        snippets: [Snippet(trigger: "mail me at", expansion: "hannah@example.com")]
+        snippets: [Snippet(trigger: "mail me at", expansion: "hannah@example.com")],
+        structureMode: .paragraph
     )
 
-    #expect(natural.cleanText == "Be right back see you")
     #expect(paragraph.cleanText == "Be right back see you")
-    #expect(midSentence.cleanText == "ok be right back see you")
+    #expect(natural.cleanText == "be right back see you")
+    #expect(gitStatus.cleanText == "git status")
     #expect(email.cleanText == "hannah@example.com")
+
+    for (input, expected) in [
+        ("Mr. brb", "Mr. be right back"),
+        ("e.g. brb", "E.g. be right back"),
+        ("approx. ty", "Approx. thank you"),
+        ("I use version 2. ty", "I use version 2. thank you"),
+        ("wait... brb", "Wait... be right back"),
+        ("ok brb see you", "Ok be right back see you"),
+    ] {
+        let result = try await finalize(transcript: input, snippets: [brb, ty], structureMode: .paragraph)
+        #expect(result.cleanText == expected, "\(input)")
+    }
+}
+
+@Test("Raw text keeps snippet expansions verbatim for history copy")
+func rawTextKeepsExpansions() async throws {
+    let result = try await finalize(transcript: "um thanks sig", snippets: [signature])
+
+    #expect(result.rawText == "um thanks Best,\nHannah")
+}
+
+@Test("A dictation that is only a snippet trigger skips the primary cleanup")
+func onlyTriggerSkipsPrimaryCleanup() async throws {
+    let recorder = CallRecorder()
+    let result = try await finalize(
+        transcript: "sig",
+        snippets: [signature],
+        cleanupEngine: RecordingCleanupEngine(recorder: recorder)
+    )
+
+    #expect(result.cleanText == "Best,\nHannah")
+    #expect(await recorder.calls == 0)
 }
 
 @Test("Multi-word triggers match across recognizer line breaks and extra spaces")
@@ -98,16 +160,29 @@ func multiWordTriggerMatchesAcrossWhitespace() async throws {
     #expect(await service.apply(to: "send to my   address", appContext: nil) == "send to 1 Main St")
 }
 
-@Test("Refined text that loses a placeholder is discarded for local cleanup")
-func lostPlaceholderFallsBackToLocalCleanup() async throws {
+@Test("Refined text that duplicates a placeholder is discarded for local cleanup without an outage warning")
+func duplicatedPlaceholderFallsBackToLocalCleanup() async throws {
     let result = try await finalize(
         transcript: "um thanks for the help sig",
         snippets: [signature],
-        cleanupEngine: PlaceholderDroppingCleanupEngine()
+        cleanupEngine: PlaceholderDuplicatingCleanupEngine()
     )
 
     #expect(result.cleanText == "thanks for the help Best,\nHannah")
     #expect(result.cleanupOutcome?.source == .localFallback)
+    #expect(result.cleanupOutcome?.warning == nil)
+}
+
+@Test("Refined text that drops a placeholder (self-correction) is accepted")
+func droppedPlaceholderIsAccepted() async throws {
+    let result = try await finalize(
+        transcript: "send it to my address, no actually my email",
+        snippets: [Snippet(trigger: "my address", expansion: "1 Main St")],
+        cleanupEngine: PlaceholderDroppingCleanupEngine()
+    )
+
+    #expect(result.cleanText == "REFINED send it to , no actually my email")
+    #expect(result.cleanupOutcome?.source == .localSuccess)
 }
 
 @Test("Refined text that keeps placeholders is used and receives the expansion")
@@ -126,15 +201,22 @@ func keptPlaceholderUsesRefinedText() async throws {
 func placeholderIntegrityCheck() async {
     let service = SnippetService(snippets: [signature, Snippet(trigger: "brb", expansion: "be right back")])
     let protected = await service.protect("sig and brb", appContext: nil)
-    let placeholders = Array(protected.expansions.keys)
+    let placeholders = protected.placeholders
 
     #expect(protected.expansions.count == 2)
     #expect(protected.text.contains("sig") == false)
     #expect(protected.placeholdersAreIntact(in: protected.text))
     #expect(protected.placeholdersAreIntact(in: "Rewritten: " + protected.text.uppercased()))
     #expect(protected.placeholdersAreIntact(in: protected.text + placeholders[0]) == false)
-    #expect(protected.placeholdersAreIntact(in: protected.text.replacingOccurrences(of: placeholders[1], with: "")) == false)
+    // Dropping a placeholder is fine; it simply isn't restored.
+    #expect(protected.placeholdersAreIntact(in: protected.text.replacingOccurrences(of: placeholders[1], with: "")))
+    // Unknown or altered placeholders are rejected.
+    #expect(protected.placeholdersAreIntact(in: protected.text + SnippetProtectedText.placeholder(index: 7)) == false)
+    #expect(protected.placeholdersAreIntact(in: protected.text + "\u{E000}x") == false)
     #expect(protected.restore(in: protected.text) == "Best,\nHannah and be right back")
+    // Deterministic, position-ordered restoration even when ids are out of order.
+    let swapped = placeholders[1] + " then " + placeholders[0]
+    #expect(protected.restore(in: swapped) == "be right back then Best,\nHannah")
 }
 
 @Test("Placeholders survive every local cleanup step and voice commands")

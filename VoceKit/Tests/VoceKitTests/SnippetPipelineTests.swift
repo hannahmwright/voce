@@ -44,7 +44,7 @@ func multiLineSnippetIsInsertedVerbatim() async throws {
     )
 
     #expect(result.cleanText == "Thanks for your help \(expansion)")
-    #expect(result.rawText == "um thanks for your help my sig")
+    #expect(result.rawText == "um thanks for your help \(expansion)")
 }
 
 @Test("Snippets still expand alongside cleanup and voice commands")

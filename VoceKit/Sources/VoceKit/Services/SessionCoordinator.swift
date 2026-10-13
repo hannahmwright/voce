@@ -244,14 +244,19 @@ public actor SessionCoordinator {
         // Expand snippets last so expansions are inserted verbatim: cleanup would
         // otherwise flatten multi-line expansions, strip "fillers" inside them,
         // apply lexicon/voice commands to them, or let the ranker reject them.
-        let finalText = protectedSnippets.restore(in: commandedText)
+        let finalText = protectedSnippets.restore(
+            in: commandedText,
+            capitalizingAtTextStart: Self.capitalizesSentences(profile: profile, appContext: active.appContext)
+        )
 
         Self.logger.notice(
             "Session finaliseTranscript total \(self.secondsSince(startedAt, clock: clock), format: .fixed(precision: 2))s"
         )
 
         return FinalizedTranscript(
-            rawText: rawTranscript.text,
+            // Raw text keeps the expansions (verbatim), as when snippets were
+            // expanded before cleanup, so "copy transcript" copies them.
+            rawText: protectedSnippets.restore(in: protectedSnippets.text),
             cleanText: finalText,
             removedFillers: cleanupResult.transcript.removedFillers,
             cleanupOutcome: cleanupResult.outcome,
@@ -294,24 +299,26 @@ public actor SessionCoordinator {
             )
         }
 
-        do {
-            let cleaned = try await engines.cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
-            guard protectedSnippets.placeholdersAreIntact(in: cleaned.text) else {
-                // A cleanup engine (typically cloud refinement) dropped,
-                // duplicated or altered a snippet placeholder; its output can't
-                // be trusted to receive the expansions, so use local cleanup.
-                throw SnippetPlaceholderError.placeholdersNotPreserved
-            }
+        // Nothing but snippet triggers (e.g. the dictation is only "sig"):
+        // there is nothing to clean, so don't send it anywhere.
+        if protectedSnippets.hasPlaceholders, !protectedSnippets.hasContentOutsidePlaceholders {
             return CleanupExecutionResult(
-                transcript: cleaned,
-                outcome: CleanupOutcome(source: .localSuccess)
+                transcript: CleanTranscript(text: raw.text),
+                outcome: CleanupOutcome(source: .localOnly)
             )
+        }
+
+        let cleaned: CleanTranscript
+        do {
+            cleaned = try await engines.cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
         } catch {
-            var fallback = try await engines.fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
-            if !protectedSnippets.placeholdersAreIntact(in: fallback.text) {
-                // Last resort: the uncleaned text, which holds every placeholder.
-                fallback = CleanTranscript(text: raw.text)
-            }
+            var fallback = try await localFallbackCleanup(
+                raw: raw,
+                protectedSnippets: protectedSnippets,
+                profile: profile,
+                lexicon: lexicon,
+                engines: engines
+            )
             let warning = "Primary cleanup unavailable, used local fallback."
             fallback.uncertaintyFlags.append(warning)
             return CleanupExecutionResult(
@@ -319,9 +326,65 @@ public actor SessionCoordinator {
                 outcome: CleanupOutcome(source: .localFallback, warning: warning)
             )
         }
-    }
-}
 
-private enum SnippetPlaceholderError: Error {
-    case placeholdersNotPreserved
+        guard protectedSnippets.placeholdersAreIntact(in: cleaned.text) else {
+            // The primary engine (typically cloud refinement) duplicated or
+            // altered a snippet placeholder, so its output can't receive the
+            // expansions. Use local cleanup for this dictation; the primary
+            // engine worked, so no "unavailable" warning is shown.
+            let fallback = try await localFallbackCleanup(
+                raw: raw,
+                protectedSnippets: protectedSnippets,
+                profile: profile,
+                lexicon: lexicon,
+                engines: engines
+            )
+            return CleanupExecutionResult(
+                transcript: fallback,
+                outcome: CleanupOutcome(source: .localFallback)
+            )
+        }
+
+        return CleanupExecutionResult(
+            transcript: cleaned,
+            outcome: CleanupOutcome(source: .localSuccess)
+        )
+    }
+
+    private func localFallbackCleanup(
+        raw: RawTranscript,
+        protectedSnippets: SnippetProtectedText,
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        engines: SessionProcessingEngines
+    ) async throws -> CleanTranscript {
+        let fallback = try await engines.fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+        guard protectedSnippets.placeholdersAreIntact(in: fallback.text) else {
+            // Last resort: the uncleaned text, which holds every placeholder.
+            return CleanTranscript(text: raw.text)
+        }
+        return fallback
+    }
+
+    private static let terminalBundleIdentifiers: Set<String> = [
+        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "dev.warp.Warp",
+        "net.kovidgoyal.kitty", "org.alacritty", "io.alacritty", "com.mitchellh.ghostty",
+        "co.zeit.hyper", "com.github.wez.wezterm",
+    ]
+
+    /// Whether an expansion at the very start of the text should be
+    /// capitalized: only for sentence-capitalizing profiles, and never in
+    /// IDEs, terminals or with command passthrough ("gs" → "git status").
+    static func capitalizesSentences(profile: StyleProfile, appContext: AppContext) -> Bool {
+        guard profile.commandPolicy != .passthrough,
+              !appContext.isIDE,
+              !terminalBundleIdentifiers.contains(appContext.bundleIdentifier)
+        else { return false }
+        switch profile.structureMode {
+        case .paragraph, .email, .bullets:
+            return true
+        case .natural, .command:
+            return false
+        }
+    }
 }

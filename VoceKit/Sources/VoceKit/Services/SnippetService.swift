@@ -45,31 +45,31 @@ public actor SnippetService {
     /// - Words in a trigger match across any whitespace ("my\n\nsig").
     public func apply(to text: String, appContext: AppContext?) -> String {
         let protected = protect(text, appContext: appContext)
-        return protected.restore(in: protected.text, capitalizingSentenceStarts: false)
+        return protected.restore(in: protected.text)
     }
 
     /// Replaces snippet triggers with opaque placeholders so the text can go
     /// through cleanup, voice commands and cloud refinement without the
     /// triggers (or their expansions) being altered. Call
-    /// ``SnippetProtectedText/restore(in:capitalizingSentenceStarts:)`` on the
+    /// ``SnippetProtectedText/restore(in:capitalizingAtTextStart:)`` on the
     /// processed text to insert the expansions.
     public func protect(_ text: String, appContext: AppContext?) -> SnippetProtectedText {
         guard !text.isEmpty, let compiled = compiled(for: appContext?.bundleIdentifier) else {
-            return SnippetProtectedText(text: text, expansions: [:])
+            return SnippetProtectedText(text: text, expansions: [])
         }
 
         let nsText = text as NSString
         let matches = compiled.regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-        guard !matches.isEmpty else { return SnippetProtectedText(text: text, expansions: [:]) }
+        guard !matches.isEmpty else { return SnippetProtectedText(text: text, expansions: []) }
 
         var result = ""
         var cursor = 0
-        var expansions: [String: String] = [:]
+        var expansions: [String] = []
         for match in matches {
             let matchedTrigger = Self.normalizedTrigger(nsText.substring(with: match.range))
             guard let expansion = compiled.expansionsByTrigger[matchedTrigger] else { continue }
             let placeholder = SnippetProtectedText.placeholder(index: expansions.count)
-            expansions[placeholder] = expansion
+            expansions.append(expansion)
             result += nsText.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
             result += placeholder
             cursor = match.range.location + match.range.length
@@ -139,22 +139,33 @@ public actor SnippetService {
 
 /// Text whose snippet triggers were replaced by opaque placeholders.
 ///
-/// Placeholders consist only of Unicode private-use characters, so no cleanup
+/// Placeholders consist only of Unicode private-use characters
+/// (`U+E000`, private-use "digits" `U+E010…U+E019`, `U+E001`), so no cleanup
 /// step that works on letters, digits, whitespace or punctuation (filler
-/// removal, lexicon, voice commands, list formatting) can match or alter
-/// them. They are invisible to the word tokenizer used by the ranker.
+/// removal, lexicon, voice commands, list formatting) can match or alter them.
 public struct SnippetProtectedText: Sendable, Equatable {
     /// The text with placeholders in place of snippet triggers.
     public var text: String
-    /// Expansion for each placeholder.
-    public var expansions: [String: String]
+    /// Expansion for each placeholder, indexed by placeholder id.
+    public var expansions: [String]
 
-    public init(text: String, expansions: [String: String]) {
+    public init(text: String, expansions: [String]) {
         self.text = text
         self.expansions = expansions
     }
 
     public var hasPlaceholders: Bool { !expansions.isEmpty }
+
+    /// The placeholder strings, in id order.
+    public var placeholders: [String] {
+        expansions.indices.map(Self.placeholder(index:))
+    }
+
+    /// True when the text contains letters or digits outside placeholders,
+    /// i.e. there is something for a cleanup engine to work on.
+    public var hasContentOutsidePlaceholders: Bool {
+        text.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) && !Self.isPlaceholderScalar($0) }
+    }
 
     static let placeholderStart: Unicode.Scalar = "\u{E000}"
     static let placeholderEnd: Unicode.Scalar = "\u{E001}"
@@ -173,48 +184,112 @@ public struct SnippetProtectedText: Sendable, Equatable {
         return String(scalars)
     }
 
-    /// Every placeholder appears exactly once in `processed` (e.g. after cloud
-    /// refinement); otherwise the processed text must not be trusted.
-    public func placeholdersAreIntact(in processed: String) -> Bool {
-        guard hasPlaceholders else { return true }
-        for placeholder in expansions.keys {
-            guard processed.components(separatedBy: placeholder).count == 2 else { return false }
+    static func isPlaceholderScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (0xE000...0xE01F).contains(scalar.value)
+    }
+
+    private enum Piece {
+        case text(String.UnicodeScalarView)
+        case placeholder(Int)
+        case malformed
+    }
+
+    /// Splits `processed` into text runs and placeholders in one left-to-right pass.
+    private static func pieces(of processed: String) -> [Piece] {
+        var pieces: [Piece] = []
+        var run = String.UnicodeScalarView()
+        var digits: [UInt32]?
+
+        for scalar in processed.unicodeScalars {
+            if var collecting = digits {
+                if scalar == placeholderEnd {
+                    let index = collecting.reduce(0) { $0 * 10 + Int($1) }
+                    pieces.append(collecting.isEmpty ? .malformed : .placeholder(index))
+                    digits = nil
+                } else if (placeholderDigitBase...(placeholderDigitBase + 9)).contains(scalar.value) {
+                    collecting.append(scalar.value - placeholderDigitBase)
+                    digits = collecting
+                } else {
+                    pieces.append(.malformed)
+                    digits = nil
+                    if scalar == placeholderStart {
+                        digits = []
+                    } else if !isPlaceholderScalar(scalar) {
+                        run.append(scalar)
+                    }
+                }
+                continue
+            }
+
+            if scalar == placeholderStart {
+                if !run.isEmpty {
+                    pieces.append(.text(run))
+                    run = String.UnicodeScalarView()
+                }
+                digits = []
+            } else if isPlaceholderScalar(scalar) {
+                pieces.append(.malformed)
+            } else {
+                run.append(scalar)
+            }
         }
-        // No stray placeholder fragments beyond the expected ones.
-        let delimiterCount = processed.unicodeScalars.filter { $0 == Self.placeholderStart }.count
-        return delimiterCount == expansions.count
+        if digits != nil {
+            pieces.append(.malformed)
+        }
+        if !run.isEmpty {
+            pieces.append(.text(run))
+        }
+        return pieces
+    }
+
+    /// Whether processed text (e.g. cloud refinement output) can safely receive
+    /// the expansions: no placeholder is duplicated, altered or unknown.
+    /// Dropping a placeholder is allowed (a self-correction may legitimately
+    /// remove a snippet); dropped placeholders are simply not restored.
+    public func placeholdersAreIntact(in processed: String) -> Bool {
+        var seen = Set<Int>()
+        for piece in Self.pieces(of: processed) {
+            switch piece {
+            case .text:
+                continue
+            case .malformed:
+                return false
+            case .placeholder(let index):
+                guard expansions.indices.contains(index), seen.insert(index).inserted else { return false }
+            }
+        }
+        return true
     }
 
     /// Replaces placeholders in `processed` with their expansions, verbatim
-    /// (line breaks kept). With `capitalizingSentenceStarts`, an expansion that
-    /// lands at the start of the text or of a sentence gets its first letter
-    /// capitalized ("brb see you" → "Be right back see you"), unless its first
-    /// word looks deliberately cased (an email, URL or "iPhone").
-    public func restore(in processed: String, capitalizingSentenceStarts: Bool = true) -> String {
-        guard hasPlaceholders else { return processed }
-        var result = processed
-        // Longest placeholder first so "…1…" never matches inside "…10…"
-        // (delimiters already prevent this; ordering keeps it obvious).
-        for (placeholder, expansion) in expansions.sorted(by: { $0.key.count > $1.key.count }) {
-            while let range = result.range(of: placeholder) {
-                var replacement = expansion
-                if capitalizingSentenceStarts, Self.isSentenceStart(in: result, before: range.lowerBound) {
-                    replacement = Self.capitalizedFirstLetter(of: expansion)
-                }
-                result.replaceSubrange(range, with: replacement)
+    /// (line breaks and casing kept), in a single left-to-right pass.
+    ///
+    /// With `capitalizingAtTextStart`, an expansion that begins the whole text
+    /// gets its first letter capitalized, matching what sentence-capitalizing
+    /// profiles did when snippets were expanded before cleanup. Expansions
+    /// whose first word looks deliberately cased (an email, URL, "iPhone") are
+    /// left alone. Malformed placeholder fragments are dropped.
+    public func restore(in processed: String, capitalizingAtTextStart: Bool = false) -> String {
+        guard hasPlaceholders || processed.unicodeScalars.contains(where: Self.isPlaceholderScalar) else {
+            return processed
+        }
+        var result = ""
+        for piece in Self.pieces(of: processed) {
+            switch piece {
+            case .text(let run):
+                result.unicodeScalars.append(contentsOf: run)
+            case .malformed:
+                continue
+            case .placeholder(let index):
+                guard expansions.indices.contains(index) else { continue }
+                let expansion = expansions[index]
+                let isAtTextStart = result.allSatisfy(\.isWhitespace)
+                result += capitalizingAtTextStart && isAtTextStart
+                    ? Self.capitalizedFirstLetter(of: expansion)
+                    : expansion
             }
         }
-        // Drop any placeholder fragments a processing step may have split.
-        result.unicodeScalars.removeAll { scalar in
-            (0xE000...0xE01F).contains(scalar.value)
-        }
         return result
-    }
-
-    private static func isSentenceStart(in text: String, before index: String.Index) -> Bool {
-        let preceding = text[..<index]
-        guard let last = preceding.last(where: { $0 != " " && $0 != "\t" }) else { return true }
-        return ".!?\n".contains(last)
     }
 
     private static func capitalizedFirstLetter(of expansion: String) -> String {
