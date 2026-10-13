@@ -57,7 +57,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private var engineRestartGeneration: UInt64 = 0
     /// Converts tap buffers to the capture file's format after an input
     /// device change, so the file and recognition request stay consistent.
-    private var fileFormatConverter: CachedPCMConverter?
+    private var fileFormatConverter: StreamingPCMConverter?
+    private var didLogConversionFailure = false
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -106,7 +107,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         stateLock.withLock {
             self.outputURL = outputURL
             self.audioFile = audioFile
-            fileFormatConverter = CachedPCMConverter(outputFormat: audioFile.processingFormat)
+            fileFormatConverter = StreamingPCMConverter(outputFormat: audioFile.processingFormat)
         }
 
         let speechRecognitionAvailable: Bool
@@ -207,15 +208,26 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
 
     /// Runs on the audio tap thread.
     private func handleCapturedBuffer(_ buffer: AVAudioPCMBuffer) {
+        // After an input device change the tap delivers the new hardware
+        // format, which the capture file cannot take directly.
         let converter = stateLock.withLock { fileFormatConverter }
-        var fileBuffers: [AVAudioPCMBuffer] = []
-        if let converter, buffer.format != converter.outputFormat {
-            // After an input device change the tap delivers the new hardware
-            // format, which the capture file cannot take directly.
-            guard converter.convert(buffer, { fileBuffers.append($0) }) else {
-                recordTerminalError(AppleSpeechPreviewError.audioInputUnavailable)
+        let fileBuffers: [AVAudioPCMBuffer]
+        if let converter {
+            guard let converted = converter.process(buffer) else {
+                // Drop this buffer rather than end the dictation and lose
+                // everything captured so far.
+                let shouldLog = stateLock.withLock { () -> Bool in
+                    defer { didLogConversionFailure = true }
+                    return !didLogConversionFailure
+                }
+                if shouldLog {
+                    Self.logger.error(
+                        "Preview capture could not convert \(buffer.format.sampleRate, privacy: .public)Hz input to the capture file format"
+                    )
+                }
                 return
             }
+            fileBuffers = converted
         } else {
             fileBuffers = [buffer]
         }
@@ -346,6 +358,27 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         }
     }
 
+    /// Writes the audio a sample-rate converter still holds after a device
+    /// change. Called once the tap is removed and before the file closes.
+    private func flushFileFormatConverter() {
+        guard let converter = stateLock.withLock({ fileFormatConverter }) else { return }
+        let tail = converter.drain()
+        guard !tail.isEmpty else { return }
+        do {
+            try stateLock.withLock {
+                guard !hasStopped else { return }
+                for fileBuffer in tail {
+                    try audioFile?.write(from: fileBuffer)
+                    capturedFrameCount += AVAudioFramePosition(fileBuffer.frameLength)
+                }
+            }
+        } catch {
+            Self.logger.error(
+                "Preview capture could not write converted tail audio: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
     private func stopAudioEngine() {
         let observer = engineLock.withLock { () -> NSObjectProtocol? in
             let (engine, observer) = stateLock.withLock { () -> (AVAudioEngine?, NSObjectProtocol?) in
@@ -372,6 +405,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         // Remove the tap before marking the session stopped. Marking first can
         // drop the final in-flight buffer, which sounds like missing tail words.
         stopAudioEngine()
+        flushFileFormatConverter()
 
         let recognitionRequest = stateLock.withLock { () -> SFSpeechAudioBufferRecognitionRequest? in
             defer { self.recognitionRequest = nil }
@@ -517,6 +551,122 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         let decibels = 20 * log10(max(rms, 0.000_001))
         let clipped = max(-55, min(0, decibels))
         return Double((clipped + 55) / 55)
+    }
+}
+
+/// Converts capture buffers to the capture file's format as one continuous
+/// stream. Unlike per-buffer conversion, the resampler keeps its state
+/// between buffers (input is fed with `.noDataNow`), so a sample-rate change
+/// after a device switch does not leave a seam at every buffer edge. The
+/// converter is drained when the input format changes again and at stop.
+final class StreamingPCMConverter: @unchecked Sendable {
+    let outputFormat: AVAudioFormat
+    private let lock = NSLock()
+    private var converter: AVAudioConverter?
+
+    init(outputFormat: AVAudioFormat) {
+        self.outputFormat = outputFormat
+    }
+
+    /// Returns the buffers to write for `buffer` (the buffer itself when it
+    /// already matches the output format), or `nil` if conversion fails.
+    func process(_ buffer: AVAudioPCMBuffer) -> [AVAudioPCMBuffer]? {
+        lock.withLock {
+            var output: [AVAudioPCMBuffer] = []
+            if let converter, converter.inputFormat != buffer.format {
+                output += drainLocked()
+            }
+            if buffer.format == outputFormat {
+                output.append(buffer)
+                return output
+            }
+            if converter == nil {
+                guard let created = AVAudioConverter(from: buffer.format, to: outputFormat) else {
+                    return nil
+                }
+                converter = created
+            }
+            guard let converter else { return nil }
+            let input = StreamingConverterInput(buffer: buffer)
+            let capacity = Self.outputCapacity(for: buffer.frameLength, from: buffer.format, to: outputFormat)
+            while true {
+                guard let target = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+                    return nil
+                }
+                var conversionError: NSError?
+                let status = converter.convert(to: target, error: &conversionError) { _, outStatus in
+                    input.next(outStatus: outStatus)
+                }
+                guard conversionError == nil, status != .error else {
+                    self.converter = nil
+                    return nil
+                }
+                if target.frameLength > 0 {
+                    output.append(target)
+                }
+                // `.haveData` means the output buffer filled up; keep pulling.
+                if status != .haveData || target.frameLength == 0 {
+                    return output
+                }
+            }
+        }
+    }
+
+    /// Returns the frames still held by the converter, ending its stream.
+    func drain() -> [AVAudioPCMBuffer] {
+        lock.withLock { drainLocked() }
+    }
+
+    private func drainLocked() -> [AVAudioPCMBuffer] {
+        guard let converter else { return [] }
+        self.converter = nil
+        var output: [AVAudioPCMBuffer] = []
+        while true {
+            guard let target = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 4_096) else {
+                return output
+            }
+            var conversionError: NSError?
+            let status = converter.convert(to: target, error: &conversionError) { _, outStatus in
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            guard conversionError == nil, status != .error else { return output }
+            if target.frameLength > 0 {
+                output.append(target)
+            }
+            if status == .endOfStream || target.frameLength == 0 {
+                return output
+            }
+        }
+    }
+
+    private static func outputCapacity(
+        for frameLength: AVAudioFrameCount,
+        from inputFormat: AVAudioFormat,
+        to outputFormat: AVAudioFormat
+    ) -> AVAudioFrameCount {
+        let ratio = outputFormat.sampleRate / max(inputFormat.sampleRate, 1)
+        return max(1_024, AVAudioFrameCount((Double(frameLength) * ratio).rounded(.up)) + 1_024)
+    }
+}
+
+/// Supplies one buffer, then reports no data for now so the converter keeps
+/// its state for the next buffer instead of ending the stream.
+private final class StreamingConverterInput: @unchecked Sendable {
+    private var buffer: AVAudioPCMBuffer?
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func next(outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard let buffer else {
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+        self.buffer = nil
+        outStatus.pointee = .haveData
+        return buffer
     }
 }
 

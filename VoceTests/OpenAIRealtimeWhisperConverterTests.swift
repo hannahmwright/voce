@@ -143,6 +143,58 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         }
     }
 
+    func testStreamingConverterPassesMatchingFormatThrough() throws {
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let converter = StreamingPCMConverter(outputFormat: format)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_024))
+        buffer.frameLength = 1_024
+
+        let output = try XCTUnwrap(converter.process(buffer))
+
+        XCTAssertEqual(output.count, 1)
+        XCTAssertTrue(output.first === buffer)
+        XCTAssertTrue(converter.drain().isEmpty)
+    }
+
+    // After a device switch to a 24 kHz input, the capture file (48 kHz) must
+    // get continuous audio: no lost frames and no seams at buffer edges.
+    func testStreamingConverterResamplesContinuouslyAcrossBuffers() throws {
+        let fileFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let inputFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 24_000, channels: 1))
+        let converter = StreamingPCMConverter(outputFormat: fileFormat)
+        let framesPerBuffer = 512
+        var inputFrames = 0
+        var samples: [Float] = []
+
+        for bufferIndex in 0..<50 {
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(
+                pcmFormat: inputFormat,
+                frameCapacity: AVAudioFrameCount(framesPerBuffer)
+            ))
+            buffer.frameLength = AVAudioFrameCount(framesPerBuffer)
+            let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+            for frame in 0..<framesPerBuffer {
+                let t = Float(bufferIndex * framesPerBuffer + frame) / 24_000
+                channel[frame] = sin(2 * .pi * 440 * t) * 0.5
+            }
+            inputFrames += framesPerBuffer
+            for output in try XCTUnwrap(converter.process(buffer)) {
+                XCTAssertEqual(output.format, fileFormat)
+                samples += Array(UnsafeBufferPointer(start: output.floatChannelData?[0], count: Int(output.frameLength)))
+            }
+        }
+        for output in converter.drain() {
+            samples += Array(UnsafeBufferPointer(start: output.floatChannelData?[0], count: Int(output.frameLength)))
+        }
+
+        XCTAssertLessThanOrEqual(abs(samples.count - inputFrames * 2), 4)
+        // A 440 Hz sine at 0.5 amplitude moves at most ~0.03 per 48 kHz
+        // sample; per-buffer resets would put larger jumps at every seam.
+        let steadyState = samples.dropFirst(256).dropLast(256)
+        let largestStep = zip(steadyState, steadyState.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        XCTAssertLessThan(largestStep, 0.06)
+    }
+
     // Simulates a wedged websocket send: the drain wait in `stop()` must
     // return after the timeout even though the send task never completes,
     // so releasing the hotkey can never hang dictation forever.
