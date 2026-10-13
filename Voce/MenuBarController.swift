@@ -230,6 +230,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             backing: .buffered,
             defer: false
         )
+        // Owned by bubblePanel; close() must not also release it.
+        panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -281,8 +283,12 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private func closeBubblePanel() {
         if let panel = bubblePanel {
-            panel.orderOut(nil)
             bubblePanel = nil
+            // A new panel is built for each surface, so close the old one
+            // (releasing its window and hosting view) instead of leaving it
+            // ordered out.
+            panel.orderOut(nil)
+            panel.close()
         }
         removeBubblePanelOutsideMonitors()
     }
