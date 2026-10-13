@@ -1833,6 +1833,22 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Returns the lifecycle to idle on behalf of the dictation `owner`.
+    /// Late work from an earlier dictation is a no-op once a newer dictation
+    /// owns the state. With no owner the reset only applies to a state that no
+    /// dictation has claimed, which can only be a leftover of a failed start.
+    @discardableResult
+    private func markRecordingFinished(owner: UInt64?) -> Bool {
+        if let owner {
+            return recordingStateMachine.markTranscriptionCompleted(owner: owner)
+        }
+        guard recordingStateMachine.state != .idle,
+              recordingStateMachine.owner == nil
+        else { return false }
+        recordingStateMachine.markTranscriptionCompleted()
+        return true
+    }
+
     private func startSession(mode: RecordingMode) {
         guard let coordinator else {
             status = "Runtime not ready yet."
@@ -1847,6 +1863,7 @@ final class DictationController: ObservableObject {
         latestDictationSequence &+= 1
         let dictationSequence = latestDictationSequence
         activeDictationSequence = dictationSequence
+        recordingStateMachine.claim(owner: dictationSequence)
         let capturedContext = AppContextProvider.current()
         let capturedInputTarget = FocusedInputTarget.captureCurrent()
         VoceDiagnosticStore.shared.record(
@@ -2032,7 +2049,7 @@ final class DictationController: ObservableObject {
                 activePreviewSession = nil
                 activeRealtimeWhisperSession = nil
                 activeCloudUsageMetering = nil
-                recordingStateMachine.markTranscriptionFailed()
+                markRecordingFinished(owner: dictationSequence)
                 status = "Failed to start"
                 lastError = error.localizedDescription
                 overlay.hide()
@@ -2072,6 +2089,7 @@ final class DictationController: ObservableObject {
         let realtimeSession = activeRealtimeWhisperSession
         guard previewSession != nil || realtimeSession != nil else { return }
 
+        let failingSequence = activeDictationSequence
         let pendingStart = activeStartTask
         activeStartTask = nil
         activeStartTaskID = nil
@@ -2114,7 +2132,7 @@ final class DictationController: ObservableObject {
             pendingCompletionActionOverride = nil
             activeStyleOverride = nil
 
-            recordingStateMachine.markTranscriptionFailed()
+            markRecordingFinished(owner: failingSequence)
             clipboardRecoveryPrompt.hide()
             if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
                 status = streamingFailureStatusMessage(for: error)
@@ -2171,7 +2189,7 @@ final class DictationController: ObservableObject {
             pendingCompletionActionOverride = nil
             activeStyleOverride = nil
             activeMediaToken = nil
-            recordingStateMachine.markTranscriptionCompleted()
+            markRecordingFinished(owner: readyDictationSequence)
             startPendingRecordingAfterAudioSecuredIfNeeded()
         }
 
@@ -2235,14 +2253,14 @@ final class DictationController: ObservableObject {
                 pendingCompletionActionOverride = nil
                 activeStyleOverride = nil
                 activeMediaToken = nil
-                recordingStateMachine.markTranscriptionCompleted()
+                markRecordingFinished(owner: dictationSequence)
                 startPendingRecordingAfterAudioSecuredIfNeeded()
             }
 
             guard let coordinator, let sessionID, let dictationSequence else {
                 previewSession?.cancel()
                 realtimeSession?.cancel()
-                recordingStateMachine.markTranscriptionFailed()
+                markRecordingFinished(owner: dictationSequence ?? readyDictationSequence)
                 let error = CloudDictationError.providerError("No active recording session.")
                 if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
                     status = "No active recording session."
@@ -2477,7 +2495,7 @@ final class DictationController: ObservableObject {
             } catch {
                 if shouldSuppressEmptyTranscriptError(error, captureDurationMS: captureDurationMS) {
                     realtimeSession?.discardRecoveryCheckpoint()
-                    handleShortSilentCapture()
+                    handleShortSilentCapture(dictationSequence: dictationSequence)
                     await applyDeferredRebuildIfNeeded()
                     return
                 }
@@ -2488,9 +2506,7 @@ final class DictationController: ObservableObject {
                     "Streaming transcription failed after \(captureDurationMS, privacy: .public)ms capture: \(error.localizedDescription, privacy: .public)"
                 )
                 clipboardRecoveryPrompt.hide()
-                if !isRecording {
-                    recordingStateMachine.markTranscriptionFailed()
-                }
+                markRecordingFinished(owner: dictationSequence)
                 if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
                     if isRecording {
                         restoreActiveRecordingStatus()
@@ -3402,13 +3418,15 @@ final class DictationController: ObservableObject {
         return false
     }
 
-    private func handleShortSilentCapture() {
+    private func handleShortSilentCapture(dictationSequence: UInt64) {
+        markRecordingFinished(owner: dictationSequence)
+        // A newer dictation owns the overlay and status once it has started.
+        guard latestDictationSequence == dictationSequence else { return }
         status = "Recording stopped"
         lastError = ""
         overlay.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
-        recordingStateMachine.markTranscriptionCompleted()
     }
 
     private func scheduleLearningUpdate(for finalizedTranscript: FinalizedTranscript) {
