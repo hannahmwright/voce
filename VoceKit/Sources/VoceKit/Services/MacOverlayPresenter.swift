@@ -2355,14 +2355,31 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         }
     }
 
+    /// The boundary handlers run asynchronously, so one can land after the
+    /// overlay stopped transcribing or hid (e.g. the video ended just before
+    /// `.inserted` / `popAndHide()` paused it). Restarting playback then would
+    /// ping-pong the video, including costly reverse decoding, while nothing is
+    /// on screen.
+    private var shouldLoopProcessingVideo: Bool {
+        activePulseMode == .transcribing && !wasHidden
+    }
+
     private func handleProcessingVideoReachedEnd() {
         guard let player = processingPlayer else { return }
+        guard shouldLoopProcessingVideo else {
+            player.pause()
+            return
+        }
         // Reverse playback from the end.
         player.rate = -1.0
     }
 
     private func handleProcessingVideoReachedStart() {
         guard let player = processingPlayer else { return }
+        guard shouldLoopProcessingVideo else {
+            player.pause()
+            return
+        }
         // Forward playback from the start.
         player.seek(to: .zero)
         player.rate = 1.0
