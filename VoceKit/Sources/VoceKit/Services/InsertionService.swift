@@ -372,6 +372,14 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
             return .unverified(reason: reason)
         }
 
+        if disposition == .transcriptKeptSnapshotTooLarge {
+            // Surfaced as unverified (copied-only + "check before pasting") so
+            // the app tells the user their previous clipboard was replaced.
+            return .unverified(
+                reason: "Voce pasted the transcript, but your previous clipboard was too large to restore, so the transcript was left on your clipboard."
+            )
+        }
+
         guard pasteOutcome == .attempted, !didConsumeStagedText else {
             return pasteOutcome
         }
