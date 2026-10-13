@@ -91,6 +91,58 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(outputFrames - expectedOutputFrames), 120)
     }
 
+    func testCachedConverterMatchesFreshConversionPerBuffer() throws {
+        let sourceFormat = try XCTUnwrap(AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        ))
+        let cached = CachedPCMConverter(outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat)
+
+        for _ in 0..<20 {
+            let sourceBuffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: 1_024))
+            sourceBuffer.frameLength = 1_024
+            fillSineWave(sourceBuffer)
+
+            let fresh = try XCTUnwrap(OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(sourceBuffer))
+            let reused = try XCTUnwrap(OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(
+                sourceBuffer,
+                using: cached
+            ))
+
+            XCTAssertEqual(reused.outputFrameCount, fresh.outputFrameCount)
+            XCTAssertEqual(reused.data, fresh.data)
+        }
+    }
+
+    func testCachedConverterFollowsInputFormatChange() throws {
+        let cached = CachedPCMConverter(outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat)
+        for (sampleRate, channels) in [(48_000.0, AVAudioChannelCount(1)), (44_100.0, 2), (16_000.0, 1)] {
+            let sourceFormat = try XCTUnwrap(AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: sampleRate,
+                channels: channels,
+                interleaved: false
+            ))
+            let frameCount = Int(sampleRate / 10)
+            let sourceBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+                pcmFormat: sourceFormat,
+                frameCapacity: AVAudioFrameCount(frameCount)
+            ))
+            sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
+            fillSineWave(sourceBuffer)
+
+            let conversion = try XCTUnwrap(OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(
+                sourceBuffer,
+                using: cached
+            ))
+
+            XCTAssertLessThanOrEqual(abs(conversion.outputFrameCount - 2_400), 1, "sampleRate=\(sampleRate)")
+            XCTAssertEqual(conversion.data.count, conversion.outputFrameCount * 2)
+        }
+    }
+
     // Simulates a wedged websocket send: the drain wait in `stop()` must
     // return after the timeout even though the send task never completes,
     // so releasing the hotkey can never hang dictation forever.

@@ -175,6 +175,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// 50 minutes leaves enough time to fetch a new credential and retry the
     /// handshake without approaching the provider-enforced disconnect.
     static let connectionRolloverIntervalSeconds: TimeInterval = 50 * 60
+    /// Mic buffers arrive roughly every 21 ms. Coalescing them into ~100 ms
+    /// appends (24 kHz mono Int16) cuts websocket messages, JSON encoding and
+    /// base64 work about fivefold while adding at most ~100 ms of latency.
+    static let audioAppendBatchBytes = 4_800
 
     private let session: URLSession
     private let authTokenProvider: @Sendable (_ forceRefresh: Bool) async throws -> String
@@ -201,6 +205,12 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private var transcriptAccumulator: RealtimeTranscriptAccumulator?
     private var receiveTask: Task<Void, Never>?
     private var audioSendContinuation: AsyncStream<Data>.Continuation?
+    /// Converted PCM waiting to reach `audioAppendBatchBytes` before it is
+    /// yielded to the sender. Flushed by `stop()` ahead of the commit.
+    private var pendingAudio = Data()
+    private let pcmConverter = CachedPCMConverter(
+        outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat
+    )
     private var audioSendTask: Task<Void, Never>?
     private var audioRouter: RealtimeAudioRouter?
     private var rolloverTask: Task<Void, Never>?
@@ -296,9 +306,11 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // finishing the stream to flush all pending sends. The stream is created
         // before websocket setup so audio captured while the realtime session is
         // arming is buffered locally and sent once the server is ready.
-        var sendContinuation: AsyncStream<Data>.Continuation?
-        let sendStream = AsyncStream<Data> { sendContinuation = $0 }
-        audioSendContinuation = sendContinuation
+        let (sendStream, sendContinuation) = AsyncStream<Data>.makeStream()
+        stateLock.withLock {
+            audioSendContinuation = sendContinuation
+            pendingAudio = Data()
+        }
 
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
@@ -326,15 +338,21 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 )
             }
             guard self.stateLock.withLock({ !self.hasStopped }) else { return }
-            guard let conversion = Self.convertToRealtimePCMData(buffer),
+            guard let conversion = Self.convertToRealtimePCMData(buffer, using: self.pcmConverter),
                   !conversion.data.isEmpty else { return }
             self.stateLock.withLock {
-                self.diagYieldedChunks += 1
-                self.diagYieldedBytes += conversion.data.count
+                // Yield under the lock so batches stay in capture order and
+                // `stop()` can flush the remainder before finishing the stream.
+                guard !self.hasStopped else { return }
                 self.diagInputFrames += conversion.inputFrameCount
                 self.diagOutputFrames += conversion.outputFrameCount
+                self.pendingAudio.append(conversion.data)
+                guard self.pendingAudio.count >= Self.audioAppendBatchBytes else { return }
+                self.diagYieldedChunks += 1
+                self.diagYieldedBytes += self.pendingAudio.count
+                self.audioSendContinuation?.yield(self.pendingAudio)
+                self.pendingAudio = Data()
             }
-            self.audioSendContinuation?.yield(conversion.data)
         }
 
         do {
@@ -440,6 +458,12 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // Committing early makes the API transcribe only the audio it has
         // received so far, cutting off the end of the dictation.
         stateLock.withLock {
+            if !pendingAudio.isEmpty {
+                diagYieldedChunks += 1
+                diagYieldedBytes += pendingAudio.count
+                audioSendContinuation?.yield(pendingAudio)
+            }
+            pendingAudio = Data()
             audioSendContinuation?.finish()
             audioSendContinuation = nil
         }
@@ -539,6 +563,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             activeSegmentID = nil
             audioSendContinuation?.finish()
             audioSendContinuation = nil
+            pendingAudio = Data()
             latestWriteError = nil
             capturedFrameCount = 0
             capturedDurationSeconds = 0
@@ -617,6 +642,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         stateLock.withLock {
             audioSendContinuation?.finish()
             audioSendContinuation = nil
+            pendingAudio = Data()
         }
         discardRecoveryCheckpoint()
     }
@@ -1069,39 +1095,22 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 
     static func convertToRealtimePCMData(_ buffer: AVAudioPCMBuffer) -> RealtimePCMConversion? {
-        let targetFormat = realtimeTargetFormat
-        guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
-            return nil
-        }
-        let ratio = targetFormat.sampleRate / max(buffer.format.sampleRate, 1)
-        let capacity = max(1_024, AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 1_024)
-        let inputProvider = RealtimeCaptureConverterInputProvider(buffer: buffer)
+        convertToRealtimePCMData(buffer, using: CachedPCMConverter(outputFormat: realtimeTargetFormat))
+    }
+
+    static func convertToRealtimePCMData(
+        _ buffer: AVAudioPCMBuffer,
+        using converter: CachedPCMConverter
+    ) -> RealtimePCMConversion? {
         var data = Data()
         var outputFrameCount = 0
-
-        while true {
-            guard let targetBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
-                return nil
-            }
-            var conversionError: NSError?
-            let status = converter.convert(to: targetBuffer, error: &conversionError) { _, outStatus in
-                inputProvider.next(outStatus: outStatus)
-            }
-            guard conversionError == nil, status != .error else { return nil }
-            if targetBuffer.frameLength > 0,
-               let chunk = pcmData(from: targetBuffer) {
+        let converted = converter.convert(buffer) { targetBuffer in
+            if let chunk = pcmData(from: targetBuffer) {
                 data.append(chunk)
                 outputFrameCount += Int(targetBuffer.frameLength)
             }
-            if status == .endOfStream || status == .inputRanDry {
-                break
-            }
-            if status == .haveData, targetBuffer.frameLength == 0 {
-                break
-            }
         }
-
-        guard !data.isEmpty else { return nil }
+        guard converted, !data.isEmpty else { return nil }
         return RealtimePCMConversion(
             data: data,
             inputFrameCount: Int(buffer.frameLength),
@@ -1221,7 +1230,64 @@ private final class OneShotReadinessContinuation: @unchecked Sendable {
     }
 }
 
-private final class RealtimeCaptureConverterInputProvider: @unchecked Sendable {
+/// Converts capture buffers to a fixed output format, reusing one
+/// `AVAudioConverter` until the input format changes (for example after the
+/// input device switches) instead of allocating a converter per buffer.
+/// Each buffer is still converted as a complete stream and the converter is
+/// reset afterwards, so output matches a freshly created converter.
+final class CachedPCMConverter: @unchecked Sendable {
+    let outputFormat: AVAudioFormat
+    private let lock = NSLock()
+    private var converter: AVAudioConverter?
+
+    init(outputFormat: AVAudioFormat) {
+        self.outputFormat = outputFormat
+    }
+
+    /// Calls `body` with each non-empty converted buffer. Returns `false` if
+    /// no converter exists for the input format or conversion fails.
+    func convert(_ buffer: AVAudioPCMBuffer, _ body: (AVAudioPCMBuffer) -> Void) -> Bool {
+        lock.withLock {
+            let converter: AVAudioConverter
+            if let cached = self.converter, cached.inputFormat == buffer.format {
+                converter = cached
+            } else {
+                guard let created = AVAudioConverter(from: buffer.format, to: outputFormat) else {
+                    self.converter = nil
+                    return false
+                }
+                self.converter = created
+                converter = created
+            }
+            defer { converter.reset() }
+
+            let ratio = outputFormat.sampleRate / max(buffer.format.sampleRate, 1)
+            let capacity = max(1_024, AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 1_024)
+            let inputProvider = PCMConverterSingleBufferInput(buffer: buffer)
+            while true {
+                guard let targetBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+                    return false
+                }
+                var conversionError: NSError?
+                let status = converter.convert(to: targetBuffer, error: &conversionError) { _, outStatus in
+                    inputProvider.next(outStatus: outStatus)
+                }
+                guard conversionError == nil, status != .error else { return false }
+                if targetBuffer.frameLength > 0 {
+                    body(targetBuffer)
+                }
+                if status == .endOfStream || status == .inputRanDry {
+                    return true
+                }
+                if status == .haveData, targetBuffer.frameLength == 0 {
+                    return true
+                }
+            }
+        }
+    }
+}
+
+private final class PCMConverterSingleBufferInput: @unchecked Sendable {
     private var buffer: AVAudioPCMBuffer?
     private var didEndStream = false
 
