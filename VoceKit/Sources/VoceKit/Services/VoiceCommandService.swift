@@ -196,7 +196,7 @@ public final class VoiceCommandService: Sendable {
         case .deletion:
             if context.isAtEnd {
                 // "Can you delete that?" is a question, not a command.
-                guard !context.trailingText.contains("?") else { return false }
+                guard !context.trailingTextHasQuestionMark else { return false }
                 if let previous = context.previousWord, deletionGuardWords(for: trigger).contains(previous) {
                     return false
                 }
@@ -620,8 +620,8 @@ private struct MatchContext {
     var nextWord: String?
     /// Only whitespace and punctuation follow the trigger.
     var isAtEnd: Bool
-    /// The text after the trigger (used to inspect trailing punctuation).
-    var trailingText: String
+    /// The text after the trigger contains "?" (read only when `isAtEnd`).
+    var trailingTextHasQuestionMark: Bool
     /// The nearest non-space character before the trigger is punctuation.
     var isPrecededByPunctuation: Bool
     /// The next non-space character after the trigger is punctuation.
@@ -643,12 +643,60 @@ private struct MatchContext {
     /// ("Dear team", "Hi all").
     var isAfterShortSalutation: Bool
 
+    /// UTF-16 units examined on each side of a trigger. Every candidate is
+    /// evaluated, so reading the whole transcript per match made long
+    /// dictations quadratic; the full text is read only when the window can't
+    /// decide a field.
+    private static let contextWindow = 256
+
     init(range: NSRange, in text: NSString) {
-        let before = text.substring(to: range.location)
-        let after = text.substring(from: range.location + range.length)
-        trailingText = after
+        let afterStart = range.location + range.length
+        let windowStart = max(0, range.location - Self.contextWindow)
+        let windowEnd = min(text.length, afterStart + Self.contextWindow)
+        let beforeWindow = text.rangeOfComposedCharacterSequences(
+            for: NSRange(location: windowStart, length: range.location - windowStart)
+        )
+        let afterWindow = text.rangeOfComposedCharacterSequences(
+            for: NSRange(location: afterStart, length: windowEnd - afterStart)
+        )
+        let beforeLocation = min(beforeWindow.location, range.location)
+        let afterEnd = max(min(afterWindow.location + afterWindow.length, text.length), afterStart)
+
+        if let context = MatchContext(
+            before: text.substring(with: NSRange(location: beforeLocation, length: range.location - beforeLocation)),
+            beforeIsComplete: beforeLocation == 0,
+            after: text.substring(with: NSRange(location: afterStart, length: afterEnd - afterStart)),
+            afterIsComplete: afterEnd == text.length
+        ) {
+            self = context
+        } else {
+            self = MatchContext(
+                before: text.substring(to: range.location),
+                beforeIsComplete: true,
+                after: text.substring(from: afterStart),
+                afterIsComplete: true
+            )!
+        }
+    }
+
+    /// Returns nil when a truncated window can't determine every field the
+    /// same way the full text would.
+    private init?(before: String, beforeIsComplete: Bool, after: String, afterIsComplete: Bool) {
+        let isWhitespaceOrPunctuation: (Character) -> Bool = { $0.isWhitespace || $0.isPunctuation }
+        isAtEnd = after.allSatisfy(isWhitespaceOrPunctuation)
+        if isAtEnd, !afterIsComplete { return nil }
+        trailingTextHasQuestionMark = isAtEnd && after.contains("?")
 
         let beforeTrimmed = before.trimmingTrailingHorizontalWhitespace()
+        let afterTrimmed = after.drop(while: { $0 == " " || $0 == "\t" })
+        let tokensBefore = beforeTrimmed.split(whereSeparator: { $0.isWhitespace })
+        if !beforeIsComplete {
+            // The first token may be cut off; the last two must be whole, and
+            // the previous word is read from the last 64 characters.
+            guard tokensBefore.count >= 3, beforeTrimmed.count >= 64 else { return nil }
+        }
+        if !afterIsComplete, afterTrimmed.count < 64 { return nil }
+
         let lastBefore = beforeTrimmed.last
         isPrecededByPunctuation = lastBefore.map { $0.isPunctuation } ?? false
         isAtSentenceStart = lastBefore.map { ".!?\n".contains($0) } ?? true
@@ -656,11 +704,9 @@ private struct MatchContext {
             ? WordTokenizer.words(in: String(beforeTrimmed.suffix(64))).last
             : nil
 
-        let afterTrimmed = after.drop(while: { $0 == " " || $0 == "\t" })
         let firstAfter = afterTrimmed.first
         isFollowedByPunctuation = firstAfter.map { $0.isPunctuation } ?? false
         isFollowedBySentenceEnd = firstAfter.map { ".!?\n".contains($0) } ?? false
-        isAtEnd = after.allSatisfy { $0.isWhitespace || $0.isPunctuation }
         nextWord = (firstAfter.map { $0.isLetter || $0.isNumber } ?? false)
             ? WordTokenizer.words(in: String(afterTrimmed.prefix(64))).first
             : nil
@@ -671,8 +717,8 @@ private struct MatchContext {
             return character.isLetter && (character.isUppercase || !character.isCased)
         } ?? false
         punctuationDirectlyAfter = after.first.flatMap { ".,;:!?".contains($0) ? $0 : nil }
-        let previousToken = beforeTrimmed.split(whereSeparator: { $0.isWhitespace }).last
-        let tokenBeforePrevious = beforeTrimmed.split(whereSeparator: { $0.isWhitespace }).dropLast().last
+        let previousToken = tokensBefore.last
+        let tokenBeforePrevious = tokensBefore.dropLast().last
         let previousIsSentenceInitial = tokenBeforePrevious.map { token in
             token.last.map { ".!?".contains($0) } ?? false
         } ?? true
@@ -681,11 +727,19 @@ private struct MatchContext {
             && !previousIsSentenceInitial
             && (previousToken?.first.map { $0.isUppercase } ?? false)
 
-        let sentenceStart = beforeTrimmed.lastIndex(where: { ".!?\n".contains($0) })
-            .map { beforeTrimmed.index(after: $0) } ?? beforeTrimmed.startIndex
+        let terminator = beforeTrimmed.lastIndex(where: { ".!?\n".contains($0) })
+        let sentenceStart = terminator.map { beforeTrimmed.index(after: $0) } ?? beforeTrimmed.startIndex
         let sentenceWords = WordTokenizer.words(in: String(beforeTrimmed[sentenceStart...]))
-        isAfterShortSalutation = sentenceWords.count <= 4
-            && (sentenceWords.first.map { ["dear", "hi", "hello", "hey", "greetings", "to"].contains($0) } ?? false)
+        if terminator == nil, !beforeIsComplete {
+            // The sentence starts before the window. It is longer than a
+            // salutation if the window alone (minus a possibly cut-off first
+            // word) already holds more than four words.
+            guard sentenceWords.count - 1 > 4 else { return nil }
+            isAfterShortSalutation = false
+        } else {
+            isAfterShortSalutation = sentenceWords.count <= 4
+                && (sentenceWords.first.map { ["dear", "hi", "hello", "hey", "greetings", "to"].contains($0) } ?? false)
+        }
     }
 }
 
