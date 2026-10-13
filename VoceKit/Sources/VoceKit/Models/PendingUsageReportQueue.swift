@@ -3,21 +3,51 @@ import Foundation
 /// Usage seconds that still have to be reported to the Voce backend.
 ///
 /// Reports are coalesced per account email and feature so a run of offline
-/// dictations becomes one request once the network is back. The queue is a
-/// plain value so callers can persist it (it is `Codable`) and test the
-/// retry policy without a network.
+/// dictations becomes one request once the network is back. Each report has
+/// a stable ID that is sent with it so the backend can ignore a resend of a
+/// report it already recorded; once a send has started, a report is never
+/// grown again (new seconds start a new report), so a resend always carries
+/// exactly what the first attempt did. The queue is a plain value so callers
+/// can persist it (it is `Codable`) and test the policy without a network.
 public struct PendingUsageReportQueue: Sendable, Codable, Equatable {
-    public struct Report: Sendable, Codable, Equatable {
+    public struct Report: Sendable, Codable, Equatable, Identifiable {
+        public var id: UUID
         public var email: String
         public var feature: String
         public var seconds: Int
         public var firstQueuedAt: Date
+        /// Set once a send began. The backend may have recorded it even if
+        /// the response was lost, so it must only ever be resent unchanged.
+        public var sendStarted: Bool
 
-        public init(email: String, feature: String, seconds: Int, firstQueuedAt: Date) {
+        public init(
+            id: UUID = UUID(),
+            email: String,
+            feature: String,
+            seconds: Int,
+            firstQueuedAt: Date,
+            sendStarted: Bool = false
+        ) {
+            self.id = id
             self.email = email
             self.feature = feature
             self.seconds = seconds
             self.firstQueuedAt = firstQueuedAt
+            self.sendStarted = sendStarted
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, email, feature, seconds, firstQueuedAt, sendStarted
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+            email = try container.decode(String.self, forKey: .email)
+            feature = try container.decode(String.self, forKey: .feature)
+            seconds = try container.decode(Int.self, forKey: .seconds)
+            firstQueuedAt = try container.decode(Date.self, forKey: .firstQueuedAt)
+            sendStarted = try container.decodeIfPresent(Bool.self, forKey: .sendStarted) ?? false
         }
     }
 
@@ -35,30 +65,45 @@ public struct PendingUsageReportQueue: Sendable, Codable, Equatable {
         reports.isEmpty
     }
 
-    /// Adds `seconds` for `email`/`feature`, merging with any queued report.
+    /// Adds `seconds` for `email`/`feature`, merging with a queued report
+    /// whose send has not started yet.
     public mutating func enqueue(email: String, feature: String, seconds: Int, now: Date) {
         guard !email.isEmpty, !feature.isEmpty, seconds > 0 else { return }
 
-        if let index = index(email: email, feature: feature) {
+        if let index = reports.firstIndex(where: {
+            $0.email == email && $0.feature == feature && !$0.sendStarted
+        }) {
             reports[index].seconds += seconds
         } else {
             reports.append(Report(email: email, feature: feature, seconds: seconds, firstQueuedAt: now))
         }
     }
 
-    /// Removes `seconds` that the backend accepted. Seconds queued while the
-    /// request was in flight stay queued for the next attempt.
-    public mutating func acknowledge(email: String, feature: String, seconds: Int) {
-        guard let index = index(email: email, feature: feature) else { return }
-        reports[index].seconds -= seconds
-        if reports[index].seconds <= 0 {
+    /// Freezes a report before it is sent; later seconds start a new report.
+    public mutating func markSendStarted(reportID: UUID) {
+        guard let index = index(of: reportID) else { return }
+        reports[index].sendStarted = true
+    }
+
+    /// Removes `seconds` that the backend accepted. Anything left over is
+    /// re-queued as a fresh report (new ID, new age) so it is not mistaken
+    /// for the part the backend already recorded.
+    public mutating func acknowledge(reportID: UUID, seconds: Int, now: Date) {
+        guard let index = index(of: reportID) else { return }
+        let remaining = reports[index].seconds - seconds
+        guard remaining > 0 else {
             reports.remove(at: index)
+            return
         }
+        reports[index].id = UUID()
+        reports[index].seconds = remaining
+        reports[index].firstQueuedAt = now
+        reports[index].sendStarted = false
     }
 
     /// Drops a report the backend will never accept.
-    public mutating func discard(email: String, feature: String) {
-        guard let index = index(email: email, feature: feature) else { return }
+    public mutating func discard(reportID: UUID) {
+        guard let index = index(of: reportID) else { return }
         reports.remove(at: index)
     }
 
@@ -83,7 +128,7 @@ public struct PendingUsageReportQueue: Sendable, Codable, Equatable {
         }
     }
 
-    private func index(email: String, feature: String) -> Int? {
-        reports.firstIndex { $0.email == email && $0.feature == feature }
+    private func index(of reportID: UUID) -> Int? {
+        reports.firstIndex { $0.id == reportID }
     }
 }

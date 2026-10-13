@@ -13,9 +13,13 @@ func pendingUsageReportsCoalesce() {
     queue.enqueue(email: "b@example.com", feature: "app", seconds: 6, now: now)
 
     #expect(queue.reports.count == 3)
-    #expect(queue.reports[0] == .init(email: "a@example.com", feature: "app", seconds: 7, firstQueuedAt: now))
+    #expect(queue.reports[0].email == "a@example.com")
+    #expect(queue.reports[0].feature == "app")
+    #expect(queue.reports[0].seconds == 7)
+    #expect(queue.reports[0].firstQueuedAt == now)
     #expect(queue.reports[1].seconds == 5)
     #expect(queue.reports[2].email == "b@example.com")
+    #expect(Set(queue.reports.map(\.id)).count == 3)
 }
 
 @Test("Usage reports ignore empty input")
@@ -30,35 +34,67 @@ func pendingUsageReportsIgnoreEmptyInput() {
     #expect(queue.isEmpty)
 }
 
-@Test("Acknowledging keeps seconds queued while a report was in flight")
-func pendingUsageReportsAcknowledgePartially() {
+@Test("A report is frozen once its send starts, so a resend is identical")
+func pendingUsageReportsFreezeOnSend() throws {
     let now = Date()
     var queue = PendingUsageReportQueue()
     queue.enqueue(email: "a@example.com", feature: "app", seconds: 10, now: now)
+    let sent = try #require(queue.reports.first)
 
-    // Sent 10, then 2 more arrived before the response.
+    queue.markSendStarted(reportID: sent.id)
+    // Seconds arriving while the request is in flight start a new report.
     queue.enqueue(email: "a@example.com", feature: "app", seconds: 2, now: now)
-    queue.acknowledge(email: "a@example.com", feature: "app", seconds: 10)
-    #expect(queue.reports.count == 1)
-    #expect(queue.reports[0].seconds == 2)
 
-    queue.acknowledge(email: "a@example.com", feature: "app", seconds: 2)
-    #expect(queue.isEmpty)
+    #expect(queue.reports.count == 2)
+    #expect(queue.reports[0].id == sent.id)
+    #expect(queue.reports[0].seconds == 10)
+    #expect(queue.reports[0].sendStarted)
+    #expect(queue.reports[1].seconds == 2)
+    #expect(!queue.reports[1].sendStarted)
+
+    // A failed send keeps the frozen report as is for an identical resend.
+    queue.enqueue(email: "a@example.com", feature: "app", seconds: 1, now: now)
+    #expect(queue.reports[0].seconds == 10)
+    #expect(queue.reports[1].seconds == 3)
+
+    queue.acknowledge(reportID: sent.id, seconds: 10, now: now)
+    #expect(queue.reports.count == 1)
+    #expect(queue.reports[0].seconds == 3)
 
     // Acknowledging something that is not queued is harmless.
-    queue.acknowledge(email: "a@example.com", feature: "app", seconds: 2)
-    #expect(queue.isEmpty)
+    queue.acknowledge(reportID: sent.id, seconds: 10, now: now)
+    #expect(queue.reports.count == 1)
+}
+
+@Test("A partial acknowledgement re-queues the rest as a fresh report")
+func pendingUsageReportsPartialAcknowledgement() throws {
+    let queuedAt = Date(timeIntervalSince1970: 1_000)
+    let acknowledgedAt = queuedAt.addingTimeInterval(600)
+    var queue = PendingUsageReportQueue()
+    queue.enqueue(email: "a@example.com", feature: "app", seconds: 10, now: queuedAt)
+    let sent = try #require(queue.reports.first)
+    queue.markSendStarted(reportID: sent.id)
+
+    queue.acknowledge(reportID: sent.id, seconds: 4, now: acknowledgedAt)
+
+    let rest = try #require(queue.reports.first)
+    #expect(queue.reports.count == 1)
+    #expect(rest.seconds == 6)
+    #expect(rest.id != sent.id)
+    #expect(rest.firstQueuedAt == acknowledgedAt)
+    #expect(!rest.sendStarted)
 }
 
 @Test("Discard and expiry drop reports")
-func pendingUsageReportsDiscardAndExpire() {
+func pendingUsageReportsDiscardAndExpire() throws {
     let now = Date(timeIntervalSince1970: 10_000_000)
     var queue = PendingUsageReportQueue()
     queue.enqueue(email: "a@example.com", feature: "app", seconds: 3, now: now)
     queue.enqueue(email: "a@example.com", feature: "cloud", seconds: 3, now: now)
     queue.enqueue(email: "a@example.com", feature: "local", seconds: 3, now: now.addingTimeInterval(-PendingUsageReportQueue.maximumReportAge - 1))
 
-    queue.discard(email: "a@example.com", feature: "cloud")
+    let cloud = try #require(queue.reports.first { $0.feature == "cloud" })
+    queue.discard(reportID: cloud.id)
     queue.pruneExpired(now: now)
 
     #expect(queue.reports.map(\.feature) == ["app"])
@@ -68,10 +104,20 @@ func pendingUsageReportsDiscardAndExpire() {
 func pendingUsageReportsRoundTrip() throws {
     var queue = PendingUsageReportQueue()
     queue.enqueue(email: "a@example.com", feature: "app", seconds: 3, now: Date(timeIntervalSince1970: 1_000))
+    queue.markSendStarted(reportID: try #require(queue.reports.first).id)
 
     let data = try JSONEncoder().encode(queue)
     let decoded = try JSONDecoder().decode(PendingUsageReportQueue.self, from: data)
     #expect(decoded == queue)
+}
+
+@Test("Reports persisted before report IDs existed still decode")
+func pendingUsageReportsDecodeLegacyReports() throws {
+    let legacy = #"{"reports":[{"email":"a@example.com","feature":"app","seconds":3,"firstQueuedAt":0}]}"#
+    let decoded = try JSONDecoder().decode(PendingUsageReportQueue.self, from: Data(legacy.utf8))
+    #expect(decoded.reports.count == 1)
+    #expect(decoded.reports[0].seconds == 3)
+    #expect(!decoded.reports[0].sendStarted)
 }
 
 @Test("Only transient usage report failures are retried")

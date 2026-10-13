@@ -3745,26 +3745,35 @@ final class DictationController: ObservableObject {
             pendingUsageReports.pruneExpired(now: Date())
             persistPendingUsageReports()
 
-            for report in pendingUsageReports.reports {
+            for queuedReport in pendingUsageReports.reports {
+                // Earlier sends in this pass may have let more seconds
+                // coalesce into a report that had not started; send what is
+                // queued now, and freeze it so a resend is identical.
+                guard let report = pendingUsageReports.reports.first(where: { $0.id == queuedReport.id }) else {
+                    continue
+                }
                 guard let feature = VoceEntitlementFeature(rawValue: report.feature) else {
-                    pendingUsageReports.discard(email: report.email, feature: report.feature)
+                    pendingUsageReports.discard(reportID: report.id)
                     persistPendingUsageReports()
                     continue
                 }
+                pendingUsageReports.markSendStarted(reportID: report.id)
+                persistPendingUsageReports()
 
                 do {
                     let entitlement = try await entitlementService.recordUsage(
                         email: report.email,
                         feature: feature,
-                        seconds: report.seconds
+                        seconds: report.seconds,
+                        reportID: report.id
                     )
-                    pendingUsageReports.acknowledge(email: report.email, feature: report.feature, seconds: report.seconds)
+                    pendingUsageReports.acknowledge(reportID: report.id, seconds: report.seconds, now: Date())
                     persistPendingUsageReports()
                     applyUsageReportResponse(entitlement, email: report.email, feature: feature)
                 } catch is DecodingError {
                     // The backend answered 2xx, so it recorded the usage;
                     // resending would charge it twice.
-                    pendingUsageReports.acknowledge(email: report.email, feature: report.feature, seconds: report.seconds)
+                    pendingUsageReports.acknowledge(reportID: report.id, seconds: report.seconds, now: Date())
                     persistPendingUsageReports()
                 } catch {
                     let httpStatus: Int?
@@ -3783,7 +3792,7 @@ final class DictationController: ObservableObject {
                         "Could not report \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage: \(error.localizedDescription, privacy: .public)"
                     )
                     guard PendingUsageReportQueue.shouldRetry(httpStatus: httpStatus) else {
-                        pendingUsageReports.discard(email: report.email, feature: report.feature)
+                        pendingUsageReports.discard(reportID: report.id)
                         persistPendingUsageReports()
                         continue
                     }
