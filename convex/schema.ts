@@ -23,6 +23,17 @@ export default defineSchema({
     firstSeenAt: v.number(),
   }).index("by_email", ["email"]),
 
+  // Usage reports already applied, keyed by the app-generated reportId, so a
+  // retried /entitlements/record-usage request is not counted twice.
+  usageReports: defineTable({
+    email: v.string(),
+    feature: v.string(),
+    reportId: v.string(),
+    appliedAt: v.number(),
+  })
+    .index("by_email_feature_report", ["email", "feature", "reportId"])
+    .index("by_applied_at", ["appliedAt"]),
+
   // Fixed-window request counters for unauthenticated endpoints.
   rateLimits: defineTable({
     key: v.string(),

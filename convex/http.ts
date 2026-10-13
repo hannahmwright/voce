@@ -36,6 +36,8 @@ const MAX_DICTIONARY_FIELD_CHARS = 500;
 const MAX_SUPPORT_DIAGNOSTICS_CHARS = 200_000;
 // One dictation is reported per call; nothing legitimate is longer than this.
 const MAX_USAGE_SECONDS_PER_REPORT = 4 * 60 * 60;
+const USAGE_REPORT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 // Refuse to mint a realtime client secret when less hosted time than this is left.
 const MIN_HOSTED_SECONDS_FOR_REALTIME_SESSION = 30;
@@ -888,9 +890,23 @@ http.route({
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
-    const body = (await request.json()) as { email?: string; feature?: string; seconds?: number };
+    const body = (await request.json()) as {
+      email?: string;
+      feature?: string;
+      seconds?: number;
+      reportId?: unknown;
+    };
     if (!body.email) {
       return jsonResponse({ error: "Missing email" }, 400);
+    }
+    // reportId makes retries idempotent; requests without it (older app
+    // builds) are recorded exactly as before.
+    let reportId: string | undefined;
+    if (body.reportId !== undefined && body.reportId !== null) {
+      if (typeof body.reportId !== "string" || !USAGE_REPORT_ID_PATTERN.test(body.reportId)) {
+        return jsonResponse({ error: "Invalid reportId" }, 400);
+      }
+      reportId = body.reportId.toLowerCase();
     }
     const email = await verifiedSessionEmail(ctx, request, body.email);
     if (!email) {
@@ -904,6 +920,7 @@ http.route({
       email,
       feature: body.feature ?? DEFAULT_FEATURE,
       seconds: Math.min(body.seconds, MAX_USAGE_SECONDS_PER_REPORT),
+      ...(reportId !== undefined ? { reportId } : {}),
     });
     return jsonResponse(entitlement);
   }),

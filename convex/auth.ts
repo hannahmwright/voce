@@ -11,6 +11,8 @@ const CLEANUP_BATCH_SIZE = 200;
 // Expired codes and stale rate-limit windows are kept for a day for debugging.
 const AUTH_CODE_RETENTION_AFTER_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_RETENTION_MS = 24 * 60 * 60 * 1000;
+// Long enough to cover any app retry of a usage report.
+const USAGE_REPORT_RETENTION_MS = 45 * 24 * 60 * 60 * 1000;
 const MAX_CODES_TO_INVALIDATE = 25;
 // A user who taps "resend" may type the code from any of the recent emails.
 const MAX_ACTIVE_CODES = 3;
@@ -295,7 +297,8 @@ export const revokeSession = internalMutation({
 });
 
 /**
- * Deletes expired sessions, old login codes and stale rate-limit windows in
+ * Deletes expired sessions, old login codes, stale rate-limit windows and
+ * usage report IDs older than 45 days in
  * bounded batches. Scheduled hourly from crons.ts; reschedules itself while a
  * backlog remains.
  */
@@ -303,7 +306,13 @@ export const cleanupExpiredAuthRecords = internalMutation({
   args: {},
   handler: async (
     ctx,
-  ): Promise<{ sessions: number; codes: number; rateLimits: number; hasMore: boolean }> => {
+  ): Promise<{
+    sessions: number;
+    codes: number;
+    rateLimits: number;
+    usageReports: number;
+    hasMore: boolean;
+  }> => {
     const now = Date.now();
 
     const sessions = await ctx.db
@@ -336,10 +345,19 @@ export const cleanupExpiredAuthRecords = internalMutation({
       await ctx.db.delete(rateLimit._id);
     }
 
+    const usageReports = await ctx.db
+      .query("usageReports")
+      .withIndex("by_applied_at", (q) => q.lt("appliedAt", now - USAGE_REPORT_RETENTION_MS))
+      .take(CLEANUP_BATCH_SIZE);
+    for (const usageReport of usageReports) {
+      await ctx.db.delete(usageReport._id);
+    }
+
     const hasMore =
       sessions.length === CLEANUP_BATCH_SIZE ||
       codes.length === CLEANUP_BATCH_SIZE ||
-      rateLimits.length === CLEANUP_BATCH_SIZE;
+      rateLimits.length === CLEANUP_BATCH_SIZE ||
+      usageReports.length === CLEANUP_BATCH_SIZE;
     if (hasMore) {
       await ctx.scheduler.runAfter(0, internal.auth.cleanupExpiredAuthRecords, {});
     }
@@ -348,6 +366,7 @@ export const cleanupExpiredAuthRecords = internalMutation({
       sessions: sessions.length,
       codes: codes.length,
       rateLimits: rateLimits.length,
+      usageReports: usageReports.length,
       hasMore,
     };
   },

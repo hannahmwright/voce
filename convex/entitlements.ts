@@ -456,6 +456,8 @@ export const recordUsage = internalMutation({
     email: v.string(),
     feature: v.optional(v.string()),
     seconds: v.number(),
+    // Optional idempotency key from the app. Old builds omit it.
+    reportId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
@@ -466,6 +468,22 @@ export const recordUsage = internalMutation({
 
     if (seconds === 0) {
       return await entitlementFor(ctx, email, entitlementFeature);
+    }
+
+    if (args.reportId !== undefined) {
+      const reportId = args.reportId;
+      const alreadyApplied = await ctx.db
+        .query("usageReports")
+        .withIndex("by_email_feature_report", (q) =>
+          q.eq("email", email).eq("feature", feature).eq("reportId", reportId),
+        )
+        .first();
+      if (alreadyApplied) {
+        return await entitlementFor(ctx, email, entitlementFeature);
+      }
+      // Recorded in the same transaction as the counters below, so a report is
+      // either fully applied once or not at all.
+      await ctx.db.insert("usageReports", { email, feature, reportId, appliedAt: now });
     }
 
     if (isAuditOnlyFeature(feature)) {

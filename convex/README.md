@@ -126,7 +126,8 @@ https://<convex-deployment>.convex.site/auth/logout
 `/auth/logout` revokes the session sent in `x-voce-session-token` (the row is
 marked `revokedAt` and rejected from then on).
 An hourly cron (`convex/crons.ts`) deletes expired sessions, login codes more
-than a day past expiry, and stale rate-limit counters. New-signup notifications
+than a day past expiry, stale rate-limit counters, and usage report IDs older
+than 45 days. New-signup notifications
 are based on the `emailAccounts` table, which is never cleaned up.
 
 The app usage endpoint is:
@@ -134,6 +135,10 @@ The app usage endpoint is:
 ```txt
 https://<convex-deployment>.convex.site/entitlements/record-usage
 ```
+
+It accepts an optional `reportId` (UUID). A report whose `reportId` was already
+applied for the same email and feature returns the current entitlement without
+counting the seconds again. Reports without `reportId` are always counted.
 
 Usage audit report:
 
