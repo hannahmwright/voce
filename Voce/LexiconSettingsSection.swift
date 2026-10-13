@@ -86,13 +86,16 @@ struct LexiconSettingsSection: View {
                     .help("Add correction")
                 }
 
+                // Computed once per render; this grouping and sort used to run
+                // 1 + 2N times through index-based lookups.
+                let correctionGroups = visibleCorrectionGroups
                 settingsSubcard {
-                    if visibleCorrectionGroups.isEmpty {
+                    if correctionGroups.isEmpty {
                         Text("Add a fix like “Chat GBT” to “ChatGPT”.")
                             .font(VoceDesign.callout())
                             .foregroundStyle(VoceDesign.textSecondary)
                     } else {
-                        correctionsTable
+                        correctionsTable(correctionGroups)
                     }
                 }
             }
@@ -100,15 +103,16 @@ struct LexiconSettingsSection: View {
         .cardStyle()
     }
 
-    private var correctionsTable: some View {
-        VStack(spacing: 0) {
+    private func correctionsTable(_ groups: [LexiconCorrectionGroup]) -> some View {
+        let lastGroupID = groups.last?.id
+
+        return VStack(spacing: 0) {
             correctionsTableHeader
 
-            ForEach(visibleCorrectionGroups.indices, id: \.self) { index in
-                let group = visibleCorrectionGroups[index]
+            ForEach(groups) { group in
                 correctionRow(group)
 
-                if index != visibleCorrectionGroups.count - 1 {
+                if group.id != lastGroupID {
                     Divider()
                         .padding(.leading, VoceDesign.sm)
                 }
@@ -258,8 +262,11 @@ private struct LexiconCorrectionGroup: Identifiable {
         let scopeID: String
     }
 
+    // Matches the grouping key exactly. Lowercasing here gave "ChatGPT" and
+    // "chatgpt" groups in the same scope the same id, which ForEach can't
+    // tell apart.
     var id: String {
-        "\(preferred.lowercased())|\(Self.scopeID(for: scope))"
+        "\(preferred)|\(Self.scopeID(for: scope))"
     }
 
     let preferred: String
