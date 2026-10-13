@@ -1,4 +1,4 @@
-import { internalMutation, internalQuery } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
@@ -25,6 +25,48 @@ function constantTimeEqual(a: string, b: string) {
     difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
   }
   return difference === 0;
+}
+
+async function emailAccountExists(ctx: MutationCtx, email: string) {
+  const account = await ctx.db
+    .query("emailAccounts")
+    .withIndex("by_email", (q) => q.eq("email", email))
+    .first();
+  return account !== null;
+}
+
+// Emails verified before emailAccounts existed have no row; any earlier
+// session, entitlement, Stripe record or usage means they are not new.
+async function hasPriorActivity(ctx: MutationCtx, email: string) {
+  const checks = [
+    () => ctx.db.query("authSessions").withIndex("by_email", (q) => q.eq("email", email)).first(),
+    () =>
+      ctx.db
+        .query("manualEntitlements")
+        .withIndex("by_email_feature", (q) => q.eq("email", email))
+        .first(),
+    () => ctx.db.query("stripeCustomers").withIndex("by_email", (q) => q.eq("email", email)).first(),
+    () =>
+      ctx.db.query("stripeSubscriptions").withIndex("by_email", (q) => q.eq("email", email)).first(),
+    () =>
+      ctx.db
+        .query("monthlyUsage")
+        .withIndex("by_email_feature_period", (q) => q.eq("email", email))
+        .first(),
+  ];
+  for (const check of checks) {
+    if ((await check()) !== null) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function ensureEmailAccount(ctx: MutationCtx, email: string, firstSeenAt: number) {
+  if (await emailAccountExists(ctx, email)) {
+    return;
+  }
+  await ctx.db.insert("emailAccounts", { email, firstSeenAt });
 }
 
 export const createEmailCode = internalMutation({
@@ -153,10 +195,11 @@ export const createSession = internalMutation({
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
     const now = Date.now();
-    const existingSession = await ctx.db
-      .query("authSessions")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .first();
+    let isFirstSession = false;
+    if (!(await emailAccountExists(ctx, email))) {
+      isFirstSession = !(await hasPriorActivity(ctx, email));
+      await ctx.db.insert("emailAccounts", { email, firstSeenAt: now });
+    }
 
     await ctx.db.insert("authSessions", {
       email,
@@ -166,7 +209,7 @@ export const createSession = internalMutation({
       lastSeenAt: now,
     });
 
-    return { isFirstSession: !existingSession };
+    return { isFirstSession };
   },
 });
 
@@ -175,10 +218,11 @@ export const sessionForTokenHash = internalQuery({
     tokenHash: v.string(),
   },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const session = await ctx.db
       .query("authSessions")
       .withIndex("by_token_hash", (q) => q.eq("tokenHash", args.tokenHash))
       .unique();
+    return session && session.revokedAt === undefined ? session : null;
   },
 });
 
@@ -214,7 +258,9 @@ export const revokeSession = internalMutation({
     if (!session) {
       return false;
     }
-    await ctx.db.delete(session._id);
+    if (session.revokedAt === undefined) {
+      await ctx.db.patch(session._id, { revokedAt: Date.now() });
+    }
     return true;
   },
 });
@@ -236,6 +282,8 @@ export const cleanupExpiredAuthRecords = internalMutation({
       .withIndex("by_expires_at", (q) => q.lt("expiresAt", now))
       .take(CLEANUP_BATCH_SIZE);
     for (const session of sessions) {
+      // Keep the durable signup signal before the last session row disappears.
+      await ensureEmailAccount(ctx, session.email, session.createdAt);
       await ctx.db.delete(session._id);
     }
 

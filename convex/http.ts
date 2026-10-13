@@ -386,7 +386,7 @@ async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: 
 
   const hash = await tokenHash(token);
   const session = await ctx.runQuery(internal.auth.sessionForTokenHash, { tokenHash: hash });
-  if (!session || session.expiresAt <= Date.now()) {
+  if (!session || session.revokedAt !== undefined || session.expiresAt <= Date.now()) {
     return null;
   }
 

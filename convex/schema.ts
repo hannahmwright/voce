@@ -16,6 +16,13 @@ export default defineSchema({
     .index("by_email_code_hash", ["email", "codeHash"])
     .index("by_expires_at", ["expiresAt"]),
 
+  // One row per verified email, never deleted. Used to detect first signups
+  // independently of session rows, which logout revokes and cleanup deletes.
+  emailAccounts: defineTable({
+    email: v.string(),
+    firstSeenAt: v.number(),
+  }).index("by_email", ["email"]),
+
   // Fixed-window request counters for unauthenticated endpoints.
   rateLimits: defineTable({
     key: v.string(),
@@ -31,6 +38,8 @@ export default defineSchema({
     expiresAt: v.number(),
     createdAt: v.number(),
     lastSeenAt: v.number(),
+    // Set by /auth/logout. Revoked sessions are rejected but kept until expiry.
+    revokedAt: v.optional(v.number()),
   })
     .index("by_token_hash", ["tokenHash"])
     .index("by_email", ["email"])

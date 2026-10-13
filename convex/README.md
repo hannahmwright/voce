@@ -122,9 +122,11 @@ https://<convex-deployment>.convex.site/auth/verify
 https://<convex-deployment>.convex.site/auth/logout
 ```
 
-`/auth/logout` revokes the session sent in `x-voce-session-token`.
+`/auth/logout` revokes the session sent in `x-voce-session-token` (the row is
+marked `revokedAt` and rejected from then on).
 An hourly cron (`convex/crons.ts`) deletes expired sessions, login codes more
-than a day past expiry, and stale rate-limit counters.
+than a day past expiry, and stale rate-limit counters. New-signup notifications
+are based on the `emailAccounts` table, which is never cleaned up.
 
 The app usage endpoint is:
 
