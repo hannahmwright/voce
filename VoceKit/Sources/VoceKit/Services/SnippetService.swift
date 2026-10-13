@@ -51,9 +51,8 @@ public actor SnippetService {
         if let cached = regexCache[cacheKey] {
             regex = cached
         } else {
-            let escaped = NSRegularExpression.escapedPattern(for: snippet.trigger)
-            let pattern = "\\b\(escaped)\\b"
-            guard let compiled = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            let pattern = TextMatching.wholeTermPattern(for: snippet.trigger)
+            guard !snippet.trigger.isEmpty, let compiled = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                 return text
             }
             regexCache[cacheKey] = compiled

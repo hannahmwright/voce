@@ -99,13 +99,13 @@ public actor PersonalLexiconService {
         in text: String,
         entry: LexiconEntry
     ) -> (text: String, replacements: Int) {
+        guard !entry.term.isEmpty else { return (text, 0) }
         let cacheKey = entry.term.lowercased()
         let regex: NSRegularExpression
         if let cached = regexCache[cacheKey] {
             regex = cached
         } else {
-            let escaped = NSRegularExpression.escapedPattern(for: entry.term)
-            let regexPattern = "\\b\(escaped)\\b"
+            let regexPattern = TextMatching.wholeTermPattern(for: entry.term)
             guard let compiled = try? NSRegularExpression(pattern: regexPattern, options: [.caseInsensitive]) else {
                 return (text, 0)
             }

@@ -219,15 +219,17 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     // MARK: - Lexicon
 
-    private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
+    private static let lexiconRegexCache = RegexCache()
+
+    func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
         var updated = text
         var edits: [TranscriptEdit] = []
 
         // Lexicon entries are already sorted longest-first by the PersonalLexicon invariant.
         for entry in lexicon.entries {
-            let escaped = NSRegularExpression.escapedPattern(for: entry.term)
-            let pattern = "\\b\(escaped)\\b"
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            guard !entry.term.isEmpty,
+                  let regex = TextMatching.wholeTermRegex(for: entry.term, cache: Self.lexiconRegexCache)
+            else { continue }
             let range = NSRange(updated.startIndex..., in: updated)
             let count = regex.numberOfMatches(in: updated, range: range)
             if count > 0 {
