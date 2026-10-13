@@ -391,6 +391,9 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         } catch is CancellationError {
             cleanupAfterStartFailure()
             throw CancellationError()
+        } catch let error as AppleSpeechPreviewError {
+            cleanupAfterStartFailure()
+            throw error
         } catch {
             cleanupAfterStartFailure()
             throw AppleSpeechPreviewError.failedToStartAudioEngine

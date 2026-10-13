@@ -196,6 +196,11 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             recognitionTask = nil
             speechRecognizer = nil
             cleanupOutputFile(at: staleOutputURL)
+            // Keep an intentional cancel and a missing input device distinct
+            // from a genuine engine start failure.
+            if error is CancellationError || error is AppleSpeechPreviewError {
+                throw error
+            }
             throw AppleSpeechPreviewError.failedToStartAudioEngine
         }
     }
