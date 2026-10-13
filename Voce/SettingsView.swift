@@ -22,6 +22,10 @@ struct SettingsView: View {
     @State private var pendingSearchScrollAnchor: String?
     /// Card title currently glowing after a search jump; cleared after a beat.
     @State private var highlightedSettingsCard: String?
+    /// True while a launch target asked for the tap-to-talk recorder to start
+    /// capturing. Cleared when the user moves to another group so returning to
+    /// Behavior later doesn't unexpectedly start a capture again.
+    @State private var autoStartsHandsFreeCapture: Bool
 
     init(
         initialLaunchTarget: SettingsLaunchTarget? = nil,
@@ -44,6 +48,7 @@ struct SettingsView: View {
         self.onVerifyAccessCode = onVerifyAccessCode
         self.onClose = onClose
         _selectedGroup = State(initialValue: Self.group(for: initialLaunchTarget))
+        _autoStartsHandsFreeCapture = State(initialValue: initialLaunchTarget == .handsFreeGlobalHotkey)
     }
 
     var body: some View {
@@ -117,6 +122,21 @@ struct SettingsView: View {
         .onChange(of: controller.preferences) { _, newValue in
             if newValue != preferencesDraft {
                 preferencesDraft = newValue
+            }
+        }
+        // SettingsView stays mounted behind the other tabs, so the launch target
+        // only reaches the State initializer once; follow later requests (e.g.
+        // Home's "Edit tap to talk shortcut") here.
+        .onChange(of: initialLaunchTarget) { _, launchTarget in
+            if let launchTarget {
+                settingsSearchText = ""
+                selectedGroup = Self.group(for: launchTarget)
+            }
+            autoStartsHandsFreeCapture = launchTarget == .handsFreeGlobalHotkey
+        }
+        .onChange(of: selectedGroup) { _, group in
+            if group != .behavior {
+                autoStartsHandsFreeCapture = false
             }
         }
         .onChange(of: controller.aiAvailabilityIsAvailable) { _, isAvailable in
@@ -438,7 +458,7 @@ struct SettingsView: View {
             RecordingSettingsSection(
                 preferences: $preferencesDraft,
                 hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage,
-                autoStartHandsFreeCapture: initialLaunchTarget == .handsFreeGlobalHotkey
+                autoStartHandsFreeCapture: autoStartsHandsFreeCapture
             )
             MediaSettingsSection(preferences: $preferencesDraft)
         case .speech:

@@ -1484,8 +1484,19 @@ struct HandsFreeToggleHotkeyRecorderField: View {
         .onAppear {
             triggerAutoCaptureIfNeeded()
         }
-        .onChange(of: autoStartCapture) { _, _ in
-            triggerAutoCaptureIfNeeded()
+        .onChange(of: autoStartCapture) { _, shouldAutoStart in
+            if shouldAutoStart {
+                triggerAutoCaptureIfNeeded()
+            } else {
+                // The request was withdrawn (Settings closed or the user moved
+                // on); re-arm so the next request starts a capture again.
+                didAutoStartCapture = false
+            }
+        }
+        .onChange(of: tabIsActive) { _, isActive in
+            if isActive {
+                triggerAutoCaptureIfNeeded()
+            }
         }
     }
 
