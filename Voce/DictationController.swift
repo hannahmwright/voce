@@ -420,6 +420,9 @@ final class DictationController: ObservableObject {
     private var terminationObserver: Any?
     private var hasTornDown = false
     private var inputLostWhileArmingSession: ObjectIdentifier?
+    /// Status shown while finalizing a stop the app initiated for a reason
+    /// the user should see (e.g. the microphone disconnected).
+    private var pendingStopStatus: String?
     private var hasAppliedLoadedPreferences = false
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
@@ -2432,8 +2435,9 @@ final class DictationController: ObservableObject {
             inputLostWhileArmingSession = ObjectIdentifier(session)
             return
         }
-        status = "Microphone disconnected — transcribing what was captured."
+        pendingStopStatus = "Microphone disconnected — transcribing what was captured."
         stopActiveRecording()
+        pendingStopStatus = nil
     }
 
     private func stopIfInputLostWhileArming() {
@@ -2441,8 +2445,9 @@ final class DictationController: ObservableObject {
         inputLostWhileArmingSession = nil
         let activeSession: AnyObject? = activeRealtimeWhisperSession ?? activePreviewSession
         guard let activeSession, ObjectIdentifier(activeSession) == lostSession else { return }
-        status = "Microphone disconnected — transcribing what was captured."
+        pendingStopStatus = "Microphone disconnected — transcribing what was captured."
         stopActiveRecording()
+        pendingStopStatus = nil
     }
 
     private func handleStreamingFailure(_ error: Error, dictationSequence failingSequence: UInt64) {
@@ -2513,6 +2518,7 @@ final class DictationController: ObservableObject {
 
     private func stopSession(mode: RecordingMode) {
         recordStopForResidualStartSuppression(mode: mode)
+        let stopStatus = pendingStopStatus ?? "Finalising..."
         let pendingStart = inFlightStartTask?.task
         activeStartTask = nil
         activeStartTaskID = nil
@@ -2666,7 +2672,7 @@ final class DictationController: ObservableObject {
             processingSequence = allocateBackgroundProcessingSequence()
 
             if !isRecording, activeStartTask == nil {
-                status = "Finalising..."
+                status = stopStatus
                 lastError = ""
                 overlay.show(state: .transcribing)
             }
