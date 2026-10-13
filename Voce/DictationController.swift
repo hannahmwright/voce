@@ -4136,6 +4136,9 @@ final class DictationController: ObservableObject {
         }
 
         var messages = [baseStatus]
+        if let notice = result.notice, !notice.isEmpty {
+            messages.append(notice)
+        }
         if let cleanupWarning = fallbackWarningText(from: result.cleanupOutcome) {
             messages.append(cleanupWarning)
         }
