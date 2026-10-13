@@ -65,9 +65,16 @@ enum TemporaryPasteboardSnapshotLimit {
 /// The snapshot lives only in memory for the duration of one paste and is
 /// never logged or persisted. Concealed items (a password manager's copy) are
 /// captured like any other item, with every type — including the
-/// ConcealedType/TransientType markers — so restoring puts them back exactly
-/// as the password manager wrote them (and its own clear-after-timeout logic
-/// keeps working on the restored item).
+/// ConcealedType/TransientType markers — and restored as written.
+///
+/// Trade-off: restoring is a new pasteboard write, so it bumps
+/// `changeCount`. Password managers that clear the clipboard after a timeout
+/// typically only clear if `changeCount` still matches their own write, so
+/// after a dictation the restored password may no longer be auto-cleared and
+/// can stay on the clipboard until the user copies something else. The
+/// alternative (not restoring) silently loses a password the user was about
+/// to paste; keeping it was judged the lesser harm. The ConcealedType marker
+/// is preserved so clipboard managers still skip recording it.
 private enum TemporaryPasteboardSnapshot: Sendable {
     case restorable([TemporaryPasteboardItemSnapshot])
     /// The clipboard is larger than the snapshot budget. Restoring only part
