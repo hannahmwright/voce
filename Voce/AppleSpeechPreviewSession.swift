@@ -42,8 +42,19 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private let localeIdentifier: String
     private let previewTranscriptionEnabled: Bool
     private let stateLock = NSLock()
+    /// Serializes engine lifecycle work (start, restart after an input device
+    /// change, teardown). Lock order: `engineLock` before `stateLock`. The
+    /// audio tap never takes it.
+    private let engineLock = NSLock()
+    private let engineConfigurationQueue = DispatchQueue(
+        label: "io.voceapp.voce.preview-capture.engine-configuration"
+    )
 
     private var audioEngine: AVAudioEngine?
+    private var engineConfigurationObserver: NSObjectProtocol?
+    /// Converts tap buffers to the capture file's format after an input
+    /// device change, so the file and recognition request stay consistent.
+    private var fileFormatConverter: CachedPCMConverter?
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -92,6 +103,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         stateLock.withLock {
             self.outputURL = outputURL
             self.audioFile = audioFile
+            fileFormatConverter = CachedPCMConverter(outputFormat: audioFile.processingFormat)
         }
 
         let speechRecognitionAvailable: Bool
@@ -135,28 +147,45 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             }
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-
-            do {
-                try self.stateLock.withLock {
-                    guard !self.hasStopped else { return }
-                    try self.audioFile?.write(from: buffer)
-                    self.capturedFrameCount += AVAudioFramePosition(buffer.frameLength)
-                }
-            } catch {
-                self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
-            }
-
-            // `stop()` clears the request on another thread.
-            self.stateLock.withLock { self.recognitionRequest }?.append(buffer)
-            self.onAudioLevel(Self.normalizedAudioLevel(from: buffer))
-        }
-
         do {
-            try engine.start()
+            try engineLock.withLock {
+                try installCaptureTap(on: engine)
+                do {
+                    try engine.start()
+                } catch {
+                    engine.inputNode.removeTap(onBus: 0)
+                    throw error
+                }
+                // When the input device changes the engine stops itself and
+                // posts this; without handling it audio silently ends.
+                let observer = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange,
+                    object: engine,
+                    queue: nil
+                ) { [weak self] _ in
+                    guard let self else { return }
+                    // Leave AVAudioEngine's notifying thread before touching
+                    // the engine or taking `engineLock`.
+                    self.engineConfigurationQueue.async {
+                        self.handleEngineConfigurationChange(attempt: 1)
+                    }
+                }
+                let installed = stateLock.withLock { () -> Bool in
+                    guard !hasStopped else { return false }
+                    audioEngine = engine
+                    engineConfigurationObserver = observer
+                    captureStartedAt = ContinuousClock().now
+                    return true
+                }
+                guard installed else {
+                    // `cancel()` ran while speech authorization was pending.
+                    NotificationCenter.default.removeObserver(observer)
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.stop()
+                    throw CancellationError()
+                }
+            }
         } catch {
-            inputNode.removeTap(onBus: 0)
             let staleOutputURL = stateLock.withLock { () -> URL? in
                 defer {
                     self.audioFile = nil
@@ -171,10 +200,109 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             cleanupOutputFile(at: staleOutputURL)
             throw AppleSpeechPreviewError.failedToStartAudioEngine
         }
+    }
 
-        audioEngine = engine
-        stateLock.withLock {
-            captureStartedAt = ContinuousClock().now
+    /// Runs on the audio tap thread.
+    private func handleCapturedBuffer(_ buffer: AVAudioPCMBuffer) {
+        let converter = stateLock.withLock { fileFormatConverter }
+        var fileBuffers: [AVAudioPCMBuffer] = []
+        if let converter, buffer.format != converter.outputFormat {
+            // After an input device change the tap delivers the new hardware
+            // format, which the capture file cannot take directly.
+            guard converter.convert(buffer, { fileBuffers.append($0) }) else {
+                recordTerminalError(AppleSpeechPreviewError.audioInputUnavailable)
+                return
+            }
+        } else {
+            fileBuffers = [buffer]
+        }
+
+        do {
+            try stateLock.withLock {
+                guard !hasStopped else { return }
+                for fileBuffer in fileBuffers {
+                    try audioFile?.write(from: fileBuffer)
+                    capturedFrameCount += AVAudioFramePosition(fileBuffer.frameLength)
+                }
+            }
+        } catch {
+            recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
+        }
+
+        // `stop()` clears the request on another thread.
+        if let request = stateLock.withLock({ recognitionRequest }) {
+            fileBuffers.forEach { request.append($0) }
+        }
+        onAudioLevel(Self.normalizedAudioLevel(from: buffer))
+    }
+
+    /// Installs the capture tap using the input node's current format.
+    /// Must be called with `engineLock` held.
+    private func installCaptureTap(on engine: AVAudioEngine) throws {
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        // A zero rate or channel count means there is no usable input device;
+        // installing a tap with it raises an Objective-C exception.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw AppleSpeechPreviewError.audioInputUnavailable
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+            self?.handleCapturedBuffer(buffer)
+        }
+    }
+
+    /// Restarts capture after the engine stopped itself for a configuration
+    /// change. If the input stays unusable, reports a terminal error so the
+    /// controller ends the dictation instead of finalizing truncated audio.
+    private func handleEngineConfigurationChange(attempt: Int) {
+        let maximumAttempts = 3
+        let result = engineLock.withLock { () -> Result<Void, Error>? in
+            guard let engine = stateLock.withLock({ hasStopped ? nil : audioEngine }) else {
+                return nil
+            }
+            engine.inputNode.removeTap(onBus: 0)
+            do {
+                try installCaptureTap(on: engine)
+                engine.prepare()
+                try engine.start()
+                return .success(())
+            } catch {
+                engine.inputNode.removeTap(onBus: 0)
+                return .failure(error)
+            }
+        }
+        guard let result else { return }
+        guard case .failure(let error) = result else {
+            Self.logger.notice("Preview capture restarted after audio configuration change")
+            return
+        }
+        Self.logger.error(
+            "Preview capture restart attempt \(attempt, privacy: .public) after audio configuration change failed: \(error.localizedDescription, privacy: .public)"
+        )
+        if attempt < maximumAttempts {
+            engineConfigurationQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.handleEngineConfigurationChange(attempt: attempt + 1)
+            }
+        } else {
+            recordTerminalError(AppleSpeechPreviewError.audioInputUnavailable)
+        }
+    }
+
+    private func stopAudioEngine() {
+        let observer = engineLock.withLock { () -> NSObjectProtocol? in
+            let (engine, observer) = stateLock.withLock { () -> (AVAudioEngine?, NSObjectProtocol?) in
+                defer {
+                    audioEngine = nil
+                    engineConfigurationObserver = nil
+                }
+                return (audioEngine, engineConfigurationObserver)
+            }
+            engine?.inputNode.removeTap(onBus: 0)
+            engine?.stop()
+            return observer
+        }
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -185,9 +313,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
 
         // Remove the tap before marking the session stopped. Marking first can
         // drop the final in-flight buffer, which sounds like missing tail words.
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
+        stopAudioEngine()
 
         let recognitionRequest = stateLock.withLock { () -> SFSpeechAudioBufferRecognitionRequest? in
             defer { self.recognitionRequest = nil }
@@ -243,9 +369,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             return self.outputURL
         }
 
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
+        stopAudioEngine()
 
         let recognitionRequest = stateLock.withLock { () -> SFSpeechAudioBufferRecognitionRequest? in
             defer { self.recognitionRequest = nil }
