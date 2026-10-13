@@ -216,6 +216,29 @@ func draftMergePrefersLocalOnConflict() {
 }
 
 @MainActor
+@Test("Controller-owned fields inside edited groups keep the controller's value")
+func draftMergeKeepsControllerOwnedFieldsInEditedGroups() {
+    let base = AppPreferences.default
+
+    var local = base
+    local.general.userName = "Typed"
+    local.dictation.localeIdentifier = "fr-FR"
+
+    var remote = base
+    remote.general.showOnboarding = !base.general.showOnboarding
+    remote.dictation.cloud.directUsagePeriodKey = "2026-10"
+    remote.dictation.cloud.directUsageSeconds = 90
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.general.userName == "Typed")
+    #expect(merged.general.showOnboarding == remote.general.showOnboarding)
+    #expect(merged.dictation.localeIdentifier == "fr-FR")
+    #expect(merged.dictation.cloud.directUsagePeriodKey == "2026-10")
+    #expect(merged.dictation.cloud.directUsageSeconds == 90)
+}
+
+@MainActor
 @Test("Controller-added snippets and corrections survive a concurrent local list edit")
 func draftMergeUnionsListAdditions() {
     var base = AppPreferences.default

@@ -825,9 +825,27 @@ final class PreferencesDraftCommitter {
             }
         }
 
-        adoptRemoteIfUnedited(\.general)
+        // General merges per field: the controller writes showOnboarding
+        // (reset/complete onboarding), so a burst of edits to the profile name
+        // mustn't write back a stale value for it.
+        func adoptRemoteGeneralFieldIfUnedited<Value: Equatable>(_ keyPath: WritableKeyPath<AppPreferences.General, Value>) {
+            if local.general[keyPath: keyPath] == base.general[keyPath: keyPath] {
+                result.general[keyPath: keyPath] = remote.general[keyPath: keyPath]
+            }
+        }
+        adoptRemoteGeneralFieldIfUnedited(\.launchAtLoginEnabled)
+        adoptRemoteGeneralFieldIfUnedited(\.showDockIcon)
+        adoptRemoteGeneralFieldIfUnedited(\.showOnboarding)
+        adoptRemoteGeneralFieldIfUnedited(\.userName)
+        adoptRemoteGeneralFieldIfUnedited(\.appearancePreference)
+        adoptRemoteGeneralFieldIfUnedited(\.bubbleAppearance)
+
         adoptRemoteIfUnedited(\.hotkeys)
         adoptRemoteIfUnedited(\.dictation)
+        // Usage counters the controller maintains; no view edits them, so the
+        // controller's values always win over a draft's stale copy.
+        result.dictation.cloud.directUsagePeriodKey = remote.dictation.cloud.directUsagePeriodKey
+        result.dictation.cloud.directUsageSeconds = remote.dictation.cloud.directUsageSeconds
         adoptRemoteIfUnedited(\.insertion)
         adoptRemoteIfUnedited(\.media)
         adoptRemoteIfUnedited(\.ai)
