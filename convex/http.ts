@@ -19,10 +19,10 @@ const CHECKOUT_PLAN_VALUES = new Set(["base", "pro"]);
 const CHECKOUT_BILLING_VALUES = new Set(["monthly", "annual"]);
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
-const AUTH_START_LIMIT_PER_EMAIL = 5;
-const AUTH_START_LIMIT_PER_IP = 30;
+// Per-email limits only: no client IP header is documented as set by the
+// Convex edge, and forwarded-IP headers can be forged by clients.
+const AUTH_START_LIMIT_PER_EMAIL = 10;
 const SUPPORT_LIMIT_PER_EMAIL = 5;
-const SUPPORT_LIMIT_PER_IP = 20;
 // Request size limits. A 60-minute dictation is roughly 10k words (~60k
 // characters), and OpenAI's transcription endpoint accepts files up to 25 MB.
 const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
@@ -46,18 +46,6 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "content-type": "application/json" },
   });
-}
-
-function clientIP(request: Request) {
-  // Best effort: these headers are only as trustworthy as the edge in front of
-  // Convex, so IP limits are a secondary guard next to per-email limits.
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return (
-    request.headers.get("cf-connecting-ip")?.trim() ||
-    request.headers.get("x-real-ip")?.trim() ||
-    forwarded ||
-    null
-  );
 }
 
 async function rateLimited(
@@ -749,10 +737,8 @@ http.route({
       return jsonResponse({ error: "Invalid email" }, 400);
     }
 
-    const ip = clientIP(request);
     const limited = await rateLimited(ctx, [
       { key: `auth-start:email:${email}`, limit: AUTH_START_LIMIT_PER_EMAIL },
-      ...(ip ? [{ key: `auth-start:ip:${ip}`, limit: AUTH_START_LIMIT_PER_IP }] : []),
     ]);
     if (limited) {
       return limited;
@@ -1355,10 +1341,8 @@ http.route({
         return jsonResponse({ error: "Missing app metadata" }, 400);
       }
 
-      const ip = clientIP(request);
       const limited = await rateLimited(ctx, [
         { key: `support:email:${email}`, limit: SUPPORT_LIMIT_PER_EMAIL },
-        ...(ip ? [{ key: `support:ip:${ip}`, limit: SUPPORT_LIMIT_PER_IP }] : []),
       ]);
       if (limited) {
         return limited;
