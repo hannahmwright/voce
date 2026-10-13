@@ -963,12 +963,18 @@ extension EnvironmentValues {
 @MainActor
 final class HotkeyCaptureInterruptionObserver {
     private var tokens: [NSObjectProtocol] = []
+    /// Bumped on every install and remove. The interrupt hops through a Task,
+    /// so a notification from an earlier capture could otherwise arrive after
+    /// a new capture started and stop it.
+    private var generation = 0
 
     func install(onInterrupt: @escaping @MainActor () -> Void) {
         remove()
+        let installedGeneration = generation
         let center = NotificationCenter.default
-        let handler: @Sendable (Notification) -> Void = { _ in
-            Task { @MainActor in
+        let handler: @Sendable (Notification) -> Void = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == installedGeneration else { return }
                 onInterrupt()
             }
         }
@@ -978,15 +984,20 @@ final class HotkeyCaptureInterruptionObserver {
             queue: .main,
             using: handler
         ))
-        tokens.append(center.addObserver(
-            forName: NSWindow.didResignKeyNotification,
-            object: NSApp.keyWindow,
-            queue: .main,
-            using: handler
-        ))
+        // With no key window, `object: nil` would match every window's
+        // resign-key; rely on the app-resign check alone in that case.
+        if let keyWindow = NSApp.keyWindow {
+            tokens.append(center.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: keyWindow,
+                queue: .main,
+                using: handler
+            ))
+        }
     }
 
     func remove() {
+        generation &+= 1
         for token in tokens {
             NotificationCenter.default.removeObserver(token)
         }
