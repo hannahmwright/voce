@@ -84,3 +84,35 @@ func diagnosticFlushWritesPendingEvents() {
     let restored = VoceDiagnosticStore(maximumEventCount: 10, persistenceURL: fileURL)
     #expect(restored.reportText().contains("input.pending"))
 }
+
+@Test("Failure diagnostics are written without waiting for the coalescing window")
+func failureDiagnosticsPersistImmediately() async throws {
+    let fileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("voce-diagnostics-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: fileURL) }
+
+    let store = VoceDiagnosticStore(
+        maximumEventCount: 10,
+        persistenceURL: fileURL,
+        persistenceCoalescingInterval: 60
+    )
+    store.record(category: "input_target", event: "captured")
+    store.record(category: "input_target", event: "capture_failed", details: ["reason": "x"])
+
+    // Not flushed: the failure event alone triggers a background write that
+    // also carries the routine event recorded before it.
+    try await Task.sleep(nanoseconds: 200_000_000)
+    #expect(store.persistenceWriteCount == 1)
+    let restored = VoceDiagnosticStore(maximumEventCount: 10, persistenceURL: fileURL)
+    #expect(restored.reportText().contains("input_target.captured"))
+    #expect(restored.reportText().contains("input_target.capture_failed"))
+}
+
+@Test("Failure event classification")
+func failureEventClassification() {
+    #expect(VoceDiagnosticStore.isFailureEvent(category: "insertion", name: "paste_unverified", details: [:]))
+    #expect(VoceDiagnosticStore.isFailureEvent(category: "insertion", name: "skipped", details: [:]))
+    #expect(VoceDiagnosticStore.isFailureEvent(category: "completion", name: "execution_finished", details: ["status": "failed"]))
+    #expect(!VoceDiagnosticStore.isFailureEvent(category: "dictation", name: "started", details: [:]))
+    #expect(!VoceDiagnosticStore.isFailureEvent(category: "insertion", name: "paste_verified", details: ["reason": "error_free"]))
+}

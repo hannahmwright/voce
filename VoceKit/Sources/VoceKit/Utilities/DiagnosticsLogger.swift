@@ -94,7 +94,15 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
         if events.count > maximumEventCount {
             events.removeFirst(events.count - maximumEventCount)
         }
-        let shouldSchedulePersistence = persistenceURL != nil && !isPersistenceScheduled
+        // Failure events are what a support report most needs, and the
+        // moments right before a crash or kill are when they occur, so they
+        // are written right away (still on the background queue) instead of
+        // waiting for the coalescing window.
+        let persistsImmediately = persistenceURL != nil
+            && Self.isFailureEvent(category: event.category, name: event.name, details: event.details)
+        let shouldSchedulePersistence = persistenceURL != nil
+            && !persistsImmediately
+            && !isPersistenceScheduled
         if persistenceURL != nil {
             hasUnpersistedEvents = true
         }
@@ -103,9 +111,13 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
         }
         lock.unlock()
 
-        if shouldSchedulePersistence {
+        if persistsImmediately {
+            persistenceQueue.async { [self] in
+                persistPendingEvents(fromScheduledWrite: false)
+            }
+        } else if shouldSchedulePersistence {
             persistenceQueue.asyncAfter(deadline: .now() + persistenceCoalescingInterval) { [self] in
-                persistPendingEvents()
+                persistPendingEvents(fromScheduledWrite: true)
             }
         }
 
@@ -159,7 +171,17 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
     public func flush() {
         guard persistenceURL != nil else { return }
         persistenceQueue.sync {
-            persistPendingEvents()
+            persistPendingEvents(fromScheduledWrite: false)
+        }
+    }
+
+    /// Failure-like events (by category, event name, or a `status` detail),
+    /// e.g. `capture_failed`, `paste_unverified`, `skipped`, `status=failed`.
+    static func isFailureEvent(category: String, name: String, details: [String: String]) -> Bool {
+        let failureMarkers = ["fail", "error", "unverified", "skipped", "unavailable", "not_staged", "not_restorable"]
+        let fields = [category, name, details["status"] ?? ""].map { $0.lowercased() }
+        return fields.contains { field in
+            failureMarkers.contains { field.contains($0) }
         }
     }
 
@@ -170,13 +192,17 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
         return persistenceWrites
     }
 
-    /// Must run on `persistenceQueue`.
-    private func persistPendingEvents() {
+    /// Must run on `persistenceQueue`. Only the coalescing timer's own write
+    /// clears `isPersistenceScheduled`; immediate writes and flushes leave a
+    /// pending timer in place (it then finds nothing to write).
+    private func persistPendingEvents(fromScheduledWrite: Bool) {
         dispatchPrecondition(condition: .onQueue(persistenceQueue))
         guard let persistenceURL else { return }
 
         lock.lock()
-        isPersistenceScheduled = false
+        if fromScheduledWrite {
+            isPersistenceScheduled = false
+        }
         guard hasUnpersistedEvents else {
             lock.unlock()
             return
