@@ -211,9 +211,9 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         proButtonTitle,
                         systemImage: "cloud.fill",
-                        isEnabled: !savedSubscriberEmail.isEmpty,
+                        isEnabled: draftEmailIsComplete,
                         isProminent: true,
-                        action: { commitEmailDraft(); onSubscribePro(selectedBillingCycle) }
+                        action: { subscribe(onSubscribePro) }
                     )
                 }
             } else {
@@ -221,17 +221,17 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         baseButtonTitle,
                         systemImage: "mic.fill",
-                        isEnabled: !savedSubscriberEmail.isEmpty,
+                        isEnabled: draftEmailIsComplete,
                         isProminent: false,
-                        action: { commitEmailDraft(); onSubscribeBase(selectedBillingCycle) }
+                        action: { subscribe(onSubscribeBase) }
                     )
 
                     accessButton(
                         proButtonTitle,
                         systemImage: "cloud.fill",
-                        isEnabled: !savedSubscriberEmail.isEmpty,
+                        isEnabled: draftEmailIsComplete,
                         isProminent: true,
-                        action: { commitEmailDraft(); onSubscribePro(selectedBillingCycle) }
+                        action: { subscribe(onSubscribePro) }
                     )
                 }
             }
@@ -404,8 +404,20 @@ struct VoceAccessSettingsSection: View {
         Self.normalizedEmail(emailDraft)
     }
 
-    /// The stored email. Checkout uses this, so the Subscribe buttons follow it
-    /// rather than an unsaved draft.
+    /// Subscribe is available once the field holds a complete-looking address
+    /// (saved or not); the action saves it before opening checkout. Gating on
+    /// the saved email instead let Subscribe save "bob@" or an empty field, and
+    /// kept a new user who hadn't pressed Return from subscribing at all.
+    private var draftEmailIsComplete: Bool {
+        Self.looksLikeCompleteEmail(normalizedSubscriberEmail)
+    }
+
+    private func subscribe(_ openCheckout: (VoceCheckoutBillingCycle) -> Void) {
+        guard draftEmailIsComplete else { return }
+        commitEmailDraft()
+        openCheckout(selectedBillingCycle)
+    }
+
     private var savedSubscriberEmail: String {
         Self.normalizedEmail(preferences.billing.subscriberEmail)
     }
