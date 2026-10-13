@@ -50,17 +50,26 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
     private let localeIdentifier: String
     private let thresholdWordCount: Int
     private let targetChunkWordCount: Int
+    private let maximumConcurrentRequests: Int
+    private let maximumAttemptsPerChunk: Int
+    private let retryBaseDelaySeconds: TimeInterval
 
     init(
         provider: any CloudSpeechProviderClient,
         localeIdentifier: String,
         thresholdWordCount: Int = 120,
-        targetChunkWordCount: Int = 80
+        targetChunkWordCount: Int = 80,
+        maximumConcurrentRequests: Int = 4,
+        maximumAttemptsPerChunk: Int = 3,
+        retryBaseDelaySeconds: TimeInterval = 0.5
     ) {
         self.provider = provider
         self.localeIdentifier = localeIdentifier
         self.thresholdWordCount = max(2, thresholdWordCount)
         self.targetChunkWordCount = max(1, targetChunkWordCount)
+        self.maximumConcurrentRequests = max(1, maximumConcurrentRequests)
+        self.maximumAttemptsPerChunk = max(1, maximumAttemptsPerChunk)
+        self.retryBaseDelaySeconds = max(0, retryBaseDelaySeconds)
     }
 
     func refine(
@@ -91,31 +100,136 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
             "Starting chunked transcript refinement [chunks=\(chunks.count, privacy: .public), inputChars=\(raw.text.count, privacy: .public), targetWords=\(targetChunkWordCount, privacy: .public)]"
         )
 
-        var refinedChunks = Array(repeating: "", count: chunks.count)
-        try await withThrowingTaskGroup(of: (Int, String).self) { group in
-            for (index, chunk) in chunks.enumerated() {
-                group.addTask {
-                    let refined = try await provider.refine(
-                        transcript: chunk,
-                        localeIdentifier: localeIdentifier,
-                        dictionary: lexicon.entries,
-                        profile: profile,
-                        appContext: appContext
-                    )
-                    return (index, refined)
-                }
-            }
-
-            for try await (index, refined) in group {
-                refinedChunks[index] = refined
-            }
-        }
+        let refinedChunks = try await refineChunks(
+            chunks,
+            profile: profile,
+            lexicon: lexicon,
+            appContext: appContext
+        )
 
         let refined = Self.normalizeText(refinedChunks.joined(separator: "\n\n"))
         Self.logger.notice(
             "Chunked transcript refinement completed in \(Self.seconds(from: startedAt.duration(to: clock.now)), format: .fixed(precision: 2))s [outputChars=\(refined.count, privacy: .public)]"
         )
         return Self.cleanTranscript(rawText: raw.text, refinedText: refined)
+    }
+
+    /// Refines chunks with bounded concurrency. A chunk that still fails after
+    /// retrying transient errors keeps its original text, so one bad request
+    /// no longer throws away every other refined chunk. Errors that will fail
+    /// every request (credentials, subscription) and failures of every chunk
+    /// still throw so the caller's whole-transcript fallback runs.
+    private func refineChunks(
+        _ chunks: [String],
+        profile: StyleProfile,
+        lexicon: PersonalLexicon,
+        appContext: AppContext?
+    ) async throws -> [String] {
+        let provider = provider
+        let localeIdentifier = localeIdentifier
+        let maximumAttempts = maximumAttemptsPerChunk
+        let retryBaseDelay = retryBaseDelaySeconds
+        var refinedChunks = chunks
+        var failedChunkCount = 0
+        var lastError: Error?
+
+        try await withThrowingTaskGroup(of: (Int, Result<String, Error>).self) { group in
+            var nextIndex = 0
+            func addNextChunk() {
+                guard nextIndex < chunks.count else { return }
+                let index = nextIndex
+                let chunk = chunks[index]
+                nextIndex += 1
+                group.addTask {
+                    do {
+                        let refined = try await Self.refineWithRetry(
+                            maximumAttempts: maximumAttempts,
+                            retryBaseDelaySeconds: retryBaseDelay
+                        ) {
+                            try await provider.refine(
+                                transcript: chunk,
+                                localeIdentifier: localeIdentifier,
+                                dictionary: lexicon.entries,
+                                profile: profile,
+                                appContext: appContext
+                            )
+                        }
+                        return (index, .success(refined))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+
+            for _ in 0..<min(maximumConcurrentRequests, chunks.count) {
+                addNextChunk()
+            }
+
+            while let (index, result) = try await group.next() {
+                switch result {
+                case .success(let refined):
+                    refinedChunks[index] = refined
+                case .failure(let error):
+                    if error is CancellationError || Self.failsEveryRequest(error) {
+                        group.cancelAll()
+                        throw error
+                    }
+                    failedChunkCount += 1
+                    lastError = error
+                    Self.logger.error(
+                        "Chunk \(index, privacy: .public) refinement failed; keeping its original text: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+                addNextChunk()
+            }
+        }
+
+        if failedChunkCount == chunks.count, let lastError {
+            throw lastError
+        }
+        return refinedChunks
+    }
+
+    static func refineWithRetry(
+        maximumAttempts: Int,
+        retryBaseDelaySeconds: TimeInterval,
+        operation: @Sendable () async throws -> String
+    ) async throws -> String {
+        var attempt = 1
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                guard attempt < maximumAttempts, isTransient(error) else {
+                    throw error
+                }
+                let delay = retryBaseDelaySeconds * pow(2, Double(attempt - 1))
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                attempt += 1
+            }
+        }
+    }
+
+    static func isTransient(_ error: Error) -> Bool {
+        switch error as? CloudDictationError {
+        case .rateLimited, .timedOut, .networkUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func failsEveryRequest(_ error: Error) -> Bool {
+        switch error as? CloudDictationError {
+        case .missingAPIKey,
+             .authenticationRequired,
+             .authenticationFailed,
+             .subscriptionRequired,
+             .hostedCloudMinutesExhausted:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func cleanTranscript(rawText: String, refinedText: String) -> CleanTranscript {
