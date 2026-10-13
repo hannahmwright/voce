@@ -770,8 +770,13 @@ final class PreferencesDraftCommitter {
         base = controller.preferences
     }
 
-    /// Three-way merge at top-level field granularity. Starts from the local
-    /// draft so a field this list doesn't know about keeps the user's value.
+    /// Three-way merge. Scalar and struct fields merge at top-level field
+    /// granularity (the user's edit wins on conflict). Collections the
+    /// controller adds to on its own (dictionary corrections and snippets
+    /// promoted from a selection or by voice, per-app overrides, bubble
+    /// anchors) merge per element, so an addition that lands during an edit
+    /// burst isn't dropped. Starts from the local draft so a field this list
+    /// doesn't know about keeps the user's value.
     static func merge(
         base: AppPreferences,
         local: AppPreferences,
@@ -792,13 +797,41 @@ final class PreferencesDraftCommitter {
         adoptRemoteIfUnedited(\.media)
         adoptRemoteIfUnedited(\.ai)
         adoptRemoteIfUnedited(\.billing)
-        adoptRemoteIfUnedited(\.lexiconEntries)
         adoptRemoteIfUnedited(\.globalStyleProfile)
-        adoptRemoteIfUnedited(\.appStyleProfiles)
-        adoptRemoteIfUnedited(\.appDictationEnginePreferences)
-        adoptRemoteIfUnedited(\.appAnchorOverrides)
-        adoptRemoteIfUnedited(\.snippets)
-        adoptRemoteIfUnedited(\.voiceCommands)
+
+        // LexiconEntry has no ID; an entry's value is its identity.
+        result.lexiconEntries = mergeElementsByValue(
+            base: base.lexiconEntries,
+            local: local.lexiconEntries,
+            remote: remote.lexiconEntries
+        )
+        result.snippets = mergeElements(
+            base: base.snippets,
+            local: local.snippets,
+            remote: remote.snippets,
+            id: \.id
+        )
+        result.voiceCommands = mergeElements(
+            base: base.voiceCommands,
+            local: local.voiceCommands,
+            remote: remote.voiceCommands,
+            id: \.id
+        )
+        result.appStyleProfiles = mergeEntries(
+            base: base.appStyleProfiles,
+            local: local.appStyleProfiles,
+            remote: remote.appStyleProfiles
+        )
+        result.appDictationEnginePreferences = mergeEntries(
+            base: base.appDictationEnginePreferences,
+            local: local.appDictationEnginePreferences,
+            remote: remote.appDictationEnginePreferences
+        )
+        result.appAnchorOverrides = mergeEntries(
+            base: base.appAnchorOverrides,
+            local: local.appAnchorOverrides,
+            remote: remote.appAnchorOverrides
+        )
         adoptRemoteIfUnedited(\.scratchPadContent)
         adoptRemoteIfUnedited(\.metricsRecordingSecondsToday)
         adoptRemoteIfUnedited(\.metricsRecordingSecondsLifetime)
@@ -806,6 +839,99 @@ final class PreferencesDraftCommitter {
         adoptRemoteIfUnedited(\.metricsLastRecordingDate)
         adoptRemoteIfUnedited(\.metricsBestTypingWordsPerMinute)
 
+        return result
+    }
+
+    /// Per-element three-way merge of an ID-keyed array, in local order:
+    /// - an element only the user changed (vs. base) keeps the local version,
+    ///   otherwise it takes the remote version;
+    /// - removed locally (in base, not local): stays removed;
+    /// - removed remotely: dropped unless the user edited it;
+    /// - added remotely (in neither base nor local): appended.
+    /// Duplicate IDs are tolerated: only the first occurrence is merged, later
+    /// local duplicates are kept as they are.
+    static func mergeElements<Element: Equatable, ID: Hashable>(
+        base: [Element],
+        local: [Element],
+        remote: [Element],
+        id: (Element) -> ID
+    ) -> [Element] {
+        if local == base { return remote }
+        if remote == base { return local }
+
+        let baseByID = Dictionary(base.map { (id($0), $0) }, uniquingKeysWith: { first, _ in first })
+        let remoteByID = Dictionary(remote.map { (id($0), $0) }, uniquingKeysWith: { first, _ in first })
+
+        var result: [Element] = []
+        var seenIDs = Set<ID>()
+
+        for element in local {
+            let key = id(element)
+            guard seenIDs.insert(key).inserted else {
+                result.append(element)
+                continue
+            }
+
+            switch (baseByID[key], remoteByID[key]) {
+            case (nil, _):
+                // Added locally (or added on both sides): keep the user's.
+                result.append(element)
+            case (let baseElement?, nil):
+                // Deleted remotely: keep only if the user edited it.
+                if element != baseElement {
+                    result.append(element)
+                }
+            case (let baseElement?, let remoteElement?):
+                result.append(element != baseElement ? element : remoteElement)
+            }
+        }
+
+        for element in remote {
+            let key = id(element)
+            guard baseByID[key] == nil, seenIDs.insert(key).inserted else { continue }
+            result.append(element)
+        }
+
+        return result
+    }
+
+    /// Value-identity variant of `mergeElements` for element types without an
+    /// ID: keeps local elements the controller didn't remove and appends the
+    /// controller's additions. Removing locally wins over keeping remotely.
+    static func mergeElementsByValue<Element: Equatable>(
+        base: [Element],
+        local: [Element],
+        remote: [Element]
+    ) -> [Element] {
+        if local == base { return remote }
+        if remote == base { return local }
+
+        var result = local.filter { element in
+            !(base.contains(element) && !remote.contains(element))
+        }
+        for element in remote where !base.contains(element) && !result.contains(element) {
+            result.append(element)
+        }
+        return result
+    }
+
+    /// Per-key three-way merge of a dictionary: a key the user changed (or
+    /// removed) keeps the local state, otherwise it takes the remote state.
+    static func mergeEntries<Key: Hashable, Value: Equatable>(
+        base: [Key: Value],
+        local: [Key: Value],
+        remote: [Key: Value]
+    ) -> [Key: Value] {
+        if local == base { return remote }
+        if remote == base { return local }
+
+        var result: [Key: Value] = [:]
+        for key in Set(base.keys).union(local.keys).union(remote.keys) {
+            let value = local[key] != base[key] ? local[key] : remote[key]
+            if let value {
+                result[key] = value
+            }
+        }
         return result
     }
 }

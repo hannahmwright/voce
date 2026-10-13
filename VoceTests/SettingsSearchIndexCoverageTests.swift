@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import VoceKit
 @testable import Voce
 
 /// Regression canaries for the settings search index.
@@ -212,4 +213,34 @@ func draftMergePrefersLocalOnConflict() {
 
     let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
     #expect(merged.scratchPadContent == "local")
+}
+
+@MainActor
+@Test("Controller-added snippets and corrections survive a concurrent local list edit")
+func draftMergeUnionsListAdditions() {
+    var base = AppPreferences.default
+    let kept = Snippet(trigger: "kept", expansion: "kept", scope: .global)
+    let deletedLocally = Snippet(trigger: "gone", expansion: "gone", scope: .global)
+    base.snippets = [kept, deletedLocally]
+    base.lexiconEntries = [LexiconEntry(term: "chat gbt", preferred: "ChatGPT", scope: .global)]
+
+    var local = base
+    local.snippets.removeAll { $0.id == deletedLocally.id }
+    local.snippets[0].expansion = "edited locally"
+    let localSnippet = Snippet(trigger: "mine", expansion: "mine", scope: .global)
+    local.snippets.append(localSnippet)
+    local.lexiconEntries.append(LexiconEntry(term: "voce", preferred: "Voce", scope: .global))
+
+    var remote = base
+    let promotedSnippet = Snippet(trigger: "promoted", expansion: "promoted", scope: .global)
+    remote.snippets.append(promotedSnippet)
+    let promotedEntry = LexiconEntry(term: "steno", preferred: "Steno", scope: .global)
+    remote.lexiconEntries.append(promotedEntry)
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.snippets.map(\.id) == [kept.id, localSnippet.id, promotedSnippet.id])
+    #expect(merged.snippets.first?.expansion == "edited locally")
+    #expect(merged.lexiconEntries.count == 3)
+    #expect(merged.lexiconEntries.contains(promotedEntry))
 }
