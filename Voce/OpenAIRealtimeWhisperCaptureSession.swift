@@ -212,10 +212,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// background tasks (`stop()`, rollover), so never read or write them
     /// without it, and never hold it across an `await`.
     private let stateLock = NSLock()
-    /// Serializes engine lifecycle work (start, restart after an input device
-    /// change, teardown). Lock order: `engineLock` before `stateLock`. The
-    /// audio tap never takes it, so `removeTap` cannot deadlock against an
-    /// in-flight buffer.
+    /// Serializes engine setup and teardown (tap install and removal, the
+    /// initial start, stop). A restart after an input device change calls
+    /// `engine.start()` outside it. Lock order: `engineLock` before
+    /// `stateLock`. The audio tap never takes it.
     private let engineLock = NSLock()
     private let engineConfigurationQueue = DispatchQueue(
         label: "io.voceapp.voce.realtime-capture.engine-configuration"
@@ -223,6 +223,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
     private var audioEngine: AVAudioEngine?
     private var engineConfigurationObserver: NSObjectProtocol?
+    /// Bumped per configuration change so stale restart retries stop.
+    private var engineRestartGeneration: UInt64 = 0
     private var capturedFrameCount: AVAudioFramePosition = 0
     /// Captured audio duration, accumulated per buffer so it stays correct
     /// even if the input sample rate changes mid-dictation. Raw audio is not
@@ -368,12 +370,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                     object: engine,
                     queue: nil
                 ) { [weak self] _ in
-                    guard let self else { return }
-                    // Leave AVAudioEngine's notifying thread before touching
-                    // the engine or taking `engineLock`.
-                    self.engineConfigurationQueue.async {
-                        self.handleEngineConfigurationChange(attempt: 1)
-                    }
+                    self?.scheduleEngineRestart()
                 }
                 let installed = stateLock.withLock { () -> Bool in
                     guard !hasStopped else { return false }
@@ -722,47 +719,95 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         return inputFormat
     }
 
+    /// Delay before each restart attempt after a configuration change. A
+    /// Bluetooth profile switch can report no input format for more than a
+    /// second, so the attempts span about five seconds.
+    static let engineRestartDelays: [TimeInterval] = [0, 0.25, 0.5, 1, 1.5, 2]
+
+    /// Called on AVAudioEngine's notifying thread: only bumps the generation
+    /// (superseding retries for an earlier change) and hops to the queue.
+    private func scheduleEngineRestart() {
+        let generation = stateLock.withLock { () -> UInt64? in
+            guard !hasStopped else { return nil }
+            engineRestartGeneration &+= 1
+            return engineRestartGeneration
+        }
+        guard let generation else { return }
+        engineConfigurationQueue.async { [weak self] in
+            self?.restartEngineAfterConfigurationChange(generation: generation, attempt: 0)
+        }
+    }
+
     /// Restarts capture with the new input format after the engine stopped
-    /// itself for a configuration change. Per-buffer conversion already
-    /// adapts to a new format. If the input stays unusable, ends the
-    /// dictation through `onTerminalError` so the controller recovers the
-    /// transcript instead of silently returning a truncated one.
-    private func handleEngineConfigurationChange(attempt: Int) {
-        let maximumAttempts = 3
-        let result = engineLock.withLock { () -> Result<AVAudioFormat, Error>? in
-            guard let engine = stateLock.withLock({ hasStopped ? nil : audioEngine }) else {
-                return nil
+    /// itself for a configuration change. Per-buffer conversion
+    /// already adapts to a new format. The tap is reinstalled under
+    /// `engineLock`, but `engine.start()` (which can take seconds on
+    /// Bluetooth) runs outside it so `stop()` and `cancel()` never wait on a
+    /// restart; if they tore the engine down meanwhile, it is stopped again.
+    /// If the input never comes back, capture ends but the session stays
+    /// finalizable: `stop()` still delivers what was captured, and a later
+    /// configuration change (the device returning) restarts capture.
+    private func restartEngineAfterConfigurationChange(generation: UInt64, attempt: Int) {
+        let prepared = engineLock.withLock { () -> Result<AVAudioEngine, Error>? in
+            let engine = stateLock.withLock { () -> AVAudioEngine? in
+                guard !hasStopped, engineRestartGeneration == generation else { return nil }
+                return audioEngine
             }
+            guard let engine else { return nil }
             engine.inputNode.removeTap(onBus: 0)
             do {
-                let inputFormat = try installCaptureTap(on: engine)
+                _ = try installCaptureTap(on: engine)
                 engine.prepare()
-                try engine.start()
-                return .success(inputFormat)
+                return .success(engine)
             } catch {
                 engine.inputNode.removeTap(onBus: 0)
                 return .failure(error)
             }
         }
-        switch result {
+
+        let failure: Error?
+        switch prepared {
         case .none:
             return
-        case .success(let inputFormat):
-            Self.logger.notice(
-                "Realtime capture restarted after audio configuration change; input=\(inputFormat.sampleRate, privacy: .public)Hz ch=\(inputFormat.channelCount, privacy: .public)"
-            )
         case .failure(let error):
-            Self.logger.error(
-                "Realtime capture restart attempt \(attempt, privacy: .public) after audio configuration change failed: \(error.localizedDescription, privacy: .public)"
-            )
-            // The new device can briefly report no format while it settles.
-            if attempt < maximumAttempts {
-                engineConfigurationQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    self?.handleEngineConfigurationChange(attempt: attempt + 1)
-                }
-            } else {
-                recordTerminalError(AppleSpeechPreviewError.audioInputUnavailable)
+            failure = error
+        case .success(let engine):
+            var startError: Error?
+            do {
+                try engine.start()
+            } catch {
+                startError = error
             }
+            let isCurrent = engineLock.withLock { () -> Bool in
+                let isCurrent = stateLock.withLock { !hasStopped && audioEngine === engine }
+                if !isCurrent || startError != nil {
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.stop()
+                }
+                return isCurrent
+            }
+            guard isCurrent else { return }
+            failure = startError
+        }
+
+        guard let failure else {
+            Self.logger.notice(
+                "Realtime capture restarted after audio configuration change (attempt \(attempt + 1, privacy: .public))"
+            )
+            return
+        }
+        Self.logger.error(
+            "Realtime capture restart attempt \(attempt + 1, privacy: .public) after audio configuration change failed: \(failure.localizedDescription, privacy: .public)"
+        )
+        let nextAttempt = attempt + 1
+        guard nextAttempt < Self.engineRestartDelays.count else {
+            Self.logger.error(
+                "Realtime capture input lost after audio configuration change; stopping will finalize the audio captured so far"
+            )
+            return
+        }
+        engineConfigurationQueue.asyncAfter(deadline: .now() + Self.engineRestartDelays[nextAttempt]) { [weak self] in
+            self?.restartEngineAfterConfigurationChange(generation: generation, attempt: nextAttempt)
         }
     }
 

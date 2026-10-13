@@ -42,9 +42,10 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private let localeIdentifier: String
     private let previewTranscriptionEnabled: Bool
     private let stateLock = NSLock()
-    /// Serializes engine lifecycle work (start, restart after an input device
-    /// change, teardown). Lock order: `engineLock` before `stateLock`. The
-    /// audio tap never takes it.
+    /// Serializes engine setup and teardown (tap install and removal, the
+    /// initial start, stop). A restart after an input device change calls
+    /// `engine.start()` outside it. Lock order: `engineLock` before
+    /// `stateLock`. The audio tap never takes it.
     private let engineLock = NSLock()
     private let engineConfigurationQueue = DispatchQueue(
         label: "io.voceapp.voce.preview-capture.engine-configuration"
@@ -52,6 +53,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
 
     private var audioEngine: AVAudioEngine?
     private var engineConfigurationObserver: NSObjectProtocol?
+    /// Bumped per configuration change so stale restart retries stop.
+    private var engineRestartGeneration: UInt64 = 0
     /// Converts tap buffers to the capture file's format after an input
     /// device change, so the file and recognition request stay consistent.
     private var fileFormatConverter: CachedPCMConverter?
@@ -163,12 +166,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
                     object: engine,
                     queue: nil
                 ) { [weak self] _ in
-                    guard let self else { return }
-                    // Leave AVAudioEngine's notifying thread before touching
-                    // the engine or taking `engineLock`.
-                    self.engineConfigurationQueue.async {
-                        self.handleEngineConfigurationChange(attempt: 1)
-                    }
+                    self?.scheduleEngineRestart()
                 }
                 let installed = stateLock.withLock { () -> Bool in
                     guard !hasStopped else { return false }
@@ -251,40 +249,95 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         }
     }
 
-    /// Restarts capture after the engine stopped itself for a configuration
-    /// change. If the input stays unusable, reports a terminal error so the
-    /// controller ends the dictation instead of finalizing truncated audio.
-    private func handleEngineConfigurationChange(attempt: Int) {
-        let maximumAttempts = 3
-        let result = engineLock.withLock { () -> Result<Void, Error>? in
-            guard let engine = stateLock.withLock({ hasStopped ? nil : audioEngine }) else {
-                return nil
+    /// Delay before each restart attempt after a configuration change. A
+    /// Bluetooth profile switch can report no input format for more than a
+    /// second, so the attempts span about five seconds.
+    static let engineRestartDelays: [TimeInterval] = [0, 0.25, 0.5, 1, 1.5, 2]
+
+    /// Called on AVAudioEngine's notifying thread: only bumps the generation
+    /// (superseding retries for an earlier change) and hops to the queue.
+    private func scheduleEngineRestart() {
+        let generation = stateLock.withLock { () -> UInt64? in
+            guard !hasStopped else { return nil }
+            engineRestartGeneration &+= 1
+            return engineRestartGeneration
+        }
+        guard let generation else { return }
+        engineConfigurationQueue.async { [weak self] in
+            self?.restartEngineAfterConfigurationChange(generation: generation, attempt: 0)
+        }
+    }
+
+    /// Restarts capture with the new input format after the engine stopped
+    /// itself for a configuration change. Buffers in a new format
+    /// are converted to the capture file format. The tap is reinstalled under
+    /// `engineLock`, but `engine.start()` (which can take seconds on
+    /// Bluetooth) runs outside it so `stop()` and `cancel()` never wait on a
+    /// restart; if they tore the engine down meanwhile, it is stopped again.
+    /// If the input never comes back, capture ends but the session stays
+    /// finalizable: `stop()` still delivers what was captured, and a later
+    /// configuration change (the device returning) restarts capture.
+    private func restartEngineAfterConfigurationChange(generation: UInt64, attempt: Int) {
+        let prepared = engineLock.withLock { () -> Result<AVAudioEngine, Error>? in
+            let engine = stateLock.withLock { () -> AVAudioEngine? in
+                guard !hasStopped, engineRestartGeneration == generation else { return nil }
+                return audioEngine
             }
+            guard let engine else { return nil }
             engine.inputNode.removeTap(onBus: 0)
             do {
                 try installCaptureTap(on: engine)
                 engine.prepare()
-                try engine.start()
-                return .success(())
+                return .success(engine)
             } catch {
                 engine.inputNode.removeTap(onBus: 0)
                 return .failure(error)
             }
         }
-        guard let result else { return }
-        guard case .failure(let error) = result else {
-            Self.logger.notice("Preview capture restarted after audio configuration change")
+
+        let failure: Error?
+        switch prepared {
+        case .none:
+            return
+        case .failure(let error):
+            failure = error
+        case .success(let engine):
+            var startError: Error?
+            do {
+                try engine.start()
+            } catch {
+                startError = error
+            }
+            let isCurrent = engineLock.withLock { () -> Bool in
+                let isCurrent = stateLock.withLock { !hasStopped && audioEngine === engine }
+                if !isCurrent || startError != nil {
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.stop()
+                }
+                return isCurrent
+            }
+            guard isCurrent else { return }
+            failure = startError
+        }
+
+        guard let failure else {
+            Self.logger.notice(
+                "Preview capture restarted after audio configuration change (attempt \(attempt + 1, privacy: .public))"
+            )
             return
         }
         Self.logger.error(
-            "Preview capture restart attempt \(attempt, privacy: .public) after audio configuration change failed: \(error.localizedDescription, privacy: .public)"
+            "Preview capture restart attempt \(attempt + 1, privacy: .public) after audio configuration change failed: \(failure.localizedDescription, privacy: .public)"
         )
-        if attempt < maximumAttempts {
-            engineConfigurationQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.handleEngineConfigurationChange(attempt: attempt + 1)
-            }
-        } else {
-            recordTerminalError(AppleSpeechPreviewError.audioInputUnavailable)
+        let nextAttempt = attempt + 1
+        guard nextAttempt < Self.engineRestartDelays.count else {
+            Self.logger.error(
+                "Preview capture input lost after audio configuration change; stopping will finalize the audio captured so far"
+            )
+            return
+        }
+        engineConfigurationQueue.asyncAfter(deadline: .now() + Self.engineRestartDelays[nextAttempt]) { [weak self] in
+            self?.restartEngineAfterConfigurationChange(generation: generation, attempt: nextAttempt)
         }
     }
 
