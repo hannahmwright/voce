@@ -46,8 +46,8 @@ func completionRoutingPrefersExplicitAIAction() throws {
     #expect(routed.selectedBy == .alternateFinishKey(workflowID: AIWorkflow.aiPromptID))
 }
 
-@Test("CompletionRoutingService inserts the text when only an AI trigger phrase is present")
-func completionRoutingFallsBackToInsertOnEmptyInput() throws {
+@Test("CompletionRoutingService throws when only an AI trigger phrase is present")
+func completionRoutingFailsOnEmptyInput() throws {
     let service = CompletionRoutingService()
     let transcript = FinalizedTranscript(
         rawText: "summarize this",
@@ -56,16 +56,14 @@ func completionRoutingFallsBackToInsertOnEmptyInput() throws {
         sourceSessionID: UUID()
     )
 
-    let routed = try service.route(
-        finalizedTranscript: transcript,
-        preferredAction: nil,
-        leadingPhraseSelectionEnabled: true,
-        workflows: AIWorkflow.builtIns
-    )
-
-    #expect(routed.action == .insert)
-    #expect(routed.inputText == "summarize this")
-    #expect(routed.selectedBy == .defaultBehavior)
+    #expect(throws: CompletionRoutingError.noContentAfterTrigger("summarize this")) {
+        try service.route(
+            finalizedTranscript: transcript,
+            preferredAction: nil,
+            leadingPhraseSelectionEnabled: true,
+            workflows: AIWorkflow.builtIns
+        )
+    }
 }
 
 @Test("CompletionRoutingService accepts punctuation after an AI trigger phrase")
@@ -110,12 +108,12 @@ func completionRoutingAcceptsNewlineAfterTrigger() throws {
     #expect(routed.inputText == "quarterly update")
 }
 
-@Test("CompletionRoutingService selects trailing AI phrases and strips them")
+@Test("CompletionRoutingService selects delimited trailing AI phrases and strips them")
 func completionRoutingSelectsTrailingPhrase() throws {
     let service = CompletionRoutingService()
     let transcript = FinalizedTranscript(
-        rawText: "make this tighter rewrite this",
-        cleanText: "make this tighter rewrite this",
+        rawText: "make this tighter - rewrite this",
+        cleanText: "make this tighter - rewrite this",
         appContext: .unknown,
         sourceSessionID: UUID()
     )
@@ -174,11 +172,11 @@ func completionRoutingIgnoresTrailingPhraseWithoutBoundary() throws {
     #expect(routed.inputText == "make this tighter prerewrite")
 }
 
-@Test("CompletionRoutingService inserts the text when trigger is followed only by punctuation")
-func completionRoutingFallsBackWhenOnlyPunctuationFollowsTrigger() throws {
+@Test("CompletionRoutingService still throws when trigger is followed only by punctuation")
+func completionRoutingFailsWhenOnlyPunctuationFollowsTrigger() throws {
     let service = CompletionRoutingService()
 
-    for text in ["summarize this:", "Summarize.", "Rewrite!"] {
+    for (text, phrase) in [("summarize this:", "summarize this"), ("Summarize.", "summarize"), ("Rewrite", "rewrite")] {
         let transcript = FinalizedTranscript(
             rawText: text,
             cleanText: text,
@@ -186,15 +184,14 @@ func completionRoutingFallsBackWhenOnlyPunctuationFollowsTrigger() throws {
             sourceSessionID: UUID()
         )
 
-        let routed = try service.route(
-            finalizedTranscript: transcript,
-            preferredAction: nil,
-            leadingPhraseSelectionEnabled: true,
-            workflows: AIWorkflow.builtIns
-        )
-
-        #expect(routed.action == .insert)
-        #expect(routed.inputText == text)
+        #expect(throws: CompletionRoutingError.noContentAfterTrigger(phrase)) {
+            try service.route(
+                finalizedTranscript: transcript,
+                preferredAction: nil,
+                leadingPhraseSelectionEnabled: true,
+                workflows: AIWorkflow.builtIns
+            )
+        }
     }
 }
 
@@ -222,6 +219,10 @@ private func routeBuiltIns(_ text: String) throws -> RoutedCompletion {
         "Summarize the findings in the doc when you can.",
         "I wrote a new AI prompt",
         "We should rewrite the onboarding flow, then summarize the results.",
+        "I need to rewrite this",
+        "Who will summarize this",
+        "make this tighter rewrite this",
+        "Who will summarize this?",
     ]
 )
 func completionRoutingIgnoresOrdinaryDictation(text: String) throws {
