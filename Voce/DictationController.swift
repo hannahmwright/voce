@@ -2282,6 +2282,12 @@ final class DictationController: ObservableObject {
                 // state outright, so only this start's own resources are released.
                 let ownsSharedState = activeStartTaskID == startTaskID
                     || (activeStartTaskID == nil && latestDictationSequence == dictationSequence)
+                // A settings change deferred while this start was arming would
+                // otherwise wait for the next dictation. Apply it separately
+                // so stops awaiting this task are not held up by a rebuild.
+                Task { @MainActor in
+                    await applyDeferredRebuildIfNeeded()
+                }
                 guard ownsSharedState else {
                     if let startMediaToken {
                         mediaInterruption.endInterruption(token: startMediaToken)
@@ -2520,6 +2526,7 @@ final class DictationController: ObservableObject {
                     realtimeSession?.cancel()
                     markRecordingFinished(owner: readyDictationSequence)
                     startPendingRecordingAfterAudioSecuredIfNeeded()
+                    await applyDeferredRebuildIfNeeded()
                     return
                 }
                 // Setup may have created the capture session after this stop
@@ -2577,6 +2584,7 @@ final class DictationController: ObservableObject {
                 // Only start a queued dictation once this one has fully
                 // released the shared state, so cleanup cannot reset it.
                 startPendingRecordingAfterAudioSecuredIfNeeded()
+                await applyDeferredRebuildIfNeeded()
                 return
             }
             if readySession == nil {
