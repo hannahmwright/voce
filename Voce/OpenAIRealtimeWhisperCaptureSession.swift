@@ -5,7 +5,6 @@ import VoceKit
 
 struct OpenAIRealtimeWhisperStopResult: Sendable {
     let rawTranscript: RawTranscript
-    let captureURL: URL
 }
 
 struct RealtimePCMConversion {
@@ -188,9 +187,11 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private let stateLock = NSLock()
 
     private var audioEngine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
-    private var outputURL: URL?
     private var capturedFrameCount: AVAudioFramePosition = 0
+    /// Captured audio duration, accumulated per buffer so it stays correct
+    /// even if the input sample rate changes mid-dictation. Raw audio is not
+    /// written to disk: only its duration is needed for usage metering.
+    private var capturedDurationSeconds: Double = 0
     private var captureStartedAt: ContinuousClock.Instant?
     private var lastAudibleAt: ContinuousClock.Instant?
     private var hasStopped = false
@@ -264,6 +265,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             hasStopped = false
             latestWriteError = nil
             capturedFrameCount = 0
+            capturedDurationSeconds = 0
             captureStartedAt = nil
             lastAudibleAt = nil
             self.diagSessionID = UUID().uuidString
@@ -282,18 +284,9 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
-        let outputURL = Self.makeOutputURL()
         let recoveryCheckpoint = try RealtimeDictationRecoveryCheckpoint()
         stateLock.withLock {
             self.recoveryCheckpoint = recoveryCheckpoint
-        }
-
-        let audioFile: AVAudioFile
-        do {
-            audioFile = try AVAudioFile(forWriting: outputURL, settings: inputFormat.settings)
-        } catch {
-            discardRecoveryCheckpoint()
-            throw AppleSpeechPreviewError.failedToCreateOutputFile
         }
 
         // Audio chunks must reach the realtime API strictly in capture order, and
@@ -306,19 +299,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         var sendContinuation: AsyncStream<Data>.Continuation?
         let sendStream = AsyncStream<Data> { sendContinuation = $0 }
         audioSendContinuation = sendContinuation
-        self.outputURL = outputURL
-        self.audioFile = audioFile
 
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
-            do {
-                try self.stateLock.withLock {
-                    guard !self.hasStopped else { return }
-                    try self.audioFile?.write(from: buffer)
-                    self.capturedFrameCount += AVAudioFramePosition(buffer.frameLength)
-                }
-            } catch {
-                self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
+            self.stateLock.withLock {
+                guard !self.hasStopped else { return }
+                self.capturedFrameCount += AVAudioFramePosition(buffer.frameLength)
+                self.capturedDurationSeconds += Double(buffer.frameLength) / max(buffer.format.sampleRate, 1)
             }
 
             let audioLevel = Self.normalizedAudioLevel(from: buffer)
@@ -435,20 +422,18 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         audioEngine = nil
 
         let stoppedAt = ContinuousClock().now
-        let outputURL: URL?
+        let capturedDurationSeconds: Double
         let wallDurationSeconds: Double?
-        (outputURL, wallDurationSeconds) = stateLock.withLock {
+        (capturedDurationSeconds, wallDurationSeconds) = stateLock.withLock {
             hasStopped = true
             let wallDurationSeconds = captureStartedAt.map { start in
                 let duration = start.duration(to: stoppedAt)
                 return Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
             }
-            let outputURL = self.outputURL
-            audioFile = nil
             captureStartedAt = nil
             lastAudibleAt = nil
-            return (outputURL, wallDurationSeconds)
+            return (self.capturedDurationSeconds, wallDurationSeconds)
         }
 
         // Wait for every queued audio chunk to hit the wire before committing.
@@ -470,7 +455,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             } catch {
                 Self.logger.error("Timed out draining realtime audio sends; abandoning wedged connection without commit")
                 abandonRealtimeConnection()
-                cleanupOutputFile(at: outputURL)
                 throw error
             }
         }
@@ -480,18 +464,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
         if let latestWriteError {
             abandonRealtimeConnection()
-            cleanupOutputFile(at: outputURL)
             throw latestWriteError
-        }
-        guard let outputURL else {
-            throw AppleSpeechPreviewError.missingOutputFile
         }
 
         guard let writer = socketWriter,
               let accumulator = transcriptAccumulator,
               let activeSegmentID else {
             abandonRealtimeConnection()
-            cleanupOutputFile(at: outputURL)
             throw CloudDictationError.invalidResponse
         }
 
@@ -511,7 +490,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             // alive until the server closes the connection. The recovery
             // checkpoint is separate, so clipboard recovery still works.
             abandonRealtimeConnection()
-            cleanupOutputFile(at: outputURL)
             throw error
         }
         let transcript = await longFormTranscript.completeSegment(
@@ -528,10 +506,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             self.activeSegmentID = nil
         }
 
-        let captureDurationMS = Self.captureDurationMS(for: outputURL)
+        let captureDurationMS = Int((capturedDurationSeconds * 1_000).rounded())
         let wallDurationDescription = wallDurationSeconds.map { "\($0.formatted(.number.precision(.fractionLength(2))))s" } ?? "unknown"
         Self.logger.notice(
-            "Realtime capture stopped; wall=\(wallDurationDescription, privacy: .public) file=\(Double(captureDurationMS) / 1_000, format: .fixed(precision: 2))s transcriptChars=\(transcript.count, privacy: .public)"
+            "Realtime capture stopped; wall=\(wallDurationDescription, privacy: .public) captured=\(capturedDurationSeconds, format: .fixed(precision: 2))s transcriptChars=\(transcript.count, privacy: .public)"
         )
 
         return OpenAIRealtimeWhisperStopResult(
@@ -539,15 +517,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 text: transcript,
                 segments: [],
                 durationMS: captureDurationMS
-            ),
-            captureURL: outputURL
+            )
         )
     }
 
     func cancel() {
-        let outputURL = stateLock.withLock {
+        stateLock.withLock {
             hasStopped = true
-            return self.outputURL
         }
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
@@ -563,14 +539,12 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             activeSegmentID = nil
             audioSendContinuation?.finish()
             audioSendContinuation = nil
-            audioFile = nil
-            self.outputURL = nil
             latestWriteError = nil
             capturedFrameCount = 0
+            capturedDurationSeconds = 0
             captureStartedAt = nil
             lastAudibleAt = nil
         }
-        cleanupOutputFile(at: outputURL)
     }
 
     /// Gate between draining audio sends and committing the buffer: throws on
@@ -640,15 +614,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         stateLock.withLock {
             activeSegmentID = nil
         }
-        let staleOutputURL = stateLock.withLock { () -> URL? in
+        stateLock.withLock {
             audioSendContinuation?.finish()
             audioSendContinuation = nil
-            audioFile = nil
-            let url = outputURL
-            outputURL = nil
-            return url
         }
-        cleanupOutputFile(at: staleOutputURL)
         discardRecoveryCheckpoint()
     }
 
@@ -1024,11 +993,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
     }
 
-    private func cleanupOutputFile(at url: URL?) {
-        guard let url else { return }
-        try? FileManager.default.removeItem(at: url)
-    }
-
     func recoveryTranscript() -> String {
         stateLock.withLock { recoveryCheckpoint }?.snapshot()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1058,18 +1022,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         _ recoveries: [RealtimeDictationRecoveryCheckpoint.PendingRecovery]
     ) {
         RealtimeDictationRecoveryCheckpoint.discardPending(recoveries)
-    }
-
-    private static func makeOutputURL() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("voce-realtime-whisper-\(UUID().uuidString)")
-            .appendingPathExtension("caf")
-    }
-
-    private static func captureDurationMS(for url: URL) -> Int {
-        guard let audioFile = try? AVAudioFile(forReading: url) else { return 0 }
-        let durationSeconds = Double(audioFile.length) / max(audioFile.processingFormat.sampleRate, 1)
-        return Int((durationSeconds * 1_000).rounded())
     }
 
     fileprivate static func normalizeText(_ text: String) -> String {

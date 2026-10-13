@@ -2280,7 +2280,6 @@ final class DictationController: ObservableObject {
 
                 if let realtimeSession {
                     let stopResult = try await realtimeSession.stop()
-                    defer { try? FileManager.default.removeItem(at: stopResult.captureURL) }
                     captureDurationMS = stopResult.rawTranscript.durationMS
                     recordDictationAuditUsage(
                         mode: cloudUsageMetering,
