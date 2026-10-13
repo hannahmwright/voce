@@ -57,6 +57,7 @@ npx convex env set VOCE_AUTH_SECRET <long-random-secret>
 npx convex env set RESEND_API_KEY re_...
 npx convex env set VOCE_AUTH_EMAIL_FROM "Voce <access@your-domain.com>"
 npx convex env set VOCE_ADMIN_EMAILS "you@example.com"
+npx convex env set VOCE_ADMIN_API_SECRET <long-random-secret>
 npx convex env set VOCE_SUPPORT_EMAIL_FROM "Voce Support <support@your-domain.com>"
 npx convex env set VOCE_SUPPORT_EMAIL_TO "h.wright@vervetechgroup.com"
 npx convex env set VOCE_SIGNUP_EMAIL_TO "h.wright@vervetechgroup.com"
@@ -95,7 +96,9 @@ set, subscriptions that match none of the configured IDs grant no plan.
 `RESEND_API_KEY` and `VOCE_AUTH_EMAIL_FROM` are required for sending access codes.
 `VOCE_SUPPORT_EMAIL_FROM` and `VOCE_SUPPORT_EMAIL_TO` configure where in-app support requests are sent.
 `VOCE_SIGNUP_EMAIL_TO` optionally overrides where new signup notifications are sent.
-`VOCE_ADMIN_EMAILS` configures who can read the `/admin/usage-audit` report from the dev-only admin screen.
+`VOCE_ADMIN_EMAILS` configures who can read the `/admin/usage-audit` report with a verified email session.
+Only addresses listed here are admins; `VOCE_SUPPORT_EMAIL_TO` and `VOCE_SIGNUP_EMAIL_TO` do not grant admin access.
+`VOCE_ADMIN_API_SECRET` is the bearer secret for scripted `/admin/usage-audit` access. Bearer access is refused when it is unset.
 `VOCE_ENTITLEMENT_API_SECRET` is optional and should not be used as the primary app access control.
 The Mac app requires a verified email session token for entitlement checks, usage recording, and subscription portal sessions.
 
@@ -141,9 +144,10 @@ The dev app also reads the same report through:
 https://<convex-deployment>.convex.site/admin/usage-audit
 ```
 
-That endpoint requires either the entitlement API bearer secret or a verified
-session for an email listed in `VOCE_ADMIN_EMAILS`, `VOCE_SIGNUP_EMAIL_TO`, or
-`VOCE_SUPPORT_EMAIL_TO`.
+That endpoint requires either `Authorization: Bearer <VOCE_ADMIN_API_SECRET>`
+or a verified session (`x-voce-session-token` plus `email` in the body) for an
+email listed in `VOCE_ADMIN_EMAILS`. `VOCE_ENTITLEMENT_API_SECRET` does not
+grant admin access.
 
 Cloud dictation proxy endpoints are:
 

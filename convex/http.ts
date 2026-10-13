@@ -98,7 +98,19 @@ function configuredEmailSet(...names: string[]) {
 }
 
 function adminEmailSet() {
-  return configuredEmailSet("VOCE_ADMIN_EMAILS", "VOCE_SIGNUP_EMAIL_TO", "VOCE_SUPPORT_EMAIL_TO");
+  // Only explicitly listed admins; support and signup inboxes are not admins.
+  return configuredEmailSet("VOCE_ADMIN_EMAILS");
+}
+
+function secretsMatch(provided: string, expected: string) {
+  if (provided.length !== expected.length) {
+    return false;
+  }
+  let difference = 0;
+  for (let index = 0; index < provided.length; index += 1) {
+    difference |= provided.charCodeAt(index) ^ expected.charCodeAt(index);
+  }
+  return difference === 0;
 }
 
 function isAdminEmail(email: string) {
@@ -835,11 +847,13 @@ http.route({
       months?: number;
       costPerHostedMinuteUSD?: number;
     };
-    const expectedSecret = process.env.VOCE_ENTITLEMENT_API_SECRET;
+    // Admin bearer access uses its own secret, never the app's shared
+    // entitlement secret, and is disabled when VOCE_ADMIN_API_SECRET is unset.
+    const expectedSecret = process.env.VOCE_ADMIN_API_SECRET;
     const token = bearerToken(request);
 
     if (token) {
-      if (!expectedSecret || token !== expectedSecret) {
+      if (!expectedSecret || !secretsMatch(token, expectedSecret)) {
         return jsonResponse({ error: "Unauthorized" }, 401);
       }
     } else {
