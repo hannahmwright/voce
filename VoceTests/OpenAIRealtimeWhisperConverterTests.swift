@@ -337,6 +337,46 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertEqual(box.result().lastSeen, 200)
     }
 
+    func testProviderLanguageCodeUsesFirstValidLanguageHint() {
+        XCTAssertEqual(
+            OpenAIRealtimeWhisperSpeechProviderClient.languageCode(
+                fromHints: ["Voce", "Kubernetes", "de-DE", "en-US"],
+                fallbackLocaleIdentifier: "fr-FR"
+            ),
+            "de"
+        )
+        XCTAssertEqual(
+            OpenAIRealtimeWhisperSpeechProviderClient.languageCode(
+                fromHints: ["AC-42"],
+                fallbackLocaleIdentifier: "fr_FR"
+            ),
+            "fr"
+        )
+        XCTAssertEqual(
+            OpenAIRealtimeWhisperSpeechProviderClient.languageCode(fromHints: [], fallbackLocaleIdentifier: ""),
+            "en"
+        )
+    }
+
+    // The realtime client's final-transcript wait must time out even though
+    // the awaited receive task never finishes on its own.
+    func testProviderTranscriptWaitTimesOut() async {
+        let stuckReceive = Task<String, Error> {
+            try? await Task.sleep(nanoseconds: 600_000_000_000)
+            return ""
+        }
+        let start = ContinuousClock().now
+
+        do {
+            _ = try await OpenAIRealtimeWhisperSpeechProviderClient.value(of: stuckReceive, timeoutSeconds: 0.2)
+            XCTFail("Expected a timeout")
+        } catch {
+            XCTAssertTrue(error is CloudDictationError, "Expected CloudDictationError.timedOut, got \(error)")
+        }
+        XCTAssertLessThan(start.duration(to: ContinuousClock().now), .seconds(5))
+        stuckReceive.cancel()
+    }
+
     func testRolloverFailsFastOnCredentialAndQuotaErrors() {
         let nonRetryable: [Error] = [
             CloudDictationError.missingAPIKey,
