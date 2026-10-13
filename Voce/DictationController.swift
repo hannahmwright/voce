@@ -642,6 +642,25 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Applies a field-level change to the current preferences. Views that
+    /// hold a long-lived copy must use this instead of writing their copy back
+    /// whole, which would revert what the controller changed since (metrics,
+    /// usage counters, learned lexicon, overlay anchors).
+    func updatePreferences(_ mutate: (inout AppPreferences) -> Void) {
+        var draft = preferences
+        mutate(&draft)
+        var normalized = draft
+        normalized.normalize()
+        guard normalized != preferences else { return }
+
+        if normalized.requiresRuntimeRebuild(comparedTo: preferences)
+            || normalized.billing.subscriberEmail != preferences.billing.subscriberEmail {
+            applySettingsDraft(preferences: draft, announceImmediateSave: false)
+        } else {
+            savePreferencesQuietly(preferences: draft)
+        }
+    }
+
     /// Persist preferences to disk without rebuilding the dictation runtime.
     /// Use this for non-runtime fields like scratchPadContent, userName, and metrics.
     func savePreferencesQuietly(preferences draft: AppPreferences) {
