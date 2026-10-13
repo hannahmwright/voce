@@ -146,10 +146,15 @@ enum FocusedInputTargetPolicy {
 /// responders (large text values, Chromium/Electron building their AX tree
 /// on first access) while still bounding a hung app well below the default.
 /// Focused-element capture additionally retries once on
-/// `kAXErrorCannotComplete`, the error a timed-out or still-initializing
-/// responder returns.
+/// `kAXErrorCannotComplete`, but only when that error came back quickly
+/// (the responder was still initializing). A timeout also reports
+/// `kAXErrorCannotComplete`; retrying after one would double the stall, so
+/// the worst case stays about one timeout.
 enum AccessibilityMessaging {
     static let timeoutSeconds: Float = 2.0
+    /// A `kAXErrorCannotComplete` returned faster than this is treated as
+    /// "not ready yet" rather than a timeout, and is worth one retry.
+    static let quickFailureRetryThresholdSeconds: Double = 0.5
 
     static func systemWideElement() -> AXUIElement {
         let systemWide = AXUIElementCreateSystemWide()
@@ -364,14 +369,20 @@ public final class FocusedInputTarget: @unchecked Sendable {
     private static func currentFocusedElement(retryOnCannotComplete: Bool = false) -> AXUIElement? {
         let systemWide = AccessibilityMessaging.systemWideElement()
         var focusedRef: CFTypeRef?
+        let firstAttemptStart = DispatchTime.now().uptimeNanoseconds
         var status = AXUIElementCopyAttributeValue(
             systemWide,
             kAXFocusedUIElementAttribute as CFString,
             &focusedRef
         )
-        if status == .cannotComplete, retryOnCannotComplete {
-            // Chromium/Electron can time out the first query while building
+        let firstAttemptSeconds = Double(DispatchTime.now().uptimeNanoseconds - firstAttemptStart) / 1_000_000_000
+        if status == .cannotComplete,
+           retryOnCannotComplete,
+           firstAttemptSeconds < AccessibilityMessaging.quickFailureRetryThresholdSeconds {
+            // Chromium/Electron can fail the first query fast while building
             // their accessibility tree; the second query usually succeeds.
+            // Never retry after a slow failure: that was a messaging timeout
+            // from a hung app, and retrying would block for another timeout.
             focusedRef = nil
             status = AXUIElementCopyAttributeValue(
                 systemWide,
