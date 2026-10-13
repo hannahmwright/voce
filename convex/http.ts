@@ -51,6 +51,7 @@ function jsonResponse(body: unknown, status = 200) {
 async function rateLimited(
   ctx: any,
   checks: Array<{ key: string; limit: number }>,
+  body: { error: string; code: string },
 ): Promise<Response | null> {
   for (const check of checks) {
     const result = await ctx.runMutation(internal.auth.hitRateLimit, {
@@ -61,7 +62,7 @@ async function rateLimited(
     if (!result.allowed) {
       const retryAfterSeconds = Math.max(1, Math.ceil(result.retryAfterMs / 1000));
       return new Response(
-        JSON.stringify({ error: "Too many requests. Please try again later." }),
+        JSON.stringify(body),
         {
           status: 429,
           headers: {
@@ -737,9 +738,14 @@ http.route({
       return jsonResponse({ error: "Invalid email" }, 400);
     }
 
-    const limited = await rateLimited(ctx, [
-      { key: `auth-start:email:${email}`, limit: AUTH_START_LIMIT_PER_EMAIL },
-    ]);
+    const limited = await rateLimited(
+      ctx,
+      [{ key: `auth-start:email:${email}`, limit: AUTH_START_LIMIT_PER_EMAIL }],
+      {
+        error: "Too many code requests. Try again later.",
+        code: "too_many_code_requests",
+      },
+    );
     if (limited) {
       return limited;
     }
@@ -791,7 +797,13 @@ http.route({
     });
     if (!verification.ok) {
       if (verification.locked) {
-        return jsonResponse({ error: "Too many attempts. Request a new code." }, 429);
+        return jsonResponse(
+          {
+            error: "Too many incorrect codes. Request a new code.",
+            code: "too_many_incorrect_codes",
+          },
+          429,
+        );
       }
       return jsonResponse({ error: "Invalid or expired code" }, 401);
     }
@@ -1341,9 +1353,14 @@ http.route({
         return jsonResponse({ error: "Missing app metadata" }, 400);
       }
 
-      const limited = await rateLimited(ctx, [
-        { key: `support:email:${email}`, limit: SUPPORT_LIMIT_PER_EMAIL },
-      ]);
+      const limited = await rateLimited(
+        ctx,
+        [{ key: `support:email:${email}`, limit: SUPPORT_LIMIT_PER_EMAIL }],
+        {
+          error: "Too many support requests. Please try again later.",
+          code: "too_many_support_requests",
+        },
+      );
       if (limited) {
         return limited;
       }
