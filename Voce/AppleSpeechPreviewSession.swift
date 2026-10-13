@@ -8,6 +8,7 @@ enum AppleSpeechPreviewError: Error, LocalizedError {
     case failedToStartAudioEngine
     case audioWriteFailed(String)
     case missingOutputFile
+    case audioInputUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ enum AppleSpeechPreviewError: Error, LocalizedError {
             return "Recording failed while writing audio: \(details)"
         case .missingOutputFile:
             return "Recording finished without a captured audio file."
+        case .audioInputUnavailable:
+            return "Recording stopped because the microphone changed or became unavailable."
         }
     }
 }

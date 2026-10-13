@@ -212,8 +212,17 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// background tasks (`stop()`, rollover), so never read or write them
     /// without it, and never hold it across an `await`.
     private let stateLock = NSLock()
+    /// Serializes engine lifecycle work (start, restart after an input device
+    /// change, teardown). Lock order: `engineLock` before `stateLock`. The
+    /// audio tap never takes it, so `removeTap` cannot deadlock against an
+    /// in-flight buffer.
+    private let engineLock = NSLock()
+    private let engineConfigurationQueue = DispatchQueue(
+        label: "io.voceapp.voce.realtime-capture.engine-configuration"
+    )
 
     private var audioEngine: AVAudioEngine?
+    private var engineConfigurationObserver: NSObjectProtocol?
     private var capturedFrameCount: AVAudioFramePosition = 0
     /// Captured audio duration, accumulated per buffer so it stays correct
     /// even if the input sample rate changes mid-dictation. Raw audio is not
@@ -318,8 +327,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         Self.logger.notice("RealtimeDiag[\(diagSessionID, privacy: .public)]: start")
 
         let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.inputFormat(forBus: 0)
         let recoveryCheckpoint = try RealtimeDictationRecoveryCheckpoint()
         let partialTranscriptThrottle = CoalescingThrottle(interval: 0.1) { [weak self] in
             await self?.publishPartialTranscript()
@@ -343,30 +350,53 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             pendingAudio = Data()
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            self?.handleCapturedBuffer(buffer)
-        }
-
+        let inputFormat: AVAudioFormat
         do {
-            try engine.start()
-        } catch {
-            inputNode.removeTap(onBus: 0)
-            cleanupAfterStartFailure()
-            throw AppleSpeechPreviewError.failedToStartAudioEngine
-        }
-
-        let engineInstalled = stateLock.withLock { () -> Bool in
-            guard !hasStopped else { return false }
-            audioEngine = engine
-            captureStartedAt = ContinuousClock().now
-            lastAudibleAt = captureStartedAt
-            return true
-        }
-        guard engineInstalled else {
-            inputNode.removeTap(onBus: 0)
-            engine.stop()
+            inputFormat = try engineLock.withLock { () throws -> AVAudioFormat in
+                let inputFormat = try installCaptureTap(on: engine)
+                do {
+                    try engine.start()
+                } catch {
+                    engine.inputNode.removeTap(onBus: 0)
+                    throw error
+                }
+                // When the input device changes (AirPods connect, a USB mic is
+                // unplugged) the engine stops itself and posts this; without
+                // handling it audio silently ends mid-dictation.
+                let observer = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange,
+                    object: engine,
+                    queue: nil
+                ) { [weak self] _ in
+                    guard let self else { return }
+                    // Leave AVAudioEngine's notifying thread before touching
+                    // the engine or taking `engineLock`.
+                    self.engineConfigurationQueue.async {
+                        self.handleEngineConfigurationChange(attempt: 1)
+                    }
+                }
+                let installed = stateLock.withLock { () -> Bool in
+                    guard !hasStopped else { return false }
+                    audioEngine = engine
+                    engineConfigurationObserver = observer
+                    captureStartedAt = ContinuousClock().now
+                    lastAudibleAt = captureStartedAt
+                    return true
+                }
+                guard installed else {
+                    NotificationCenter.default.removeObserver(observer)
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.stop()
+                    throw CancellationError()
+                }
+                return inputFormat
+            }
+        } catch is CancellationError {
             cleanupAfterStartFailure()
             throw CancellationError()
+        } catch {
+            cleanupAfterStartFailure()
+            throw AppleSpeechPreviewError.failedToStartAudioEngine
         }
         Self.logger.notice(
             "RealtimeDiag: engine started +\(self.diagElapsedMS(), privacy: .public)ms input=\(inputFormat.sampleRate, privacy: .public)Hz"
@@ -659,12 +689,81 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 
     private func stopAudioEngine() {
-        let engine = stateLock.withLock { () -> AVAudioEngine? in
-            defer { audioEngine = nil }
-            return audioEngine
+        let observer = engineLock.withLock { () -> NSObjectProtocol? in
+            let (engine, observer) = stateLock.withLock { () -> (AVAudioEngine?, NSObjectProtocol?) in
+                defer {
+                    audioEngine = nil
+                    engineConfigurationObserver = nil
+                }
+                return (audioEngine, engineConfigurationObserver)
+            }
+            engine?.inputNode.removeTap(onBus: 0)
+            engine?.stop()
+            return observer
         }
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Installs the capture tap using the input node's current format.
+    /// Must be called with `engineLock` held.
+    private func installCaptureTap(on engine: AVAudioEngine) throws -> AVAudioFormat {
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        // A zero rate or channel count means there is no usable input device;
+        // installing a tap with it raises an Objective-C exception.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw AppleSpeechPreviewError.audioInputUnavailable
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+            self?.handleCapturedBuffer(buffer)
+        }
+        return inputFormat
+    }
+
+    /// Restarts capture with the new input format after the engine stopped
+    /// itself for a configuration change. Per-buffer conversion already
+    /// adapts to a new format. If the input stays unusable, ends the
+    /// dictation through `onTerminalError` so the controller recovers the
+    /// transcript instead of silently returning a truncated one.
+    private func handleEngineConfigurationChange(attempt: Int) {
+        let maximumAttempts = 3
+        let result = engineLock.withLock { () -> Result<AVAudioFormat, Error>? in
+            guard let engine = stateLock.withLock({ hasStopped ? nil : audioEngine }) else {
+                return nil
+            }
+            engine.inputNode.removeTap(onBus: 0)
+            do {
+                let inputFormat = try installCaptureTap(on: engine)
+                engine.prepare()
+                try engine.start()
+                return .success(inputFormat)
+            } catch {
+                engine.inputNode.removeTap(onBus: 0)
+                return .failure(error)
+            }
+        }
+        switch result {
+        case .none:
+            return
+        case .success(let inputFormat):
+            Self.logger.notice(
+                "Realtime capture restarted after audio configuration change; input=\(inputFormat.sampleRate, privacy: .public)Hz ch=\(inputFormat.channelCount, privacy: .public)"
+            )
+        case .failure(let error):
+            Self.logger.error(
+                "Realtime capture restart attempt \(attempt, privacy: .public) after audio configuration change failed: \(error.localizedDescription, privacy: .public)"
+            )
+            // The new device can briefly report no format while it settles.
+            if attempt < maximumAttempts {
+                engineConfigurationQueue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.handleEngineConfigurationChange(attempt: attempt + 1)
+                }
+            } else {
+                recordTerminalError(AppleSpeechPreviewError.audioInputUnavailable)
+            }
+        }
     }
 
     private var isStopped: Bool {
