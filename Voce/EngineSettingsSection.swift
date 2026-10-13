@@ -398,6 +398,7 @@ struct EngineSettingsSection: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Add engine override")
                 .disabled(availableAppBundleIDs.isEmpty)
                 .opacity(availableAppBundleIDs.isEmpty ? 0.45 : 1)
                 .popover(isPresented: $showAddAppOverrideSheet, arrowEdge: .top) {
@@ -643,6 +644,7 @@ struct EngineSettingsSection: View {
                     .disabled(currentFrontmostBundleID == nil)
                     .opacity(currentFrontmostBundleID == nil ? 0.45 : 1)
                     .help("Use current app")
+                    .accessibilityLabel("Use current app")
                 }
 
                 if !newAppOverrideBundleID.isEmpty {

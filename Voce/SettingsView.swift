@@ -4,6 +4,7 @@ import VoceKit
 struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let initialLaunchTarget: SettingsLaunchTarget?
     private let isActive: Bool
     @Binding private var accessVerificationCode: String
@@ -302,7 +303,7 @@ struct SettingsView: View {
                     // Let the freshly selected group lay out before scrolling.
                     try? await Task.sleep(nanoseconds: 80_000_000)
                     guard !Task.isCancelled else { return }
-                    withAnimation(.easeInOut(duration: 0.3)) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
                         // Cards align to the top; rows (anchor "Card › Row")
                         // center so surrounding context stays visible.
                         scrollProxy.scrollTo(anchor, anchor: anchor.contains(" › ") ? .center : .top)

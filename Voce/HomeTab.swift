@@ -181,15 +181,7 @@ struct HomeTab: View {
         } else if controller.isRecording {
             VStack(alignment: .leading, spacing: VoceDesign.sm) {
                 HStack(spacing: VoceDesign.sm) {
-                    Circle()
-                        .fill(VoceDesign.error)
-                        .frame(width: 8, height: 8)
-                        .opacity(reduceMotion ? 1 : 0.8)
-                        .scaleEffect(reduceMotion ? 1.0 : 1.2)
-                        .animation(
-                            reduceMotion ? nil : .easeInOut(duration: 0.8).repeatForever(autoreverses: true),
-                            value: controller.isRecording
-                        )
+                    RecordingPulseDot()
 
                     Text(controller.status)
                         .font(VoceDesign.captionEmphasis())
@@ -1068,6 +1060,12 @@ struct HomeTab: View {
             VStack(alignment: .leading, spacing: VoceDesign.xs) {
                 transcriptBody(entry, isExpanded: isExpanded)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    // Clicking a row copies it via a tap gesture, which assistive
+                    // tech can't see; expose the same action on the transcript.
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityHint("Copies the transcript")
+                    .accessibilityAction { copyEntry(entry) }
 
                 if let aiName = entry.aiWorkflowName, !aiName.isEmpty {
                     HStack(spacing: VoceDesign.xxs) {
@@ -1104,7 +1102,7 @@ struct HomeTab: View {
             .frame(width: 18, height: 18, alignment: .center)
             .opacity(isHovered ? 1 : 0)
             .allowsHitTesting(isHovered)
-            .animation(.easeInOut(duration: VoceDesign.animationFast), value: isHovered)
+            .animation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast), value: isHovered)
             .padding(.top, 1)
 
             // Expand chevron
@@ -1118,6 +1116,7 @@ struct HomeTab: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.top, 4)
+                .accessibilityLabel(isExpanded ? "Collapse transcript" : "Expand transcript")
             }
         }
         .padding(.horizontal, VoceDesign.xl)
@@ -1556,7 +1555,7 @@ struct HomeTab: View {
     }
 
     private func toggleExpanded(_ entryID: UUID, isExpanded: Bool) {
-        withAnimation(.easeInOut(duration: VoceDesign.animationFast)) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast)) {
             if isExpanded { expandedIDs.remove(entryID) }
             else { expandedIDs.insert(entryID) }
         }
@@ -1600,6 +1599,39 @@ struct HomeTab: View {
         let minutes = total / 60
         let seconds = total % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+/// Recording indicator dot. The previous version applied a repeating animation
+/// keyed on a value that never changed while it was visible, so it never
+/// pulsed. Holds still when Reduce Motion is on.
+private struct RecordingPulseDot: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isPulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(VoceDesign.error)
+            .frame(width: 8, height: 8)
+            .opacity(isPulsing ? 0.55 : 1)
+            .scaleEffect(isPulsing ? 1.2 : 1.0)
+            .onAppear { updatePulse() }
+            .onChange(of: reduceMotion) { _, _ in updatePulse() }
+            .accessibilityHidden(true)
+    }
+
+    private func updatePulse() {
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                isPulsing = false
+            }
+        } else {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                isPulsing = true
+            }
+        }
     }
 }
 

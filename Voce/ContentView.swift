@@ -426,7 +426,7 @@ struct ContentView: View {
         let isSelected = selectedTab == tab
 
         return Button {
-            withAnimation(.easeInOut(duration: VoceDesign.animationFast)) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast)) {
                 lastNonSettingsTab = tab
                 settingsLaunchTarget = nil
                 selectedTab = tab

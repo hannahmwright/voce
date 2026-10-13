@@ -776,6 +776,7 @@ private struct MenuBarPopoverView: View {
     let onToggleTranscription: () -> Void
 
     @State private var isHoveringLastDictation = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var copyToastMessage: String?
     @State private var copyToastToken = UUID()
 
@@ -873,6 +874,7 @@ private struct MenuBarPopoverView: View {
                     }
                     .buttonStyle(.plain)
                     .help(accessIsBlocked ? "Open Voce to verify access" : (controller.isRecording ? "Stop transcription" : "Start transcription"))
+                    .accessibilityLabel(accessIsBlocked ? "Open Voce to verify access" : (controller.isRecording ? "Stop transcription" : "Start transcription"))
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Voce")
@@ -892,6 +894,7 @@ private struct MenuBarPopoverView: View {
                     }
                     .buttonStyle(MenuBarIconButtonStyle())
                     .help("Open Voce")
+                    .accessibilityLabel("Open Voce")
                 }
 
                 if accessIsBlocked {
@@ -947,6 +950,11 @@ private struct MenuBarPopoverView: View {
                                     .lineLimit(4)
                                     .multilineTextAlignment(.leading)
                                     .textSelection(.enabled)
+                                    // The copy button only appears on hover;
+                                    // keep copying reachable without a pointer.
+                                    .accessibilityAction(named: Text("Copy last dictation")) {
+                                        handleCopyLastDictation()
+                                    }
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -959,6 +967,7 @@ private struct MenuBarPopoverView: View {
                             }
                             .buttonStyle(MenuBarIconButtonStyle())
                             .help("Copy last dictation")
+                            .accessibilityLabel("Copy last dictation")
                         }
                     }
                 }
@@ -1026,7 +1035,7 @@ private struct MenuBarPopoverView: View {
                 }
                 .padding(.top, 16)
                 .padding(.trailing, 18)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                 .allowsHitTesting(false)
                 .zIndex(2)
             }
@@ -1043,14 +1052,14 @@ private struct MenuBarPopoverView: View {
     private func showCopyToast(message: String) {
         let token = UUID()
         copyToastToken = token
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
+        withAnimation(reduceMotion ? nil : .spring(response: 0.22, dampingFraction: 0.9)) {
             copyToastMessage = message
         }
 
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.8))
             guard copyToastToken == token else { return }
-            withAnimation(.easeOut(duration: 0.18)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
                 copyToastMessage = nil
             }
         }

@@ -79,6 +79,7 @@ struct CleanupStyleSettingsSection: View {
                         )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Add app override")
                 .disabled(!hasAvailableApps)
                 .opacity(hasAvailableApps ? 1 : 0.45)
                 .popover(isPresented: $showAddOverrideSheet, arrowEdge: .top) {
@@ -431,6 +432,7 @@ struct CleanupStyleSettingsSection: View {
                     .disabled(currentFrontmostBundleID == nil)
                     .opacity(currentFrontmostBundleID == nil ? 0.45 : 1)
                     .help("Use current app")
+                    .accessibilityLabel("Use current app")
                 }
 
                 if !newStyleBundleID.isEmpty {

@@ -85,6 +85,7 @@ struct LexiconSettingsSection: View {
                     }
                     .buttonStyle(.plain)
                     .help("Add correction")
+                    .accessibilityLabel("Add correction")
                 }
 
                 // Computed once per render; this grouping and sort used to run

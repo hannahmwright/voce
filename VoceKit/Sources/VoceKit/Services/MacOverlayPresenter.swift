@@ -239,6 +239,13 @@ private final class BubbleControlMenuButton: NSButton {
         contentStack.addArrangedSubview(titleField)
         addSubview(contentStack)
 
+        // The button's own title is empty (the label is a custom subview), so
+        // give assistive tech the name directly and hide the decorative parts.
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+        iconView.setAccessibilityElement(false)
+        titleField.setAccessibilityElement(false)
+
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 38),
             iconView.widthAnchor.constraint(equalToConstant: 16),

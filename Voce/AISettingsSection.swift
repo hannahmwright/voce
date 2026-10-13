@@ -64,6 +64,7 @@ struct AISettingsSection: View {
     @State private var sheetMode: SheetMode?
     @State private var draft = WorkflowDraft()
     @State private var hoveredWorkflowID: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.md) {
@@ -281,7 +282,7 @@ struct AISettingsSection: View {
         .contentShape(Rectangle())
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: VoceDesign.animationFast)) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast)) {
                 hoveredWorkflowID = hovering ? workflow.id : nil
             }
         }

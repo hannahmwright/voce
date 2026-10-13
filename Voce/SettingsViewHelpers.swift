@@ -55,6 +55,7 @@ extension EnvironmentValues {
 private struct SettingsCardAnchorModifier: ViewModifier {
     let title: String
     @Environment(\.highlightedSettingsCard) private var highlightedCard
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isHighlighted: Bool { highlightedCard == title }
 
@@ -65,7 +66,7 @@ private struct SettingsCardAnchorModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
                     .stroke(VoceDesign.accent.opacity(isHighlighted ? 0.85 : 0), lineWidth: 2)
             )
-            .animation(.easeInOut(duration: 0.35), value: isHighlighted)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: isHighlighted)
             .id(title)
     }
 }
@@ -91,6 +92,7 @@ extension View {
 private struct SettingsRowAnchorModifier: ViewModifier {
     let anchor: String
     @Environment(\.highlightedSettingsCard) private var highlighted
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isHighlighted: Bool { highlighted == anchor }
 
@@ -106,7 +108,7 @@ private struct SettingsRowAnchorModifier: ViewModifier {
                     .stroke(VoceDesign.accent.opacity(isHighlighted ? 0.8 : 0), lineWidth: 1.5)
                     .padding(-VoceDesign.xs)
             )
-            .animation(.easeInOut(duration: 0.35), value: isHighlighted)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: isHighlighted)
             .id(anchor)
     }
 }
