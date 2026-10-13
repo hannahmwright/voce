@@ -179,6 +179,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     private let displayIDRefreshRetryDelayNanoseconds: UInt64
     private let maximumDisplayIDRefreshRetryCount: Int
     private var pendingResumeTask: Task<Void, Never>?
+    /// Identifies the resume attempt that currently owns the interrupted-playback state.
+    /// A cancelled resume task must not clear state that a newer interruption now owns.
+    private var resumeAttemptID: UUID?
+    /// Set once the pending resume attempt has issued (or started issuing) a play
+    /// command. Until then the media is still paused by Voce, so a new interruption
+    /// beginning in that window must inherit the pause instead of re-detecting.
+    private var resumeCommandIssued = false
     private var pauseSentAtUptimeNanoseconds: UInt64?
 
     public init() {
@@ -336,9 +343,8 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     }
 
     public func beginInterruption() async -> MediaInterruptionToken? {
-        pendingResumeTask?.cancel()
-        pendingResumeTask = nil
-
+        // Check cancellation before touching a pending resume: cancelling the resume
+        // and then bailing out would leave Voce-paused media paused forever.
         if Task.isCancelled {
             Self.logger.debug("Skipping media interruption because task is cancelled before detection.")
             return nil
@@ -351,6 +357,33 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 "Media interruption already active. Reusing pause state. Active tokens: \(self.activeTokens.count, privacy: .public)"
             )
             return token
+        }
+
+        if let pendingResumeTask {
+            pendingResumeTask.cancel()
+            self.pendingResumeTask = nil
+            let canInheritPause = resumeAttemptID != nil
+                && !resumeCommandIssued
+                && interruptedPlaybackResumeStrategy != nil
+            resumeAttemptID = nil
+            resumeCommandIssued = false
+            if canInheritPause {
+                // The previous dictation's resume had not acted yet, so the media is
+                // still paused by Voce. Re-detecting now would see it as not playing,
+                // return no token, and the media would never be resumed. Carry the
+                // previous owner/strategy over to this interruption instead.
+                activeTokens.insert(token.id)
+                Self.logger.notice(
+                    """
+                    Media interruption inherited pending-resume pause state. \
+                    interruptedOwner=\(self.interruptedPlaybackOwnerForResume?.logValue ?? "nil", privacy: .public) \
+                    resumeStrategy=\(self.interruptedPlaybackResumeStrategy?.logValue ?? "nil", privacy: .public)
+                    """
+                )
+                return token
+            }
+            // The previous resume already issued a play command; its state is stale.
+            clearInterruptedPlaybackState()
         }
 
         let detection = await playbackDetector.detect()
@@ -587,6 +620,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         pendingResumeTask?.cancel()
         let pauseSentAtUptimeNanoseconds = self.pauseSentAtUptimeNanoseconds
         let minimumResumeDelayNanoseconds = self.minimumResumeDelayNanoseconds
+        let attemptID = UUID()
+        resumeAttemptID = attemptID
+        resumeCommandIssued = false
         Self.logger.notice("Media interruption scheduling resume check.")
         pendingResumeTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -599,7 +635,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 }
             }
 
-            await self.resumePlaybackIfNeeded()
+            await self.resumePlaybackIfNeeded(attemptID: attemptID)
         }
         Self.logger.debug("Media interruption ended. Active tokens: 0")
     }
@@ -616,12 +652,33 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         await playbackController(owner).playerState()
     }
 
-    private func resumePlaybackIfNeeded() async {
+    private func clearInterruptedPlaybackState() {
+        pauseSentAtUptimeNanoseconds = nil
+        interruptedPlaybackResumeStrategy = nil
+        interruptedPlaybackOwnerForResume = nil
+    }
+
+    /// True when this resume attempt must stop before acting: its task was cancelled,
+    /// a newer interruption is active, or a newer attempt owns the state.
+    private func resumeAttemptIsStale(_ attemptID: UUID) -> Bool {
+        Task.isCancelled || !activeTokens.isEmpty || resumeAttemptID != attemptID
+    }
+
+    private func resumePlaybackIfNeeded(attemptID: UUID) async {
         defer {
-            pendingResumeTask = nil
-            pauseSentAtUptimeNanoseconds = nil
-            interruptedPlaybackResumeStrategy = nil
-            interruptedPlaybackOwnerForResume = nil
+            // Only the attempt that still owns the state may clear it. A cancelled
+            // attempt that wakes up later must not clobber a newer interruption.
+            if resumeAttemptID == attemptID {
+                pendingResumeTask = nil
+                resumeAttemptID = nil
+                resumeCommandIssued = false
+                clearInterruptedPlaybackState()
+            }
+        }
+
+        guard resumeAttemptID == attemptID else {
+            Self.logger.debug("Skipping media interruption resume because a newer attempt owns the state.")
+            return
         }
 
         guard !Task.isCancelled else {
@@ -636,6 +693,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         if let scriptableOwner = interruptedPlaybackResumeStrategy?.scriptableOwner {
             let playbackState = await scriptablePlaybackState(owner: scriptableOwner)
+            // Re-check after the (osascript) state query: a new dictation may have
+            // begun meanwhile and inherited the pause. Resuming now would start the
+            // music in the middle of that dictation.
+            guard !resumeAttemptIsStale(attemptID) else {
+                Self.logger.debug("Skipping media interruption resume because it became stale during the state query.")
+                return
+            }
             Self.logger.notice(
                 """
                 Media interruption \(scriptableOwner.logValue, privacy: .public) \
@@ -655,6 +719,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 )
                 return
             case .paused:
+                resumeCommandIssued = true
                 let didResume = await playScriptablePlayback(owner: scriptableOwner)
                 Self.logger.notice(
                     "Media interruption \(scriptableOwner.logValue, privacy: .public) resume attempted: \(didResume, privacy: .public)"
@@ -672,6 +737,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 )
                 return
             case .unknown:
+                resumeCommandIssued = true
                 let didResume = await playScriptablePlayback(owner: scriptableOwner)
                 Self.logger.notice(
                     "Media interruption \(scriptableOwner.logValue, privacy: .public) fallback resume attempted: \(didResume, privacy: .public)"
@@ -685,7 +751,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
 
         let detection = await stabilizedResumeDetection()
         Self.logger.notice("Media interruption resume detection=\(detection.logValue, privacy: .public)")
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, resumeAttemptID == attemptID else {
             Self.logger.debug("Skipping media interruption resume because task was cancelled after detection.")
             return
         }
@@ -746,6 +812,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     }
 
     private func sendResumeCommandWithVerification() async {
+        resumeCommandIssued = true
         let didSend = sendMediaCommand(.play)
         Self.logger.notice("Media interruption resume command send attempted: \(didSend, privacy: .public)")
         Self.logger.debug("Media interruption resume command send attempted: \(didSend, privacy: .public)")

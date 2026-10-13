@@ -2505,4 +2505,176 @@ func productionServiceWiresAudibleProbeAndMediaKeyEscalation() {
         )
     }
 }
+// MARK: - Re-interruption while a resume is pending
+
+/// Spotify controller whose first state query suspends until released, so tests can
+/// begin a new interruption while the resume task is inside the (osascript) probe.
+private actor GatedSpotifyPlaybackController: SpotifyPlaybackControlling {
+    private var gateOpen = false
+    private(set) var stateCalls = 0
+    private(set) var pauseCalls = 0
+    private(set) var playCalls = 0
+    private let gatedState: AppPlaybackState
+    private let laterState: AppPlaybackState
+
+    init(gatedState: AppPlaybackState, laterState: AppPlaybackState) {
+        self.gatedState = gatedState
+        self.laterState = laterState
+    }
+
+    func open() {
+        gateOpen = true
+    }
+
+    func playerState() async -> AppPlaybackState {
+        stateCalls += 1
+        if stateCalls == 1 {
+            while !gateOpen {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            return gatedState
+        }
+        return laterState
+    }
+
+    func pause() async -> Bool {
+        pauseCalls += 1
+        return true
+    }
+
+    func play() async -> Bool {
+        playCalls += 1
+        return true
+    }
+}
+
+@MainActor
+@Test("A new interruption during the pre-resume delay inherits the pause and resumes later")
+func newInterruptionDuringPreResumeDelayInheritsPause() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([.paused])
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying],
+        // After Voce paused Spotify, any re-detection reports not playing.
+        fallback: .notPlaying,
+        displayIDs: [MediaDisplayID.spotify, MediaDisplayID.spotify],
+        fallbackDisplayID: MediaDisplayID.spotify
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    #expect(await spotify.pauseCalls == 1)
+    service.endInterruption(token: firstToken)
+
+    // Second dictation starts inside the ~200ms pre-resume delay.
+    guard let secondToken = await service.beginInterruption() else {
+        Issue.record("A new interruption during a pending resume must inherit the pause, not re-detect.")
+        return
+    }
+    #expect(detector.detectCalls == 2, "Inheriting the pause must not re-detect Voce-paused media.")
+    #expect(await spotify.pauseCalls == 1, "Media is already paused; it must not be paused again.")
+
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    #expect(await spotify.playCalls == 0, "The cancelled resume must not resume during the second dictation.")
+
+    service.endInterruption(token: secondToken)
+    let didResume = await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "Media paused by the first dictation must resume after the second one ends.")
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("A new interruption during the resume state query prevents the stale resume")
+func newInterruptionDuringResumeStateQueryPreventsStaleResume() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = GatedSpotifyPlaybackController(gatedState: .unknown, laterState: .paused)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying],
+            fallback: .notPlaying,
+            displayIDs: [MediaDisplayID.spotify, MediaDisplayID.spotify],
+            fallbackDisplayID: MediaDisplayID.spotify
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+    let resumeIsQuerying = await waitUntil {
+        await spotify.stateCalls == 1
+    }
+    #expect(resumeIsQuerying)
+
+    guard let secondToken = await service.beginInterruption() else {
+        Issue.record("A new interruption during a pending resume must inherit the pause.")
+        return
+    }
+
+    // The stale state query now completes with `.unknown`, which previously fell
+    // through to play() and resumed the music mid-dictation.
+    await spotify.open()
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await spotify.playCalls == 0, "A stale resume must not start playback during a new dictation.")
+
+    service.endInterruption(token: secondToken)
+    let didResume = await waitUntil {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "The inherited interruption must keep its Spotify resume strategy.")
+}
+
+@MainActor
+@Test("A cancelled begin does not cancel a pending resume")
+func cancelledBeginDoesNotCancelPendingResume() async {
+    let spotify = FakeSpotifyPlaybackController([.paused])
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying],
+            fallback: .notPlaying,
+            displayIDs: [MediaDisplayID.spotify, MediaDisplayID.spotify],
+            fallbackDisplayID: MediaDisplayID.spotify
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { true },
+        minimumResumeDelayNanoseconds: 100_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: token)
+
+    let cancelledBegin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    cancelledBegin.cancel()
+    #expect(await cancelledBegin.value == nil)
+
+    let didResume = await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "A cancelled begin must leave the pending resume intact.")
+}
 #endif
