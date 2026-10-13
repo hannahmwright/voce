@@ -50,26 +50,41 @@ public struct CompletionRoutingService: Sendable {
         let trimmedText = finalizedTranscript.cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         for (workflow, phrase) in enabledWorkflows {
-            if let remainderStart = leadingRemainderStartIndex(in: trimmedText, matching: phrase) {
-                let remaining = trimmedText[remainderStart...]
+            // Built-in single-word triggers ("rewrite", "summarize") are common
+            // verbs, so they only route when clearly used as a command: at the
+            // start and followed by an explicit delimiter ("Rewrite: …",
+            // "Summarize, …"), never as trailing phrases.
+            let isAmbiguousTrigger = workflow.isBuiltIn && !phrase.contains(where: \.isWhitespace)
+
+            if let phraseEnd = leadingRemainderStartIndex(in: trimmedText, matching: phrase) {
+                let remaining = trimmedText[phraseEnd...]
                     .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+                // A dictation that is only a trigger ("Summarize.") has nothing to
+                // send; the caller tells the user to say something after it.
                 guard !remaining.isEmpty else {
                     throw CompletionRoutingError.noContentAfterTrigger(phrase)
                 }
 
-                return RoutedCompletion(
-                    action: .aiWorkflow(id: workflow.id),
-                    inputText: remaining,
-                    selectedBy: .leadingPhrase(workflowID: workflow.id, matchedPhrase: phrase)
-                )
+                if !isAmbiguousTrigger || hasExplicitDelimiter(in: trimmedText, after: phraseEnd) {
+                    return RoutedCompletion(
+                        action: .aiWorkflow(id: workflow.id),
+                        inputText: remaining,
+                        selectedBy: .leadingPhrase(workflowID: workflow.id, matchedPhrase: phrase)
+                    )
+                }
             }
 
-            if let triggerStart = trailingTriggerStartIndex(in: trimmedText, matching: phrase) {
+            // Trailing triggers: never for single-word built-ins ("I still need
+            // to summarize."), never for questions ("Can you rewrite this?"), and
+            // for built-ins only when set off by a delimiter ("…tighter, rewrite
+            // this") so "I need to rewrite this" stays ordinary dictation.
+            if !isAmbiguousTrigger,
+               !trimmedText.hasSuffix("?"),
+               let triggerStart = trailingTriggerStartIndex(in: trimmedText, matching: phrase),
+               !workflow.isBuiltIn || hasExplicitDelimiter(in: trimmedText, before: triggerStart) {
                 let remaining = trimmedText[..<triggerStart]
                     .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
-                guard !remaining.isEmpty else {
-                    throw CompletionRoutingError.noContentAfterTrigger(phrase)
-                }
+                guard !remaining.isEmpty else { continue }
 
                 return RoutedCompletion(
                     action: .aiWorkflow(id: workflow.id),
@@ -84,6 +99,22 @@ public struct CompletionRoutingService: Sendable {
             inputText: finalizedTranscript.cleanText,
             selectedBy: .defaultBehavior
         )
+    }
+
+    /// Characters that make a leading single-word trigger an explicit command.
+    private static let explicitTriggerDelimiters: Set<Character> = [",", ":", ";", ".", "\n", "\u{2014}", "\u{2013}", "-"]
+
+    /// The first non-space character after `index` is an explicit delimiter.
+    private func hasExplicitDelimiter(in text: String, after index: String.Index) -> Bool {
+        // Allow spaces before the delimiter ("Rewrite : …" from some recognizers).
+        guard let delimiter = text[index...].first(where: { $0 != " " && $0 != "\t" }) else { return false }
+        return Self.explicitTriggerDelimiters.contains(delimiter)
+    }
+
+    /// The last non-space character before `index` is an explicit delimiter.
+    private func hasExplicitDelimiter(in text: String, before index: String.Index) -> Bool {
+        guard let delimiter = text[..<index].last(where: { $0 != " " && $0 != "\t" }) else { return false }
+        return Self.explicitTriggerDelimiters.contains(delimiter)
     }
 
     private func leadingRemainderStartIndex(in text: String, matching phrase: String) -> String.Index? {
@@ -149,8 +180,20 @@ public struct CompletionRoutingService: Sendable {
             return nil
         }
 
+        // "I wrote a new AI prompt" uses the trigger as a noun phrase.
+        if previousCharacter.isWhitespace,
+           let previousWord = WordTokenizer.words(in: String(text[..<phraseStart].suffix(32))).last,
+           Self.trailingTriggerNounMarkers.contains(previousWord) {
+            return nil
+        }
+
         return phraseStart
     }
+
+    private static let trailingTriggerNounMarkers: Set<String> = [
+        "a", "an", "the", "my", "your", "our", "their", "his", "her", "its", "this", "that",
+        "new", "another", "every", "each", "good", "great", "better", "best",
+    ]
 
     private func isPhraseBoundary(_ character: Character) -> Bool {
         character.isWhitespace || character.isNewline || character.isPunctuation

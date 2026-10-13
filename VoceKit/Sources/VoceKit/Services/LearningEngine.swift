@@ -13,6 +13,9 @@ public actor LearningEngine {
     private var data: LearningData
     private let storageURL: URL
     private var isDirty = false
+    /// Set when an unreadable data file could not be preserved; saving would
+    /// then destroy it, so saves are skipped.
+    private let isPersistenceBlocked: Bool
 
     /// Number of times a correction must be seen before auto-promoting to lexicon.
     public static let correctionPromotionThreshold = 3
@@ -40,7 +43,9 @@ public actor LearningEngine {
 
     public init(storageURL: URL? = nil) {
         self.storageURL = storageURL ?? Self.defaultStorageURL()
-        self.data = Self.load(from: self.storageURL)
+        let loaded = Self.load(from: self.storageURL)
+        self.data = loaded.data
+        self.isPersistenceBlocked = loaded.persistenceBlocked
     }
 
     // MARK: - Session Observation
@@ -65,7 +70,7 @@ public actor LearningEngine {
 
     /// Persist data to disk. Call periodically or on app termination.
     public func save() {
-        guard isDirty else { return }
+        guard isDirty, !isPersistenceBlocked else { return }
         Self.persist(data, to: storageURL)
         isDirty = false
     }
@@ -123,7 +128,7 @@ public actor LearningEngine {
 
     /// Returns the frequency count for a given word.
     public func frequency(of word: String) -> Int {
-        data.wordFrequencies[word.lowercased()] ?? 0
+        data.wordFrequencies[WordTokenizer.normalizedText(word)] ?? 0
     }
 
     /// Returns a snapshot of word frequencies for use in candidate ranking.
@@ -141,6 +146,7 @@ public actor LearningEngine {
             .compactMap { (entry: Dictionary<String, Int>.Element) -> SnippetSuggestion? in
                 let (phrase, occurrences) = entry
                 let normalizedPhrase = phrase.lowercased()
+                guard !data.dismissedSnippetPhrases.contains(normalizedPhrase) else { return nil }
                 guard shouldSuggestSnippetPhrase(normalizedPhrase) else { return nil }
                 guard let suggestedTrigger = makeSuggestedTrigger(for: normalizedPhrase) else { return nil }
                 guard !lowercasedTriggers.contains(normalizedPhrase) else { return nil }
@@ -173,8 +179,13 @@ public actor LearningEngine {
     }
 
     /// Dismiss a snippet suggestion so it won't be suggested again.
+    ///
+    /// The phrase is remembered (and persisted) so that dictating it again does
+    /// not rebuild its count and bring the suggestion back.
     public func dismissSnippetSuggestion(phrase: String) {
-        data.phraseFrequencies.removeValue(forKey: phrase.lowercased())
+        let normalized = phrase.lowercased()
+        data.dismissedSnippetPhrases.insert(normalized)
+        data.phraseFrequencies.removeValue(forKey: normalized)
         isDirty = true
     }
 
@@ -208,6 +219,14 @@ public actor LearningEngine {
         for word in words {
             data.wordFrequencies[word, default: 0] += 1
         }
+
+        if data.wordFrequencies.count > Self.maxWordFrequencyEntries {
+            data.wordFrequencies = Self.pruned(
+                data.wordFrequencies,
+                keepingCount: Self.wordFrequencyEntriesAfterPruning,
+                preserving: Set(words)
+            )
+        }
     }
 
     // MARK: - Private: Phrase Frequencies
@@ -216,19 +235,62 @@ public actor LearningEngine {
         let words = tokenize(text)
         guard words.count >= Self.ngramRange.lowerBound else { return }
 
+        var sessionPhrases: Set<String> = []
         for n in Self.ngramRange {
             guard words.count >= n else { break }
             for i in 0...(words.count - n) {
                 let phrase = words[i..<(i + n)].joined(separator: " ")
+                guard !data.dismissedSnippetPhrases.contains(phrase) else { continue }
                 data.phraseFrequencies[phrase, default: 0] += 1
+                sessionPhrases.insert(phrase)
             }
         }
 
-        // Prune low-frequency phrases to prevent unbounded growth.
-        // Keep entries with count >= 2 or added in this session (count == 1 is fine until pruning).
-        if data.phraseFrequencies.count > 10_000 {
-            data.phraseFrequencies = data.phraseFrequencies.filter { $0.value >= 2 }
+        // Bound growth: once over the limit, keep this session's phrases plus
+        // the most frequent others, dropping well below the limit so pruning
+        // runs rarely rather than rescanning on every session.
+        if data.phraseFrequencies.count > Self.maxPhraseFrequencyEntries {
+            data.phraseFrequencies = Self.pruned(
+                data.phraseFrequencies,
+                keepingCount: Self.phraseFrequencyEntriesAfterPruning,
+                preserving: sessionPhrases
+            )
         }
+    }
+
+    static let maxPhraseFrequencyEntries = 10_000
+    static let phraseFrequencyEntriesAfterPruning = 5_000
+    static let maxWordFrequencyEntries = 20_000
+    static let wordFrequencyEntriesAfterPruning = 15_000
+
+    /// Keeps every key in `preserving` (the current session — the most recent
+    /// data) plus the highest counts, up to `keepingCount` entries in total.
+    static func pruned(
+        _ counts: [String: Int],
+        keepingCount: Int,
+        preserving: Set<String>
+    ) -> [String: Int] {
+        var kept: [String: Int] = [:]
+        kept.reserveCapacity(keepingCount)
+        for key in preserving {
+            if let count = counts[key] {
+                kept[key] = count
+            }
+        }
+
+        let remainingBudget = keepingCount - kept.count
+        guard remainingBudget > 0 else { return kept }
+
+        let others = counts
+            .filter { !preserving.contains($0.key) }
+            .sorted { lhs, rhs in
+                lhs.value != rhs.value ? lhs.value > rhs.value : lhs.key < rhs.key
+            }
+            .prefix(remainingBudget)
+        for (key, count) in others {
+            kept[key] = count
+        }
+        return kept
     }
 
     // MARK: - Private: App Stats
@@ -335,10 +397,10 @@ public actor LearningEngine {
 
     // MARK: - Tokenization
 
+    /// Uses the tokenizer shared with the cleanup ranker so `wordFrequencies`
+    /// keys match what the ranker looks up ("don't" stays one word, accents kept).
     private func tokenize(_ text: String) -> [String] {
-        text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count > 1 }
+        WordTokenizer.words(in: text).filter { $0.count > 1 }
     }
 
     private func shouldSuggestSnippetPhrase(_ phrase: String) -> Bool {
@@ -403,14 +465,33 @@ public actor LearningEngine {
         VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "learning-data.json")
     }
 
-    private static func load(from url: URL) -> LearningData {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(LearningData.self, from: data)
-        else {
-            return .empty
+    private static func load(from url: URL) -> (data: LearningData, persistenceBlocked: Bool) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return (.empty, false)
         }
-        return decoded
+
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            let report = LossyDecodingReport()
+            decoder.attach(report)
+            let decoded = try decoder.decode(LearningData.self, from: data)
+            if report.skippedValueCount > 0 {
+                // Keep the original before the next save drops the bad parts.
+                let preserved = CorruptFilePreserver.preserve(fileAt: url, moving: false) != nil
+                if preserved {
+                    // Write the repaired data now so the next launch does not
+                    // find the same damage (and back it up) again.
+                    persist(decoded, to: url)
+                }
+                return (decoded, !preserved)
+            }
+            return (decoded, false)
+        } catch {
+            // Move the unreadable file aside so the next save cannot destroy it.
+            let preserved = CorruptFilePreserver.preserve(fileAt: url, moving: true) != nil
+            return (.empty, !preserved && FileManager.default.fileExists(atPath: url.path))
+        }
     }
 
     private static func persist(_ learningData: LearningData, to url: URL) {

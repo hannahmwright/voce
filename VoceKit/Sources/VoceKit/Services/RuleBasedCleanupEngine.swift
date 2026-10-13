@@ -1,7 +1,7 @@
 import Foundation
 
 public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
-    private enum AutoListKind {
+    enum AutoListKind: Sendable {
         case bullets
         case numbered
     }
@@ -31,8 +31,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             lexicon: lexicon
         )
         let ranker = LocalCleanupRanker(wordFrequencies: wordFrequencies)
+        // Score against the lexicon-corrected raw text so a correction that
+        // merges words ("open ai" → "OpenAI") is not counted as dropped content.
+        let lexiconCorrectedRaw = applyLexicon(text: normalizedRaw.text, lexicon: lexicon).text
         let best = ranker.bestCandidate(
-            rawText: normalizedRaw.text,
+            rawText: lexiconCorrectedRaw,
             candidates: candidates,
             profile: profile
         )
@@ -84,7 +87,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var dict: [String: NSRegularExpression] = [:]
         for filler in fillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
-            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
+            let pattern = "(?im)(?:[^\\S\\n]|^)\(escaped)(?=\\s|[,.!?]|$)"
             if let regex = try? NSRegularExpression(pattern: pattern) {
                 dict[filler] = regex
             }
@@ -110,14 +113,14 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         let basicallySafe = "(?:the|a|an|it|what)"
 
         let specs: [(String, String)] = [
-            ("you know", "(?i)(?:\\s|^)you know(?!\\s+\(youKnowSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("you know", "(?im)(?:[^\\S\\n]|^)you know(?!\\s+\(youKnowSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
             // Preserve meaning-bearing phrases such as "that's what I mean" and
             // "you know what I mean" by refusing to treat "I mean" as filler
             // when it is preceded by "what ".
-            ("i mean", "(?i)(?:\\s|^)(?<!what\\s)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("sort of", "(?i)(?:\\s|^)sort of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("kind of", "(?i)(?:\\s|^)kind of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("basically", "(?i)(?:\\s|^)basically(?!\\s+\(basicallySafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("i mean", "(?im)(?:[^\\S\\n]|^)(?<!what\\s)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("sort of", "(?im)(?:[^\\S\\n]|^)sort of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("kind of", "(?im)(?:[^\\S\\n]|^)kind of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("basically", "(?im)(?:[^\\S\\n]|^)basically(?!\\s+\(basicallySafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
         ]
 
         var dict: [String: NSRegularExpression] = [:]
@@ -144,9 +147,10 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
     }()
 
-    private static let whitespaceRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: "\\s+")
-    }()
+    /// Runs of horizontal whitespace (line breaks are preserved).
+    private static let whitespaceRegex = try? NSRegularExpression(pattern: "[^\\S\\n]+")
+    /// Spaces hugging a line break: "a \n b" → "a\nb".
+    private static let spacesAroundNewlineRegex = try? NSRegularExpression(pattern: " *\\n *")
 
     // MARK: - Filler Removal
 
@@ -165,6 +169,16 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var updated = text
         var removed: [String] = []
         var edits: [TranscriptEdit] = []
+
+        // Sentence-initial "um"/"uh" after a sentence end: remove and recapitalize.
+        let sentenceInitial = removeSentenceInitialFillers(from: updated)
+        updated = sentenceInitial.text
+        for filler in unconditionalFillers {
+            let count = sentenceInitial.removed.filter { $0 == filler }.count
+            guard count > 0 else { continue }
+            removed.append(contentsOf: Array(repeating: filler, count: count))
+            edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
+        }
 
         // Remove unconditional fillers.
         for filler in unconditionalFillers {
@@ -197,8 +211,91 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             edits.append(TranscriptEdit(kind: .fillerRemoval, from: "like", to: ""))
         }
 
+        if !removed.isEmpty {
+            updated = tidyPunctuationAfterRemoval(updated)
+        }
         updated = collapseWhitespace(updated)
         return (updated, removed, edits)
+    }
+
+    /// Repairs punctuation left orphaned by filler removal:
+    /// "So, um, I think" → "So, , I think" → "So, I think".
+    private static let orphanPunctuationRules: (
+        spaceBeforePunctuation: NSRegularExpression?,
+        repeatedCommas: NSRegularExpression?,
+        commaBeforeTerminal: NSRegularExpression?,
+        leadingComma: NSRegularExpression?,
+        commaAfterSentenceEnd: NSRegularExpression?,
+        periodAfterTerminal: NSRegularExpression?
+    ) = {
+        func compile(_ pattern: String) -> NSRegularExpression? {
+            try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
+        }
+        return (
+            // Space before punctuation: "So , I" → "So, I" (not ".net", ":)")
+            compile(#"[ \t]+([,.!?;:])(?=\s|[,.!?;:]|$)"#),
+            // Repeated commas left by a comma-wrapped filler: "So,, I"
+            compile(#",(?:[ \t]*,)+"#),
+            // Comma before terminal punctuation: "think,." → "think."
+            compile(#",[ \t]*([.!?;:])"#),
+            // Comma at the start of the text: ", I think" → "I think"
+            compile(#"^[ \t]*[,;:][ \t]*"#),
+            // Comma right after a sentence end or colon: "Yes., okay" →
+            // "Yes. okay", "three things:, milk" → "three things: milk",
+            // but not after abbreviations: "e.g., apples, etc., and so on".
+            compile(#"((?:(?<!\b\p{L}{1,2})(?<!\b(?:etc|vs|al|approx|incl|misc|cf))\.)|[!?:;])[ \t]*,[ \t]*"#),
+            // A removed trailing filler's period after other terminal
+            // punctuation: "What?." → "What?", "Done.." → "Done." (not "...").
+            compile(#"(?:([!?])\.|(?<!\.)(\.)\.)(?!\.)"#)
+        )
+    }()
+
+    private func tidyPunctuationAfterRemoval(_ text: String) -> String {
+        let rules = Self.orphanPunctuationRules
+        var updated = replace(rules.spaceBeforePunctuation, in: text, with: "$1")
+        updated = collapseRepeatedCommas(in: updated, using: rules.repeatedCommas)
+        updated = replace(rules.commaBeforeTerminal, in: updated, with: "$1")
+        updated = replace(rules.leadingComma, in: updated, with: "")
+        updated = replace(rules.commaAfterSentenceEnd, in: updated, with: "$1 ")
+        updated = replace(rules.periodAfterTerminal, in: updated, with: "$1$2")
+        return updated
+    }
+
+    private func replace(_ regex: NSRegularExpression?, in text: String, with template: String) -> String {
+        guard let regex else { return text }
+        return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
+    }
+
+    /// A filler set off by commas leaves one comma: "So, um, I think" →
+    /// "So, I think"; "Hi John, um, how are you?" → "Hi John, how are you?".
+    private func collapseRepeatedCommas(in text: String, using regex: NSRegularExpression?) -> String {
+        replace(regex, in: text, with: ",")
+    }
+
+    /// "out. Um, check it" → "out. Check it": a filler that starts a sentence
+    /// is removed together with its comma and the next word is capitalized.
+    private static let sentenceInitialFillerRegex = try? NSRegularExpression(
+        // A real sentence end (not "...", "e.g.", "Mr.") followed by spaces or
+        // a line break, then um/uh, optional comma, and the next word.
+        pattern: #"(?i)((?:(?<!\.)(?<!\.\p{L})(?<!\b(?:etc|vs|approx|mr|mrs|ms|dr|st|cf))\.|[!?])(?:[ \t]*\n[ \t]*|[ \t]+))(um|uh)\b,?[ \t]*(\p{L})"#
+    )
+
+    private func removeSentenceInitialFillers(from text: String) -> (text: String, removed: [String]) {
+        guard let regex = Self.sentenceInitialFillerRegex else { return (text, []) }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return (text, []) }
+
+        var result = text as NSString
+        var removed: [String] = []
+        for match in matches.reversed() {
+            let boundary = nsText.substring(with: match.range(at: 1))
+            let filler = nsText.substring(with: match.range(at: 2)).lowercased()
+            let letter = nsText.substring(with: match.range(at: 3)).uppercased()
+            result = result.replacingCharacters(in: match.range, with: boundary + letter) as NSString
+            removed.insert(filler, at: 0)
+        }
+        return (result as String, removed)
     }
 
     private func removeInterjectionalLike(from text: String) -> (text: String, count: Int) {
@@ -219,15 +316,17 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     // MARK: - Lexicon
 
-    private func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
+    private static let lexiconRegexCache = RegexCache()
+
+    func applyLexicon(text: String, lexicon: PersonalLexicon) -> (text: String, edits: [TranscriptEdit]) {
         var updated = text
         var edits: [TranscriptEdit] = []
 
         // Lexicon entries are already sorted longest-first by the PersonalLexicon invariant.
         for entry in lexicon.entries {
-            let escaped = NSRegularExpression.escapedPattern(for: entry.term)
-            let pattern = "\\b\(escaped)\\b"
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            guard !entry.term.isEmpty,
+                  let regex = TextMatching.wholeTermRegex(for: entry.term, cache: Self.lexiconRegexCache)
+            else { continue }
             let range = NSRange(updated.startIndex..., in: updated)
             let count = regex.numberOfMatches(in: updated, range: range)
             if count > 0 {
@@ -279,86 +378,103 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     }
 
     private func explicitListRewrite(from text: String) -> (text: String, edits: [TranscriptEdit])? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let lowered = trimmed.lowercased()
-        let bulletPrefixes = [
-            "bullet list ",
-            "bullet points ",
-            "bulleted list ",
-            "bullet point "
-        ]
-        let numberedPrefixes = [
-            "numbered list ",
-            "number list ",
-            "numbered points ",
-            "numbered items "
-        ]
-
-        if let prefix = bulletPrefixes.first(where: { lowered.hasPrefix($0) }) {
-            let remainder = String(trimmed.dropFirst(prefix.count))
-            let items = splitListItems(remainder)
-            guard items.count >= 2 else { return nil }
+        guard let cue = Self.explicitListCue(in: text) else { return nil }
+        let items = splitListItems(cue.remainder)
+        guard items.count >= 2 else { return nil }
+        switch cue.kind {
+        case .bullets:
             return formatList(items: items, kind: .bullets, source: "auto-bullets")
-        }
-
-        if let prefix = numberedPrefixes.first(where: { lowered.hasPrefix($0) }) {
-            let remainder = String(trimmed.dropFirst(prefix.count))
-            let items = splitListItems(remainder)
-            guard items.count >= 2 else { return nil }
+        case .numbered:
             return formatList(items: items, kind: .numbered, source: "auto-numbered")
         }
+    }
 
+    /// Spoken list cues. "bullet list"/"numbered list" may be followed directly
+    /// by the items; the noun-like "bullet points"/"numbered items" require a
+    /// colon so prose such as "Bullet points are great, but…" is left alone.
+    private static let explicitListCueRegexes: [(regex: NSRegularExpression, kind: AutoListKind)] = {
+        let specs: [(String, AutoListKind)] = [
+            (#"^\s*(?:bullet(?:ed)? list)\s*:?\s+"#, .bullets),
+            (#"^\s*(?:bullet points?)\s*:\s*"#, .bullets),
+            (#"^\s*(?:numbered list|number list)\s*:?\s+"#, .numbered),
+            (#"^\s*(?:numbered points|numbered items)\s*:\s*"#, .numbered),
+        ]
+        return specs.compactMap { pattern, kind in
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+            return (regex, kind)
+        }
+    }()
+
+    /// Words that, right after a colon-less cue, show it is the sentence subject
+    /// ("Bullet list was too long, so I cut it.") rather than a dictated list.
+    private static let listCueProseFollowers: Set<String> = [
+        "is", "are", "was", "were", "has", "have", "had", "looks", "looked", "seems", "seemed",
+        "will", "would", "should", "could", "can", "might", "must", "does", "did", "that",
+        "which", "of", "in", "on", "for", "with", "needs", "needed", "items",
+    ]
+
+    static func explicitListCue(in text: String) -> (kind: AutoListKind, remainder: String)? {
+        let nsText = text as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+        for cue in explicitListCueRegexes {
+            guard let match = cue.regex.firstMatch(in: text, range: fullRange) else { continue }
+            let remainder = nsText.substring(from: match.range.location + match.range.length)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let matchedCue = nsText.substring(with: match.range)
+            if !matchedCue.contains(":"),
+               let firstWord = WordTokenizer.words(in: String(remainder.prefix(32))).first,
+               listCueProseFollowers.contains(firstWord) {
+                return nil
+            }
+            guard !remainder.isEmpty else { return nil }
+            return (cue.kind, remainder)
+        }
         return nil
     }
 
     private func ordinalListRewrite(from text: String) -> (text: String, edits: [TranscriptEdit])? {
+        guard let items = Self.ordinalListItems(from: text) else { return nil }
+        return formatList(items: items, kind: .numbered, source: "auto-numbered")
+    }
+
+    /// Ordinal list patterns ("first … second … [third …]"). An ordinal only
+    /// starts an item when it is not part of a phrase: never "first of all",
+    /// "second of", "a second", "the second", "in a second", and so on.
+    private static let ordinalListRegexes: [NSRegularExpression] = {
+        let notPhrase = #"(?!\s+of\b)"#
+        let notAfterDeterminer = #"(?<!\b(?:a|an|the|one|per|each|every|this|that|its|in|at|for|wait|just|split)\s)"#
+        func ordinal(_ word: String) -> String { notAfterDeterminer + word + notPhrase }
+
+        let base = #"(?is)^\s*first"# + notPhrase + #"\s+(.+?)\s+"# + ordinal("second") + #"\s+(.+?)"#
         let patterns = [
-            ("first", "second", "third"),
-            ("first", "second", nil),
+            base + #"\s+"# + ordinal("third") + #"\s+(.+?)\s*[.!?]?\s*$"#,
+            base + #"\s*[.!?]?\s*$"#,
         ]
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    }()
 
+    static func ordinalListItems(from text: String) -> [String]? {
         let fullRange = NSRange(text.startIndex..., in: text)
-        for pattern in patterns {
-            let regexPattern = ordinalPattern(first: pattern.0, second: pattern.1, third: pattern.2)
-            guard let regex = try? NSRegularExpression(pattern: regexPattern, options: [.caseInsensitive]) else {
-                continue
-            }
-
+        for regex in ordinalListRegexes {
             guard let match = regex.firstMatch(in: text, range: fullRange) else { continue }
 
-            let itemRanges = (1..<match.numberOfRanges).compactMap { index -> Range<String.Index>? in
-                let range = match.range(at: index)
-                guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else {
-                    return nil
+            let items = (1..<match.numberOfRanges)
+                .compactMap { index -> Range<String.Index>? in
+                    let range = match.range(at: index)
+                    guard range.location != NSNotFound else { return nil }
+                    return Range(range, in: text)
                 }
-                return swiftRange
-            }
-
-            let items = itemRanges
                 .map { text[$0].trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .filter { !$0.contains("\n") }
 
             guard items.count >= 2 else { continue }
             guard items.allSatisfy({ $0.split(whereSeparator: \.isWhitespace).count <= 12 }) else { continue }
-
-            return formatList(items: items, kind: .numbered, source: "auto-numbered")
+            return items
         }
-
         return nil
     }
 
-    private func ordinalPattern(first: String, second: String, third: String?) -> String {
-        let base = #"(?is)^\s*"# +
-            first + #"\s+(.+?)\s+"# +
-            second + #"\s+(.+?)"#
-        if let third {
-            return base + #"\s+"# + third + #"\s+(.+?)\s*[.!?]?\s*$"#
-        }
-        return base + #"\s*[.!?]?\s*$"#
-    }
 
     private func splitListItems(_ text: String) -> [String] {
         let normalized = text
@@ -415,8 +531,21 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     }
 
     private func collapseWhitespace(_ text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        let collapsed = Self.whitespaceRegex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
+        var collapsed = text
+        if let regex = Self.whitespaceRegex {
+            collapsed = regex.stringByReplacingMatches(
+                in: collapsed,
+                range: NSRange(collapsed.startIndex..., in: collapsed),
+                withTemplate: " "
+            )
+        }
+        if let regex = Self.spacesAroundNewlineRegex {
+            collapsed = regex.stringByReplacingMatches(
+                in: collapsed,
+                range: NSRange(collapsed.startIndex..., in: collapsed),
+                withTemplate: "\n"
+            )
+        }
         return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

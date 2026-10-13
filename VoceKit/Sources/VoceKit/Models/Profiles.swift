@@ -47,6 +47,26 @@ public struct StyleProfile: Sendable, Codable, Equatable {
         self.fillerPolicy = fillerPolicy
         self.commandPolicy = commandPolicy
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case tone
+        case structureMode
+        case fillerPolicy
+        case commandPolicy
+    }
+
+    /// Unknown option values (for example written by a newer version) fall
+    /// back to defaults instead of making the profile, and every per-app
+    /// profile stored alongside it, undecodable.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = container.decodeLenientIfPresent(String.self, forKey: .name, decoder: decoder) ?? "Default"
+        tone = container.decodeLenientIfPresent(StyleTone.self, forKey: .tone, decoder: decoder) ?? .natural
+        structureMode = container.decodeLenientIfPresent(StructureMode.self, forKey: .structureMode, decoder: decoder) ?? .natural
+        fillerPolicy = container.decodeLenientIfPresent(FillerPolicy.self, forKey: .fillerPolicy, decoder: decoder) ?? .balanced
+        commandPolicy = container.decodeLenientIfPresent(CommandPolicy.self, forKey: .commandPolicy, decoder: decoder) ?? .transform
+    }
 }
 
 public enum Scope: Sendable, Codable, Equatable {

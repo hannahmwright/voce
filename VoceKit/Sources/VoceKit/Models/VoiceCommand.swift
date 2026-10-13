@@ -62,4 +62,38 @@ public struct VoiceCommand: Sendable, Codable, Equatable, Identifiable {
         .init(trigger: "delete that", action: .deletePrevious, isBuiltIn: true),
         .init(trigger: "scratch that", action: .deletePrevious, isBuiltIn: true),
     ]
+
+    /// Reconciles persisted commands with the current built-in definitions.
+    ///
+    /// Preferences persist the full built-in list, so without this an updated
+    /// built-in definition would never reach existing users. The result:
+    /// - contains every current built-in, in canonical order, using the current
+    ///   action but keeping the stored `id` and `isEnabled` choice when the user
+    ///   already had that trigger;
+    /// - drops stored built-ins that no longer ship;
+    /// - keeps every custom (non built-in) command, in its stored order, after
+    ///   the built-ins.
+    public static func mergingBuiltIns(into stored: [VoiceCommand]) -> [VoiceCommand] {
+        func key(_ trigger: String) -> String {
+            trigger.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+
+        var storedBuiltInsByTrigger: [String: VoiceCommand] = [:]
+        for command in stored where command.isBuiltIn {
+            let trigger = key(command.trigger)
+            if storedBuiltInsByTrigger[trigger] == nil {
+                storedBuiltInsByTrigger[trigger] = command
+            }
+        }
+
+        let refreshedBuiltIns = builtIns.map { builtIn -> VoiceCommand in
+            guard let existing = storedBuiltInsByTrigger[key(builtIn.trigger)] else { return builtIn }
+            var refreshed = builtIn
+            refreshed.id = existing.id
+            refreshed.isEnabled = existing.isEnabled
+            return refreshed
+        }
+
+        return refreshedBuiltIns + stored.filter { !$0.isBuiltIn }
+    }
 }

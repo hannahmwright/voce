@@ -9,10 +9,14 @@ public struct RuleBasedCleanupCandidateGenerator: Sendable {
         lexicon: PersonalLexicon
     ) async throws -> [CleanupCandidate] {
         let engine = RuleBasedCleanupEngine()
+        // Personal lexicon corrections are explicit user choices, so even the
+        // minimal-change candidate carries them; otherwise the ranker could pick
+        // the uncorrected text and silently drop the user's dictionary.
+        let lexiconCorrected = engine.applyLexicon(text: raw.text, lexicon: lexicon)
         var candidates: [CleanupCandidate] = [
             CleanupCandidate(
-                text: raw.text,
-                appliedEdits: [],
+                text: lexiconCorrected.text,
+                appliedEdits: lexiconCorrected.edits,
                 removedFillers: [],
                 rulePathID: "raw-pass-through"
             )
