@@ -22,6 +22,17 @@ const AUTH_START_LIMIT_PER_EMAIL = 5;
 const AUTH_START_LIMIT_PER_IP = 30;
 const SUPPORT_LIMIT_PER_EMAIL = 5;
 const SUPPORT_LIMIT_PER_IP = 20;
+// Request size limits. A 60-minute dictation is roughly 10k words (~60k
+// characters), and OpenAI's transcription endpoint accepts files up to 25 MB.
+const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_TRANSCRIBE_AUDIO_BYTES = 25 * 1024 * 1024;
+const MAX_TRANSCRIBE_FORM_OVERHEAD_BYTES = 1024 * 1024;
+const MAX_REFINE_TRANSCRIPT_CHARS = 100_000;
+const MAX_HINTS = 500;
+const MAX_HINT_CHARS = 200;
+const MAX_DICTIONARY_ENTRIES = 1000;
+const MAX_DICTIONARY_FIELD_CHARS = 500;
+const MAX_SUPPORT_DIAGNOSTICS_CHARS = 200_000;
 const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 // Refuse to mint a realtime client secret when less hosted time than this is left.
 const MIN_HOSTED_SECONDS_FOR_REALTIME_SESSION = 30;
@@ -73,6 +84,45 @@ async function rateLimited(
     }
   }
   return null;
+}
+
+function declaredContentLength(request: Request) {
+  const value = Number.parseInt(request.headers.get("content-length") ?? "", 10);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function payloadTooLarge(message: string) {
+  return jsonResponse({ error: message }, 413);
+}
+
+async function readLimitedJSON<T>(
+  request: Request,
+  maxBytes: number,
+): Promise<{ body: T } | { response: Response }> {
+  const declaredLength = declaredContentLength(request);
+  if (declaredLength !== null && declaredLength > maxBytes) {
+    return { response: payloadTooLarge("Request body is too large.") };
+  }
+  const text = await request.text();
+  if (new TextEncoder().encode(text).length > maxBytes) {
+    return { response: payloadTooLarge("Request body is too large.") };
+  }
+  try {
+    return { body: JSON.parse(text) as T };
+  } catch {
+    return { response: jsonResponse({ error: "Invalid JSON body" }, 400) };
+  }
+}
+
+// Hints only steer spelling; the providers use at most a few hundred, so
+// oversized lists are trimmed rather than rejected.
+function sanitizedHints(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((hint): hint is string => typeof hint === "string" && hint.length <= MAX_HINT_CHARS)
+    .slice(0, MAX_HINTS);
 }
 
 function bearerToken(request: Request) {
@@ -915,14 +965,25 @@ http.route({
       return verification.response;
     }
 
+    const declaredLength = declaredContentLength(request);
+    if (
+      declaredLength !== null &&
+      declaredLength > MAX_TRANSCRIBE_AUDIO_BYTES + MAX_TRANSCRIBE_FORM_OVERHEAD_BYTES
+    ) {
+      return payloadTooLarge("Audio file is too large for cloud transcription.");
+    }
+
     try {
       const form = await request.formData();
       const localeIdentifier = String(form.get("localeIdentifier") ?? "").trim() || "en-US";
       const hintsField = String(form.get("hints") ?? "[]");
-      const rawHints = JSON.parse(hintsField);
-      const hints = Array.isArray(rawHints)
-        ? rawHints.filter((value): value is string => typeof value === "string")
-        : [];
+      let rawHints: unknown;
+      try {
+        rawHints = JSON.parse(hintsField);
+      } catch {
+        return jsonResponse({ error: "Invalid hints" }, 400);
+      }
+      const hints = sanitizedHints(rawHints);
 
       const fileValue = form.get("file");
       if (!fileValue || typeof (fileValue as Blob).arrayBuffer !== "function") {
@@ -930,6 +991,9 @@ http.route({
       }
 
       const blob = fileValue as Blob & { name?: string };
+      if (blob.size > MAX_TRANSCRIBE_AUDIO_BYTES) {
+        return payloadTooLarge("Audio file is too large for cloud transcription.");
+      }
       const filename = (blob.name ?? "voce-audio.wav").trim() || "voce-audio.wav";
       const result = await transcribeWithCloudProvider({
         localeIdentifier,
@@ -969,16 +1033,18 @@ http.route({
     }
 
     try {
-      const body = (await request.json()) as {
+      const parsed = await readLimitedJSON<{
         localeIdentifier?: string;
         hints?: string[];
         model?: string;
-      };
+      }>(request, MAX_JSON_BODY_BYTES);
+      if ("response" in parsed) {
+        return parsed.response;
+      }
+      const body = parsed.body ?? {};
       const localeIdentifier = (body.localeIdentifier ?? "").trim() || "en-US";
-      const hints = Array.isArray(body.hints)
-        ? body.hints.filter((value): value is string => typeof value === "string")
-        : [];
-      const model = body.model?.trim() || undefined;
+      const hints = sanitizedHints(body.hints);
+      const model = typeof body.model === "string" ? body.model.trim() || undefined : undefined;
 
       const result = await createRealtimeTranscriptionSession({
         localeIdentifier,
@@ -1007,7 +1073,7 @@ http.route({
     }
 
     try {
-      const body = (await request.json()) as {
+      const parsed = await readLimitedJSON<{
         transcript?: string;
         localeIdentifier?: string;
         dictionary?: Array<{
@@ -1029,11 +1095,18 @@ http.route({
           isRemoteDesktop?: boolean;
           isIDE?: boolean;
         } | null;
-      };
+      }>(request, MAX_JSON_BODY_BYTES);
+      if ("response" in parsed) {
+        return parsed.response;
+      }
+      const body = parsed.body ?? {};
 
-      const transcript = (body.transcript ?? "").trim();
+      const transcript = (typeof body.transcript === "string" ? body.transcript : "").trim();
       if (!transcript) {
         return jsonResponse({ error: "Missing transcript" }, 400);
+      }
+      if (transcript.length > MAX_REFINE_TRANSCRIPT_CHARS) {
+        return payloadTooLarge("Transcript is too long for cloud refinement.");
       }
 
       const localeIdentifier = (body.localeIdentifier ?? "").trim() || "en-US";
@@ -1056,7 +1129,14 @@ http.route({
               scope: entry.scope,
               bundleIdentifier: entry.bundleIdentifier?.trim() || undefined,
             }))
-            .filter((entry) => entry.term.length > 0 && entry.preferred.length > 0)
+            .filter(
+              (entry) =>
+                entry.term.length > 0 &&
+                entry.preferred.length > 0 &&
+                entry.term.length <= MAX_DICTIONARY_FIELD_CHARS &&
+                entry.preferred.length <= MAX_DICTIONARY_FIELD_CHARS,
+            )
+            .slice(0, MAX_DICTIONARY_ENTRIES)
         : [];
 
       const profile = {
@@ -1230,7 +1310,13 @@ http.route({
       const buildNumber = (body.buildNumber ?? "").trim();
       const macOSVersion = (body.macOSVersion ?? "").trim();
       const includeDiagnostics = body.includeDiagnostics === true;
-      const diagnostics = normalizedMultilineText(body.diagnostics ?? "");
+      const fullDiagnostics = normalizedMultilineText(
+        typeof body.diagnostics === "string" ? body.diagnostics : "",
+      );
+      const diagnostics =
+        fullDiagnostics.length > MAX_SUPPORT_DIAGNOSTICS_CHARS
+          ? `${fullDiagnostics.slice(0, MAX_SUPPORT_DIAGNOSTICS_CHARS)}\n[diagnostics truncated]`
+          : fullDiagnostics;
 
       if (!["support", "bug", "feature"].includes(category)) {
         return jsonResponse({ error: "Invalid support category" }, 400);
