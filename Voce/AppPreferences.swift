@@ -510,6 +510,16 @@ struct AppPreferences: Codable, Sendable, Equatable {
         // LossyDecodingReport) instead of failing the whole file, and list
         // sections skip individual bad elements, so one bad snippet or workflow
         // cannot wipe the user's lexicon, snippets and workflows.
+        // Every file Voce has written has a general section; without one this
+        // isn't a preferences file it understands (e.g. a downgrade from a
+        // different format), so fail and let the store back it up instead of
+        // loading defaults that the next save would write over it.
+        guard container.contains(.general) else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.general,
+                DecodingError.Context(codingPath: container.codingPath, debugDescription: "Missing general section")
+            )
+        }
         let defaults = AppPreferences.default
         general = container.decodeLenientIfPresent(General.self, forKey: .general, decoder: decoder) ?? defaults.general
         hotkeys = container.decodeLenientIfPresent(Hotkeys.self, forKey: .hotkeys, decoder: decoder) ?? defaults.hotkeys

@@ -90,3 +90,20 @@ func voceProEntitlementDecodesCloudUsageFields() throws {
     #expect(entitlement.cloudRemainingSeconds == 17_880)
     #expect(entitlement.cloudRemainingMinutesText == "298 minutes")
 }
+
+@Test("A file without a general section is rejected rather than loaded as defaults")
+func appPreferencesRejectsUnrecognizedShape() throws {
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(AppPreferences.self, from: Data("{}".utf8))
+    }
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(AppPreferences.self, from: Data(#"{"version":2,"preferences":{}}"#.utf8))
+    }
+
+    let saved = try JSONEncoder().encode(AppPreferences.default)
+    #expect(try JSONDecoder().decode(AppPreferences.self, from: saved) == AppPreferences.default)
+    // Sections other than general stay optional.
+    #expect(throws: Never.self) {
+        try JSONDecoder().decode(AppPreferences.self, from: Data(#"{"general":{}}"#.utf8))
+    }
+}

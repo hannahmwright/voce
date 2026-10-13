@@ -60,3 +60,39 @@ func periodColonConvertAtStrongSignals(input: String, expected: String) {
 func periodColonProseUnchanged(sentence: String) {
     #expect(service().apply(to: sentence) == sentence)
 }
+
+/// Triggers are judged from a bounded window around each match, falling back
+/// to the full text when the window can't decide; long prefixes must not
+/// change the outcome.
+@Test(
+    "Long text before a command doesn't change how it is judged",
+    arguments: [
+        String(repeating: "we talked about the plan for a while ", count: 40) + "and agreed. ",
+        String(repeating: "x", count: 600) + ". ",
+    ]
+)
+func longPrefixDoesNotChangeCommandOutcome(prefix: String) {
+    let cases = [
+        ("That sounds good period", "That sounds good."),
+        ("I talked to Bob period Then I left", "I talked to Bob. Then I left"),
+        ("Hi Bob colon Please review", "Hi Bob: Please review"),
+        ("Call me period. Thanks period.", "Call me. Thanks."),
+        ("The trial period ended yesterday.", "The trial period ended yesterday."),
+        ("During the Edo period, Japan grew.", "During the Edo period, Japan grew."),
+    ]
+    for (input, expected) in cases {
+        #expect(service().apply(to: prefix + input) == prefix + expected)
+    }
+}
+
+@Test("A command after a long run of spaces is still judged from the text before it")
+func commandAfterLongWhitespace() {
+    let input = "Okay." + String(repeating: " ", count: 400) + "That sounds good period"
+    #expect(service().apply(to: input) == "Okay. That sounds good.")
+}
+
+@Test("A deletion question after a long run of spaces stays a question")
+func deletionQuestionAfterLongWhitespace() {
+    let input = "Can you delete that" + String(repeating: " ", count: 300) + "?"
+    #expect(service().apply(to: input) == input)
+}
