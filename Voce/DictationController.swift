@@ -415,6 +415,9 @@ final class DictationController: ObservableObject {
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var overlayDismissTask: Task<Void, Never>?
+    /// A finished dictation's dismissal was skipped because a newer one was
+    /// arming; if that one is abandoned, the overlay is hidden then instead.
+    private var overlayDismissalDeferredByCapture = false
     private var entitlementRefreshTask: Task<Void, Never>?
     private var realtimeWhisperClientSecretPrefetchTask: Task<Void, Never>?
     private var realtimeWhisperClientSecretRefreshTask: Task<Void, Never>?
@@ -2403,8 +2406,10 @@ final class DictationController: ObservableObject {
         guard latestDictationSequence == dictationSequence, !isRecording else { return }
         status = "Recording stopped"
         // startSession cancelled any pending dismissal of the previous overlay;
-        // hide it unless an earlier dictation is still finishing behind it.
-        if backgroundProcessingSessionCount == 0 {
+        // hide it unless an earlier dictation is still finishing behind it and
+        // will dismiss it itself (it hasn't already tried while this armed).
+        if backgroundProcessingSessionCount == 0 || overlayDismissalDeferredByCapture {
+            overlayDismissalDeferredByCapture = false
             overlay.hide()
         }
         screenRecordingHaze.hide()
@@ -2910,8 +2915,11 @@ final class DictationController: ObservableObject {
                     } else {
                         status = "Transcription failed"
                         lastError = error.localizedDescription
-                        overlay.show(state: .failure(message: error.localizedDescription))
-                        dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                        // Don't cover the overlay of a newer dictation that is arming.
+                        if !isOverlayInUseByCapture {
+                            overlay.show(state: .failure(message: error.localizedDescription))
+                            dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                        }
                     }
                 }
                 await applyDeferredRebuildIfNeeded()
@@ -3114,8 +3122,10 @@ final class DictationController: ObservableObject {
         // that started while it was processing.
         guard !isOverlayInUseByCapture else {
             overlayDismissTask = nil
+            overlayDismissalDeferredByCapture = true
             return
         }
+        overlayDismissalDeferredByCapture = false
 
         guard delayNanoseconds > 0 else {
             if pop {
@@ -3133,6 +3143,7 @@ final class DictationController: ObservableObject {
             guard !Task.isCancelled else { return }
             guard !isOverlayInUseByCapture else {
                 overlayDismissTask = nil
+                overlayDismissalDeferredByCapture = true
                 return
             }
             if pop {
@@ -3180,6 +3191,7 @@ final class DictationController: ObservableObject {
     private func cancelPendingOverlayDismissal() {
         overlayDismissTask?.cancel()
         overlayDismissTask = nil
+        overlayDismissalDeferredByCapture = false
     }
 
     /// A dictation is recording or arming and owns the overlay.
