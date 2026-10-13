@@ -88,6 +88,34 @@ func directiveOutputNormalizerStripsHerePreambles(kind: AIWorkflowKind, preamble
     #expect(AIWorkflowOutputNormalizer.normalize("\(preamble)\nWe ship Monday.", kind: kind) == "We ship Monday.")
 }
 
+@Test(
+    "Directive output normalizer keeps user content that starts with a generic noun",
+    arguments: [
+        (AIWorkflowKind.dictationPolish, "Here's my email: hannah@example.com"),
+        (AIWorkflowKind.dictationPolish, "Here is the draft: we will ship Friday."),
+        (AIWorkflowKind.dictationPolish, "Here's my reply:\nI can't make it."),
+        (AIWorkflowKind.dictationPolish, "Here is the email: please review it."),
+        (AIWorkflowKind.rewrite, "Here's my email: hannah@example.com"),
+        (AIWorkflowKind.rewrite, "Here is the draft: we will ship Friday."),
+        (AIWorkflowKind.rewrite, "Here's my reply:\nI can't make it."),
+        (AIWorkflowKind.summarize, "Here is the draft: we will ship Friday."),
+    ]
+)
+func directiveOutputNormalizerKeepsGenericNounContent(kind: AIWorkflowKind, output: String) {
+    #expect(AIWorkflowOutputNormalizer.normalize(output, kind: kind) == output)
+}
+
+@Test("Directive output normalizer never strips a prefix the input itself starts with")
+func directiveOutputNormalizerRespectsInputPrefix() {
+    let input = "Here's the polished text: my notes from today"
+    let output = "Here's the polished text: My notes from today."
+
+    #expect(AIWorkflowOutputNormalizer.normalize(output, kind: .dictationPolish, input: input) == output)
+    #expect(AIWorkflowOutputNormalizer.normalize("Okay.\nLet's start.", kind: .dictationPolish, input: "okay let's start") == "Okay.\nLet's start.")
+    // Without that input, the same output is an assistant preamble.
+    #expect(AIWorkflowOutputNormalizer.normalize(output, kind: .dictationPolish, input: "my notes from today") == "My notes from today.")
+}
+
 @Test("Directive output normalizer keeps \"Here's the thing:\" content")
 func directiveOutputNormalizerKeepsHeresTheThing() {
     let output = "Here's the thing: we ship Monday."

@@ -65,7 +65,7 @@ struct AppleFoundationModelsService: AITextGenerationService {
 
         do {
             let response = try await session.respond(to: prompt)
-            let outputText = AIWorkflowOutputNormalizer.normalize(response.content, for: workflow)
+            let outputText = AIWorkflowOutputNormalizer.normalize(response.content, for: workflow, input: input)
             guard !outputText.isEmpty else {
                 throw AIWorkflowError.emptyOutput
             }
