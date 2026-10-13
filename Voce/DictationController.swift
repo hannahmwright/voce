@@ -886,12 +886,18 @@ final class DictationController: ObservableObject {
         toggleHandsFree(completionActionOverride: .copyToClipboard)
     }
 
+    /// App-initiated stop (overlay stop button, usage-limit auto-stop). Unlike
+    /// a key release this must work even if hold-to-talk was disabled
+    /// mid-recording, and it never applies the "Return to send" override.
     func stopActiveRecording() {
         switch recordingLifecycleState {
         case .recordingHandsFree:
             toggleHandsFree()
         case .recordingPressToTalk:
-            pressToTalkStop()
+            // The hold-to-talk key may still be down; its release belongs to
+            // this stop and must not report "Still transcribing...".
+            suppressNextPressToTalkStop = true
+            apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
         case .idle, .transcribing:
             if let activeRecordingMode, isRecording {
                 stopSession(mode: activeRecordingMode)
