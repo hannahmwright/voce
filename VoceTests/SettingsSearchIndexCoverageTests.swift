@@ -239,6 +239,29 @@ func draftMergeKeepsControllerOwnedFieldsInEditedGroups() {
 }
 
 @MainActor
+@Test("Concurrent edits of the same term or trigger collapse to one entry")
+func draftMergeCollapsesSameTermEdits() {
+    var base = AppPreferences.default
+    let original = LexiconEntry(term: "chat gbt", preferred: "ChatGPT", scope: .global)
+    let snippet = Snippet(trigger: "sig", expansion: "Best", scope: .global)
+    base.lexiconEntries = [original]
+    base.snippets = [snippet]
+
+    var local = base
+    local.lexiconEntries = [LexiconEntry(term: "chat gbt", preferred: "ChatGPT-local", scope: .global)]
+    local.snippets[0].expansion = "Best, local"
+
+    var remote = base
+    remote.lexiconEntries = [LexiconEntry(term: "Chat GBT", preferred: "ChatGPT-remote", scope: .global)]
+    remote.snippets = [Snippet(trigger: "SIG", expansion: "Remote", scope: .global)]
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.lexiconEntries.map(\.preferred) == ["ChatGPT-local"])
+    #expect(merged.snippets.map(\.expansion) == ["Best, local"])
+}
+
+@MainActor
 @Test("Controller-added snippets and corrections survive a concurrent local list edit")
 func draftMergeUnionsListAdditions() {
     var base = AppPreferences.default

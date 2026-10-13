@@ -864,6 +864,24 @@ final class PreferencesDraftCommitter {
             remote: remote.snippets,
             id: \.id
         )
+        // The controller replaces corrections and snippets with new values or
+        // IDs (saving a selection correction, accepting a suggestion), so the
+        // element merge can surface both the user's edit and the controller's
+        // replacement for the same term or trigger. Keep one.
+        result.lexiconEntries = dedupeMergedElements(
+            result.lexiconEntries,
+            base: base.lexiconEntries,
+            local: local.lexiconEntries,
+            remote: remote.lexiconEntries,
+            key: { TextScopeMergeKey(text: $0.term.lowercased(), scope: $0.scope) }
+        )
+        result.snippets = dedupeMergedElements(
+            result.snippets,
+            base: base.snippets,
+            local: local.snippets,
+            remote: remote.snippets,
+            key: { TextScopeMergeKey(text: $0.trigger.lowercased(), scope: $0.scope) }
+        )
         result.voiceCommands = mergeElements(
             base: base.voiceCommands,
             local: local.voiceCommands,
@@ -945,6 +963,78 @@ final class PreferencesDraftCommitter {
             result.append(element)
         }
 
+        return result
+    }
+
+    /// Term/trigger identity used to collapse merge duplicates.
+    struct TextScopeMergeKey: Hashable {
+        let text: String
+        let scopeID: String
+
+        init(text: String, scope: Scope) {
+            self.text = text
+            switch scope {
+            case .global:
+                scopeID = "global"
+            case .app(let bundleID):
+                scopeID = "app:\(bundleID)"
+            }
+        }
+    }
+
+    /// Collapses elements of `merged` that share a key into one, at the first
+    /// occurrence's position: the user's edited version (in local, not in
+    /// base) if there is one, otherwise the controller's version (in remote,
+    /// not in base), otherwise the first. Keys the user's own draft already
+    /// duplicated are left alone, so stored data isn't rewritten.
+    static func dedupeMergedElements<Element: Equatable, Key: Hashable>(
+        _ merged: [Element],
+        base: [Element],
+        local: [Element],
+        remote: [Element],
+        key: (Element) -> Key
+    ) -> [Element] {
+        var localCounts: [Key: Int] = [:]
+        for element in local {
+            localCounts[key(element), default: 0] += 1
+        }
+        var mergedCounts: [Key: Int] = [:]
+        for element in merged {
+            mergedCounts[key(element), default: 0] += 1
+        }
+        guard mergedCounts.contains(where: { $0.value > 1 && localCounts[$0.key, default: 0] <= 1 }) else {
+            return merged
+        }
+
+        func rank(_ element: Element) -> Int {
+            if local.contains(element) && !base.contains(element) { return 0 }
+            if remote.contains(element) && !base.contains(element) { return 1 }
+            return 2
+        }
+
+        var chosen: [Key: Element] = [:]
+        for element in merged {
+            let elementKey = key(element)
+            guard mergedCounts[elementKey, default: 0] > 1,
+                  localCounts[elementKey, default: 0] <= 1 else { continue }
+            if let current = chosen[elementKey], rank(current) <= rank(element) {
+                continue
+            }
+            chosen[elementKey] = element
+        }
+
+        var emitted = Set<Key>()
+        var result: [Element] = []
+        for element in merged {
+            let elementKey = key(element)
+            if let winner = chosen[elementKey] {
+                if emitted.insert(elementKey).inserted {
+                    result.append(winner)
+                }
+            } else {
+                result.append(element)
+            }
+        }
         return result
     }
 
