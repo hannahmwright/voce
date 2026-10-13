@@ -119,7 +119,12 @@ The app email verification endpoints are:
 ```txt
 https://<convex-deployment>.convex.site/auth/start
 https://<convex-deployment>.convex.site/auth/verify
+https://<convex-deployment>.convex.site/auth/logout
 ```
+
+`/auth/logout` revokes the session sent in `x-voce-session-token`.
+An hourly cron (`convex/crons.ts`) deletes expired sessions, login codes more
+than a day past expiry, and stale rate-limit counters.
 
 The app usage endpoint is:
 

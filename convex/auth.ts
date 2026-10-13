@@ -1,10 +1,15 @@
 import { internalMutation, internalQuery } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { v } from "convex/values";
 
 const MAX_CODE_ATTEMPTS = 5;
 // lastSeenAt is informational; refreshing it at most hourly avoids a database
 // write on every authenticated request.
 export const SESSION_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
+const CLEANUP_BATCH_SIZE = 200;
+// Expired codes and stale rate-limit windows are kept for a day for debugging.
+const AUTH_CODE_RETENTION_AFTER_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const RATE_LIMIT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_CODES_TO_INVALIDATE = 25;
 
 function normalizeEmail(email: string) {
@@ -194,5 +199,79 @@ export const touchSession = internalMutation({
       return;
     }
     await ctx.db.patch(session._id, { lastSeenAt: now });
+  },
+});
+
+export const revokeSession = internalMutation({
+  args: {
+    tokenHash: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query("authSessions")
+      .withIndex("by_token_hash", (q) => q.eq("tokenHash", args.tokenHash))
+      .unique();
+    if (!session) {
+      return false;
+    }
+    await ctx.db.delete(session._id);
+    return true;
+  },
+});
+
+/**
+ * Deletes expired sessions, old login codes and stale rate-limit windows in
+ * bounded batches. Scheduled hourly from crons.ts; reschedules itself while a
+ * backlog remains.
+ */
+export const cleanupExpiredAuthRecords = internalMutation({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ sessions: number; codes: number; rateLimits: number; hasMore: boolean }> => {
+    const now = Date.now();
+
+    const sessions = await ctx.db
+      .query("authSessions")
+      .withIndex("by_expires_at", (q) => q.lt("expiresAt", now))
+      .take(CLEANUP_BATCH_SIZE);
+    for (const session of sessions) {
+      await ctx.db.delete(session._id);
+    }
+
+    const codes = await ctx.db
+      .query("emailAuthCodes")
+      .withIndex("by_expires_at", (q) =>
+        q.lt("expiresAt", now - AUTH_CODE_RETENTION_AFTER_EXPIRY_MS),
+      )
+      .take(CLEANUP_BATCH_SIZE);
+    for (const code of codes) {
+      await ctx.db.delete(code._id);
+    }
+
+    const rateLimits = await ctx.db
+      .query("rateLimits")
+      .withIndex("by_window_started_at", (q) =>
+        q.lt("windowStartedAt", now - RATE_LIMIT_RETENTION_MS),
+      )
+      .take(CLEANUP_BATCH_SIZE);
+    for (const rateLimit of rateLimits) {
+      await ctx.db.delete(rateLimit._id);
+    }
+
+    const hasMore =
+      sessions.length === CLEANUP_BATCH_SIZE ||
+      codes.length === CLEANUP_BATCH_SIZE ||
+      rateLimits.length === CLEANUP_BATCH_SIZE;
+    if (hasMore) {
+      await ctx.scheduler.runAfter(0, internal.auth.cleanupExpiredAuthRecords, {});
+    }
+
+    return {
+      sessions: sessions.length,
+      codes: codes.length,
+      rateLimits: rateLimits.length,
+      hasMore,
+    };
   },
 });

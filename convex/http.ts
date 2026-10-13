@@ -837,6 +837,22 @@ http.route({
   }),
 });
 
+// Revokes the session identified by x-voce-session-token. Idempotent: an
+// unknown or already-revoked token still returns success.
+http.route({
+  path: "/auth/logout",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const token = request.headers.get("x-voce-session-token")?.trim();
+    if (!token) {
+      return jsonResponse({ error: "Missing session token" }, 400);
+    }
+
+    await ctx.runMutation(internal.auth.revokeSession, { tokenHash: await tokenHash(token) });
+    return jsonResponse({ loggedOut: true });
+  }),
+});
+
 http.route({
   path: "/entitlements/check",
   method: "POST",

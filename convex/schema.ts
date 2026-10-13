@@ -33,7 +33,8 @@ export default defineSchema({
     lastSeenAt: v.number(),
   })
     .index("by_token_hash", ["tokenHash"])
-    .index("by_email", ["email"]),
+    .index("by_email", ["email"])
+    .index("by_expires_at", ["expiresAt"]),
 
   manualEntitlements: defineTable({
     email: v.string(),
