@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var lastNonSettingsTab: VoceTab = .home
     @State private var settingsLaunchTarget: SettingsLaunchTarget?
     @State private var preferencesDraft: AppPreferences = .default
+    @State private var draftCommitter = PreferencesDraftCommitter()
     @State private var accessEmailDraft = ""
     @State private var accessVerificationCodeDraft = ""
     @State private var accessVerificationCodeWasSent = false
@@ -90,27 +91,34 @@ struct ContentView: View {
             idealHeight: VoceDesign.windowIdealHeight
         )
         .onAppear {
-            preferencesDraft = controller.preferences
+            preferencesDraft = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
             accessEmailDraft = controller.preferences.billing.subscriberEmail
         }
         .onChange(of: controller.preferences) { _, newValue in
-            if newValue != preferencesDraft {
-                preferencesDraft = newValue
+            let reconciled = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
+            if reconciled != preferencesDraft {
+                preferencesDraft = reconciled
             }
             if newValue.billing.subscriberEmail != normalizedAccessEmail {
                 accessEmailDraft = newValue.billing.subscriberEmail
             }
         }
         .onChange(of: preferencesDraft) { _, newValue in
-            var normalized = newValue
-            normalized.normalize()
-            guard normalized != controller.preferences else { return }
-
-            if normalized.requiresRuntimeRebuild(comparedTo: controller.preferences) {
-                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
-            } else {
-                controller.savePreferencesQuietly(preferences: newValue)
-            }
+            // Coalesces keystrokes (Scratchpad, Dictionary/Snippets/Style
+            // fields) instead of publishing and saving preferences per key.
+            draftCommitter.draftDidChange(newValue, controller: controller)
+        }
+        .onChange(of: selectedTab) { _, _ in
+            draftCommitter.flush()
+        }
+        .onDisappear {
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            draftCommitter.flush()
         }
         .task {
             await controller.refreshHistory()
@@ -219,6 +227,7 @@ struct ContentView: View {
                 HomeTab(isActive: selectedTab == .home && scenePhase == .active) {
                     openSettings(.handsFreeGlobalHotkey)
                 }
+                .equatable()
                 .tabContentVisibility(selectedTab == .home)
 
                 DictionaryTab(preferences: $preferencesDraft)

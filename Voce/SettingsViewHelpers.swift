@@ -625,6 +625,176 @@ func keyboardShortcutDisplayName(for shortcut: VoceKeyboardShortcut) -> String {
     return (modifierNames + [hotkeyDisplayName(for: shortcut.keyCode)]).joined(separator: " + ")
 }
 
+// MARK: - Preferences draft committing
+
+/// Moves a view's local `AppPreferences` draft into the controller without
+/// doing so on every keystroke.
+///
+/// Each committed draft normalizes, deep-compares, publishes
+/// `controller.preferences` (re-rendering every tab and the menu bar) and
+/// writes the whole preferences file, and runtime-relevant edits also rebuild
+/// the dictation runtime. Committing on every keystroke in the Scratchpad or a
+/// settings text field made typing visibly laggy.
+///
+/// The first edit after a quiet period commits immediately, so discrete
+/// changes (toggles, pickers, recorded hotkeys) still feel instant. Edits that
+/// follow within `quietPeriod` are coalesced and committed once the user
+/// pauses. Owners call `flush()` when the edit context ends (tab switch, app
+/// resign, termination) so nothing is left pending.
+///
+/// If `controller.preferences` changes from elsewhere while an edit is pending
+/// (metrics updated when dictation stops, the other draft in Settings, a
+/// dictation into the Scratchpad), `reconcile` merges per top-level field:
+/// fields the user edited keep the local value, everything else takes the
+/// controller's value. That keeps the ContentView and SettingsView drafts from
+/// clobbering each other or the controller's own updates.
+@MainActor
+final class PreferencesDraftCommitter {
+    static let quietPeriod: Duration = .milliseconds(400)
+
+    private weak var controller: DictationController?
+    /// The controller value the owning draft was last reconciled with.
+    private var base: AppPreferences?
+    private var pendingDraft: AppPreferences?
+    private var pendingCommitTask: Task<Void, Never>?
+    private var lastEditAt: ContinuousClock.Instant?
+
+    /// Call on appear and whenever `controller.preferences` changes. Returns the
+    /// value the draft should hold: the controller's value, or a merge of it
+    /// with the pending local edits.
+    func reconcile(draft: AppPreferences, with controller: DictationController) -> AppPreferences {
+        self.controller = controller
+        let remote = controller.preferences
+        defer { base = remote }
+
+        guard pendingDraft != nil, let base else {
+            return remote
+        }
+
+        let merged = Self.merge(base: base, local: draft, remote: remote)
+        pendingDraft = merged
+        return merged
+    }
+
+    /// Call from the draft's `onChange`.
+    func draftDidChange(_ draft: AppPreferences, controller: DictationController) {
+        self.controller = controller
+        if base == nil {
+            base = controller.preferences
+        }
+
+        guard draft != controller.preferences else {
+            // Adopted from the controller, or edited back to the saved value.
+            cancelPendingCommit()
+            return
+        }
+
+        let now = ContinuousClock.now
+        let isWithinEditBurst = pendingDraft != nil
+            || lastEditAt.map { now - $0 < Self.quietPeriod } == true
+        lastEditAt = now
+        pendingDraft = draft
+
+        if isWithinEditBurst {
+            scheduleCommit()
+        } else {
+            commitPendingDraft()
+        }
+    }
+
+    /// Commits any pending edit right away.
+    func flush() {
+        guard pendingDraft != nil else { return }
+        commitPendingDraft()
+    }
+
+    private func scheduleCommit() {
+        pendingCommitTask?.cancel()
+        // Strong capture on purpose: a pending edit must still land if the
+        // owning view goes away before the quiet period ends.
+        pendingCommitTask = Task { @MainActor in
+            try? await Task.sleep(for: Self.quietPeriod)
+            guard !Task.isCancelled else { return }
+            self.commitPendingDraft()
+        }
+    }
+
+    private func cancelPendingCommit() {
+        pendingCommitTask?.cancel()
+        pendingCommitTask = nil
+        pendingDraft = nil
+    }
+
+    private func commitPendingDraft() {
+        guard let draft = pendingDraft, let controller else {
+            cancelPendingCommit()
+            return
+        }
+        cancelPendingCommit()
+
+        let current = controller.preferences
+        var snapshot = draft
+        if let base, base != current {
+            // The controller moved on since the draft was last reconciled and
+            // the view hasn't seen it yet; don't overwrite those changes.
+            snapshot = Self.merge(base: base, local: draft, remote: current)
+        }
+
+        var normalized = snapshot
+        normalized.normalize()
+        guard normalized != current else {
+            base = current
+            return
+        }
+
+        if normalized.requiresRuntimeRebuild(comparedTo: current) {
+            controller.applySettingsDraft(preferences: snapshot, announceImmediateSave: false)
+        } else {
+            controller.savePreferencesQuietly(preferences: snapshot)
+        }
+        base = controller.preferences
+    }
+
+    /// Three-way merge at top-level field granularity. Starts from the local
+    /// draft so a field this list doesn't know about keeps the user's value.
+    static func merge(
+        base: AppPreferences,
+        local: AppPreferences,
+        remote: AppPreferences
+    ) -> AppPreferences {
+        var result = local
+
+        func adoptRemoteIfUnedited<Value: Equatable>(_ keyPath: WritableKeyPath<AppPreferences, Value>) {
+            if local[keyPath: keyPath] == base[keyPath: keyPath] {
+                result[keyPath: keyPath] = remote[keyPath: keyPath]
+            }
+        }
+
+        adoptRemoteIfUnedited(\.general)
+        adoptRemoteIfUnedited(\.hotkeys)
+        adoptRemoteIfUnedited(\.dictation)
+        adoptRemoteIfUnedited(\.insertion)
+        adoptRemoteIfUnedited(\.media)
+        adoptRemoteIfUnedited(\.ai)
+        adoptRemoteIfUnedited(\.billing)
+        adoptRemoteIfUnedited(\.lexiconEntries)
+        adoptRemoteIfUnedited(\.globalStyleProfile)
+        adoptRemoteIfUnedited(\.appStyleProfiles)
+        adoptRemoteIfUnedited(\.appDictationEnginePreferences)
+        adoptRemoteIfUnedited(\.appAnchorOverrides)
+        adoptRemoteIfUnedited(\.snippets)
+        adoptRemoteIfUnedited(\.voiceCommands)
+        adoptRemoteIfUnedited(\.scratchPadContent)
+        adoptRemoteIfUnedited(\.metricsRecordingSecondsToday)
+        adoptRemoteIfUnedited(\.metricsRecordingSecondsLifetime)
+        adoptRemoteIfUnedited(\.metricsLifetimeTrackingStartedAt)
+        adoptRemoteIfUnedited(\.metricsLastRecordingDate)
+        adoptRemoteIfUnedited(\.metricsBestTypingWordsPerMinute)
+
+        return result
+    }
+}
+
 // MARK: - Tab activity
 
 /// Whether the tab (or settings pane) hosting a view is currently the one the

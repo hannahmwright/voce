@@ -1673,3 +1673,14 @@ private struct HomeLayout {
         )
     }
 }
+
+// ContentView re-renders on every preferences-draft change (each Scratchpad
+// keystroke, for example) and hands Home a fresh closure, which SwiftUI can't
+// compare, so Home's body re-ran per keystroke. The controller and Home's own
+// state still drive its updates; isActive is the only parent input that
+// matters.
+extension HomeTab: Equatable {
+    nonisolated static func == (lhs: HomeTab, rhs: HomeTab) -> Bool {
+        lhs.isActive == rhs.isActive
+    }
+}

@@ -177,3 +177,39 @@ func everyEntryMatchesItsOwnTitle() {
         )
     }
 }
+
+// MARK: - Preferences draft merging
+
+@MainActor
+@Test("A pending draft edit survives a concurrent controller update to other fields")
+func draftMergeKeepsLocalEditsAndAdoptsRemoteChanges() {
+    let base = AppPreferences.default
+
+    var local = base
+    local.scratchPadContent = "typed while dictation finished"
+
+    var remote = base
+    remote.metricsRecordingSecondsLifetime = 42
+    remote.general.userName = "Remote"
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.scratchPadContent == "typed while dictation finished")
+    #expect(merged.metricsRecordingSecondsLifetime == 42)
+    #expect(merged.general.userName == "Remote")
+}
+
+@MainActor
+@Test("When both sides edit the same field, the user's draft wins")
+func draftMergePrefersLocalOnConflict() {
+    let base = AppPreferences.default
+
+    var local = base
+    local.scratchPadContent = "local"
+
+    var remote = base
+    remote.scratchPadContent = "remote"
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+    #expect(merged.scratchPadContent == "local")
+}

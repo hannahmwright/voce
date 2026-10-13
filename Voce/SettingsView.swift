@@ -14,6 +14,7 @@ struct SettingsView: View {
     private let onVerifyAccessCode: (String) -> Void
     private let onClose: (() -> Void)?
     @State private var preferencesDraft: AppPreferences = .default
+    @State private var draftCommitter = PreferencesDraftCommitter()
     @State private var selectedGroup: SettingsGroup = .setup
     @State private var settingsSearchText = ""
     @FocusState private var settingsSearchIsFocused: Bool
@@ -117,11 +118,12 @@ struct SettingsView: View {
             if !visibleGroups.contains(selectedGroup) {
                 selectedGroup = .setup
             }
-            preferencesDraft = controller.preferences
+            preferencesDraft = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
         }
-        .onChange(of: controller.preferences) { _, newValue in
-            if newValue != preferencesDraft {
-                preferencesDraft = newValue
+        .onChange(of: controller.preferences) { _, _ in
+            let reconciled = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
+            if reconciled != preferencesDraft {
+                preferencesDraft = reconciled
             }
         }
         // SettingsView stays mounted behind the other tabs, so the launch target
@@ -145,19 +147,24 @@ struct SettingsView: View {
             }
         }
         .onChange(of: preferencesDraft) { _, newValue in
-            let normalized = normalizedPreferences(newValue)
-            guard normalized != controller.preferences else { return }
-
-            if normalized.requiresRuntimeRebuild(comparedTo: controller.preferences) {
-                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
-            } else {
-                controller.savePreferencesQuietly(preferences: newValue)
-            }
+            // Coalesces keystrokes in settings text fields; see
+            // PreferencesDraftCommitter.
+            draftCommitter.draftDidChange(newValue, controller: controller)
         }
         .onChange(of: isActive) { _, isActive in
             if !isActive {
                 settingsSearchIsFocused = false
+                draftCommitter.flush()
             }
+        }
+        .onDisappear {
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            draftCommitter.flush()
         }
         // Recorder fields and other children stop global work (key capture)
         // when Settings is hidden behind another tab or the window goes inactive.
@@ -526,12 +533,6 @@ struct SettingsView: View {
                 voceActionsTapEnabled: preferencesDraft.hotkeys.voceActionsTapEnabled
             )
         }
-    }
-
-    private func normalizedPreferences(_ preferences: AppPreferences) -> AppPreferences {
-        var snapshot = preferences
-        snapshot.normalize()
-        return snapshot
     }
 
     private func requestAccessCodeForSettingsEmail() {
