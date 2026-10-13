@@ -58,8 +58,11 @@ enum FocusedInputTargetPolicy {
             }
 
             // Some applications expose text but not a usable selection range.
-            // Require the exact transcript to appear, not merely any value change.
-            if afterText.contains(insertedText) {
+            // Require one more occurrence of the exact transcript than before,
+            // not merely any value change: a short transcript such as "OK."
+            // may already be in the field while something unrelated changed.
+            if occurrenceCount(of: insertedText, in: afterText)
+                > occurrenceCount(of: insertedText, in: beforeText) {
                 return .textValue
             }
         }
@@ -93,6 +96,18 @@ enum FocusedInputTargetPolicy {
         return nil
     }
 
+    /// Number of non-overlapping occurrences of `needle` in `haystack`.
+    static func occurrenceCount(of needle: String, in haystack: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        var searchRange = haystack.startIndex..<haystack.endIndex
+        while let found = haystack.range(of: needle, options: [], range: searchRange) {
+            count += 1
+            searchRange = found.upperBound..<haystack.endIndex
+        }
+        return count
+    }
+
     private static func valueByReplacingSelection(
         in text: String,
         selectedRange: CFRange,
@@ -121,6 +136,33 @@ enum FocusedInputTargetPolicy {
     }
 }
 
+/// Bounds how long Accessibility IPC may block the calling thread (these
+/// calls run on the main actor). The system default is about 6 seconds per
+/// call, so an unresponsive target app could freeze Voce for many seconds
+/// across the several reads a capture or paste verification performs.
+/// Setting the timeout on the system-wide element sets the process-wide
+/// default for every element, including the app's selection capture and
+/// overlay anchoring. 2 seconds leaves headroom for slow but healthy
+/// responders (large text values, Chromium/Electron building their AX tree
+/// on first access) while still bounding a hung app well below the default.
+/// Focused-element capture additionally retries once on
+/// `kAXErrorCannotComplete`, but only when that error came back quickly
+/// (the responder was still initializing). A timeout also reports
+/// `kAXErrorCannotComplete`; retrying after one would double the stall, so
+/// the worst case stays about one timeout.
+enum AccessibilityMessaging {
+    static let timeoutSeconds: Float = 2.0
+    /// A `kAXErrorCannotComplete` returned faster than this is treated as
+    /// "not ready yet" rather than a timeout, and is worth one retry.
+    static let quickFailureRetryThresholdSeconds: Double = 0.5
+
+    static func systemWideElement() -> AXUIElement {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, timeoutSeconds)
+        return systemWide
+    }
+}
+
 /// A live snapshot of the editable Accessibility element that was focused
 /// when dictation began. It is intentionally runtime-only and is never
 /// serialized with transcript history.
@@ -131,15 +173,13 @@ public final class FocusedInputTarget: @unchecked Sendable {
     let bundleIdentifier: String
     let identity: Identity
 
-    public let initialValue: String?
-
+    /// Only the attributes used for editability checks and diagnostics are
+    /// read; every attribute is a synchronous IPC round trip to the target.
     struct Identity: Sendable, Equatable {
         let role: String?
         let subrole: String?
         let identifier: String?
-        let title: String?
         let description: String?
-        let windowTitle: String?
     }
 
     private struct TextObservation {
@@ -170,14 +210,12 @@ public final class FocusedInputTarget: @unchecked Sendable {
         element: AXUIElement,
         processIdentifier: pid_t,
         bundleIdentifier: String,
-        identity: Identity,
-        initialValue: String?
+        identity: Identity
     ) {
         self.element = element
         self.processIdentifier = processIdentifier
         self.bundleIdentifier = bundleIdentifier
         self.identity = identity
-        self.initialValue = initialValue
     }
 
     /// Captures the focused element only when it is an editable Accessibility
@@ -188,10 +226,11 @@ public final class FocusedInputTarget: @unchecked Sendable {
             return nil
         }
 
-        guard let element = currentFocusedElement() else {
+        guard let element = currentFocusedElement(retryOnCannotComplete: true) else {
             recordCaptureFailure("focused_element_unavailable")
             return nil
         }
+        AXUIElementSetMessagingTimeout(element, AccessibilityMessaging.timeoutSeconds)
 
         guard let processIdentifier = processIdentifier(of: element) else {
             recordCaptureFailure("focused_element_pid_unavailable")
@@ -257,8 +296,7 @@ public final class FocusedInputTarget: @unchecked Sendable {
             element: element,
             processIdentifier: processIdentifier,
             bundleIdentifier: bundleIdentifier,
-            identity: identity,
-            initialValue: textObservation.text
+            identity: identity
         )
     }
 
@@ -328,14 +366,31 @@ public final class FocusedInputTarget: @unchecked Sendable {
         CFEqual(element, candidate)
     }
 
-    private static func currentFocusedElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
+    private static func currentFocusedElement(retryOnCannotComplete: Bool = false) -> AXUIElement? {
+        let systemWide = AccessibilityMessaging.systemWideElement()
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
+        let firstAttemptStart = DispatchTime.now().uptimeNanoseconds
+        var status = AXUIElementCopyAttributeValue(
             systemWide,
             kAXFocusedUIElementAttribute as CFString,
             &focusedRef
-        ) == .success,
+        )
+        let firstAttemptSeconds = Double(DispatchTime.now().uptimeNanoseconds - firstAttemptStart) / 1_000_000_000
+        if status == .cannotComplete,
+           retryOnCannotComplete,
+           firstAttemptSeconds < AccessibilityMessaging.quickFailureRetryThresholdSeconds {
+            // Chromium/Electron can fail the first query fast while building
+            // their accessibility tree; the second query usually succeeds.
+            // Never retry after a slow failure: that was a messaging timeout
+            // from a hung app, and retrying would block for another timeout.
+            focusedRef = nil
+            status = AXUIElementCopyAttributeValue(
+                systemWide,
+                kAXFocusedUIElementAttribute as CFString,
+                &focusedRef
+            )
+        }
+        guard status == .success,
         let focusedRef,
         CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
             return nil
@@ -522,28 +577,11 @@ public final class FocusedInputTarget: @unchecked Sendable {
     }
 
     private static func identity(for element: AXUIElement) -> Identity {
-        var windowRef: CFTypeRef?
-        let windowStatus = AXUIElementCopyAttributeValue(
-            element,
-            kAXWindowAttribute as CFString,
-            &windowRef
-        )
-        let window: AXUIElement?
-        if windowStatus == .success,
-           let windowRef,
-           CFGetTypeID(windowRef) == AXUIElementGetTypeID() {
-            window = unsafeDowncast(windowRef as AnyObject, to: AXUIElement.self)
-        } else {
-            window = nil
-        }
-
-        return Identity(
+        Identity(
             role: stringAttribute(kAXRoleAttribute as CFString, on: element),
             subrole: stringAttribute(kAXSubroleAttribute as CFString, on: element),
             identifier: stringAttribute(kAXIdentifierAttribute as CFString, on: element),
-            title: stringAttribute(kAXTitleAttribute as CFString, on: element),
-            description: stringAttribute(kAXDescriptionAttribute as CFString, on: element),
-            windowTitle: window.flatMap { stringAttribute(kAXTitleAttribute as CFString, on: $0) }
+            description: stringAttribute(kAXDescriptionAttribute as CFString, on: element)
         )
     }
 

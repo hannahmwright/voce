@@ -56,6 +56,50 @@ extension IdleKeyCodeHotkeyRegistration {
     }
 }
 
+/// Result of matching a key press against the configured AI finish keys.
+///
+/// The default AI finish key and "no match" must be distinguishable: the
+/// `onFinishActiveRecordingWithAI` callback receives `nil` to mean "use the
+/// default workflow", so collapsing both into `nil` made the default key
+/// unreachable.
+enum AIFinishHotkeyMatch: Equatable, Sendable {
+    case noMatch
+    case defaultKey
+    case workflow(HandsFreeHotkey)
+
+    /// Argument for `onFinishActiveRecordingWithAI`; `nil` selects the default
+    /// workflow. Only meaningful when the match is not `.noMatch`.
+    var callbackHotkey: HandsFreeHotkey? {
+        switch self {
+        case .noMatch, .defaultKey:
+            return nil
+        case .workflow(let hotkey):
+            return hotkey
+        }
+    }
+
+    static func match(
+        keyCode: UInt16,
+        defaultHotkey: HandsFreeHotkey?,
+        workflowHotkeys: [HandsFreeHotkey]
+    ) -> AIFinishHotkeyMatch {
+        if let matchedCustom = workflowHotkeys.first(where: {
+            if case .keyCode(let customKeyCode) = $0 {
+                return customKeyCode == keyCode
+            }
+            return false
+        }) {
+            return .workflow(matchedCustom)
+        }
+
+        if case .keyCode(let aiKeyCode)? = defaultHotkey, aiKeyCode == keyCode {
+            return .defaultKey
+        }
+
+        return .noMatch
+    }
+}
+
 @MainActor
 private final class CarbonHotkeyRegistrar {
     private nonisolated static let signature: OSType = 0x564F4345 // "VOCE"
@@ -209,6 +253,9 @@ private final class TapContext: @unchecked Sendable {
     /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
     /// disable/re-enable cycles that can occur when the system times out the tap.
     private var _lastReenableTime: CFAbsoluteTime = 0
+    /// True while a deferred re-enable (scheduled because a disable arrived
+    /// inside the debounce window) is pending.
+    private var _isDeferredReenableScheduled = false
 
     var monitor: MacHotkeyMonitor? {
         get { lock.withLock { _monitor } }
@@ -267,14 +314,42 @@ private final class TapContext: @unchecked Sendable {
         set { lock.withLock { _machPort = newValue } }
     }
 
-    /// Atomically applies the re-enable debounce and claims the port.
-    /// Returns the mach port to re-enable, or nil when debounced or when the
-    /// tap is being torn down (`machPort` already cleared by uninstall).
-    func claimReenablePort(debounce: CFAbsoluteTime) -> CFMachPort? {
+    enum ReenableDecision {
+        /// Re-enable this port now.
+        case reenableNow(CFMachPort)
+        /// Inside the debounce window: re-enable after this many seconds.
+        case deferred(after: CFAbsoluteTime)
+        /// Nothing to do: the tap is being torn down, or a deferred re-enable
+        /// is already pending.
+        case none
+    }
+
+    /// Atomically applies the re-enable debounce. A disable inside the
+    /// debounce window is never dropped: it schedules one deferred re-enable
+    /// at the end of the window, otherwise the tap would stay disabled until
+    /// the next app restart.
+    func claimReenable(debounce: CFAbsoluteTime) -> ReenableDecision {
         lock.withLock {
+            guard let port = _machPort else { return .none }
             let now = CFAbsoluteTimeGetCurrent()
-            guard let port = _machPort, now - _lastReenableTime >= debounce else { return nil }
-            _lastReenableTime = now
+            let elapsed = now - _lastReenableTime
+            if elapsed >= debounce {
+                _lastReenableTime = now
+                return .reenableNow(port)
+            }
+            guard !_isDeferredReenableScheduled else { return .none }
+            _isDeferredReenableScheduled = true
+            return .deferred(after: max(0, debounce - elapsed))
+        }
+    }
+
+    /// Claims the port for a deferred re-enable. Returns nil when the tap was
+    /// torn down in the meantime.
+    func claimDeferredReenablePort() -> CFMachPort? {
+        lock.withLock {
+            _isDeferredReenableScheduled = false
+            guard let port = _machPort else { return nil }
+            _lastReenableTime = CFAbsoluteTimeGetCurrent()
             return port
         }
     }
@@ -439,6 +514,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     public var pressToTalkHotkey: PressToTalkHotkey = .default {
         didSet {
             isPressToTalkHeld = false
+            stopPressToTalkReleasePolling()
             cancelPendingPressToTalkStart()
             didEmitPressToTalkStart = false
             pressToTalkEmittedThisGesture = false
@@ -505,6 +581,17 @@ public final class MacHotkeyMonitor: HotkeyService {
     /// changes (user added Cmd, released Option, etc) before the deferral
     /// elapses.
     private var pendingPressToTalkStartTask: Task<Void, Never>?
+    /// Polls the hardware modifier state while the hold-to-talk chord is held.
+    /// Under Secure Event Input (password fields, some terminals) global
+    /// `flagsChanged` monitors receive nothing, so the release would otherwise
+    /// never be seen and recording would stay stuck on. Runs only while held.
+    private var pressToTalkReleasePollTask: Task<Void, Never>?
+    private static let pressToTalkReleasePollIntervalNanoseconds: UInt64 = 100_000_000
+    /// Consecutive polls that must observe the chord released before a release
+    /// is synthesized. Two polls (~200ms) give the normal flagsChanged path
+    /// ample time to handle the release itself, so the poll only acts when
+    /// event delivery is actually blocked.
+    private static let pressToTalkReleaseConfirmationPolls = 2
     /// True when `onPressToTalkStart` has actually emitted somewhere inside
     /// the current modifier gesture (the span between modifiers transitioning
     /// from empty → non-empty and returning to empty). Used by the Voce-
@@ -593,6 +680,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         uninstallPressToTalkMonitors()
         uninstallActiveRecordingKeyMonitors()
         isPressToTalkHeld = false
+        stopPressToTalkReleasePolling()
         cancelPendingPressToTalkStart()
         didEmitPressToTalkStart = false
         pressToTalkEmittedThisGesture = false
@@ -678,31 +766,20 @@ public final class MacHotkeyMonitor: HotkeyService {
             return canSuppress
         }
 
-        if isAIFinishEnabled,
-           let matchedHotkey = matchingAIWorkflowHotkey(for: keyCode) {
-            guard shouldHandleActiveRecordingKey(keyCode) else { return false }
-            onFinishActiveRecordingWithAI?(matchedHotkey)
-            return canSuppress
+        if isAIFinishEnabled {
+            let match = AIFinishHotkeyMatch.match(
+                keyCode: keyCode,
+                defaultHotkey: aiFinishHotkey,
+                workflowHotkeys: aiWorkflowFinishHotkeys
+            )
+            if match != .noMatch {
+                guard shouldHandleActiveRecordingKey(keyCode) else { return false }
+                onFinishActiveRecordingWithAI?(match.callbackHotkey)
+                return canSuppress
+            }
         }
 
         return false
-    }
-
-    private func matchingAIWorkflowHotkey(for keyCode: UInt16) -> HandsFreeHotkey? {
-        if let matchedCustom = aiWorkflowFinishHotkeys.first(where: {
-            if case .keyCode(let customKeyCode) = $0 {
-                return customKeyCode == keyCode
-            }
-            return false
-        }) {
-            return matchedCustom
-        }
-
-        if case .keyCode(let aiKeyCode)? = aiFinishHotkey, aiKeyCode == keyCode {
-            return nil
-        }
-
-        return nil
     }
 
     private func shouldHandleActiveRecordingKey(_ keyCode: UInt16) -> Bool {
@@ -716,7 +793,10 @@ public final class MacHotkeyMonitor: HotkeyService {
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        handleModifierFlags(event.modifierFlags.intersection(.deviceIndependentFlagsMask))
+    }
+
+    private func handleModifierFlags(_ modifiers: NSEvent.ModifierFlags) {
         // Gesture boundary: every time the *user-pressed* modifiers go from
         // fully empty to any held state, a brand-new physical gesture is
         // beginning. Clear any gesture-scoped flags so state from a prior PTT
@@ -828,6 +908,11 @@ public final class MacHotkeyMonitor: HotkeyService {
 
         isPressToTalkHeld = hotkeyIsNowHeld
         let generation = callbackGeneration
+        if hotkeyIsNowHeld {
+            startPressToTalkReleasePolling()
+        } else {
+            stopPressToTalkReleasePolling()
+        }
 
         if hotkeyIsNowHeld {
             // Modifier set just became the configured PTT chord. If it
@@ -907,6 +992,73 @@ public final class MacHotkeyMonitor: HotkeyService {
         pendingPressToTalkStartTask = nil
     }
 
+    private func startPressToTalkReleasePolling() {
+        guard pressToTalkReleasePollTask == nil else { return }
+        let generation = callbackGeneration
+        pressToTalkReleasePollTask = Task { @MainActor [weak self] in
+            var consecutiveReleasedPolls = 0
+            var hasObservedChordHeld = false
+            var pollsWithoutObservingChord = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.pressToTalkReleasePollIntervalNanoseconds)
+                guard !Task.isCancelled,
+                      let self,
+                      self.hasStarted,
+                      self.callbackGeneration == generation,
+                      self.isPressToTalkHeld else {
+                    return
+                }
+                let currentModifiers = Self.currentHardwareModifierFlags()
+                if currentModifiers.contains(self.pressToTalkHotkey.eventFlags) {
+                    hasObservedChordHeld = true
+                    consecutiveReleasedPolls = 0
+                    continue
+                }
+                guard hasObservedChordHeld else {
+                    // The polled state has not shown the chord held yet. It
+                    // may never reflect it (Fn/Globe, Sticky Keys), and a
+                    // "released" reading would then end every hold early, so
+                    // give up polling for this gesture and rely on
+                    // flagsChanged alone.
+                    pollsWithoutObservingChord += 1
+                    if pollsWithoutObservingChord >= Self.pressToTalkReleaseConfirmationPolls {
+                        Self.logger.debug("Hold-to-talk modifier polling stopped: polled state never showed the chord held")
+                        self.pressToTalkReleasePollTask = nil
+                        return
+                    }
+                    continue
+                }
+                consecutiveReleasedPolls += 1
+                guard consecutiveReleasedPolls >= Self.pressToTalkReleaseConfirmationPolls else {
+                    continue
+                }
+                Self.logger.notice(
+                    "Hold-to-talk release detected by modifier polling; flagsChanged was not delivered (Secure Event Input likely active)"
+                )
+                self.pressToTalkReleasePollTask = nil
+                // Feed the observed state through the normal path so every
+                // gesture handler stays consistent with what a real
+                // flagsChanged event would have produced.
+                self.handleModifierFlags(currentModifiers)
+                return
+            }
+        }
+    }
+
+    private func stopPressToTalkReleasePolling() {
+        pressToTalkReleasePollTask?.cancel()
+        pressToTalkReleasePollTask = nil
+    }
+
+    /// Current modifier state from the window server, independent of event
+    /// delivery (still accurate while Secure Event Input blocks monitors).
+    /// CGEventFlags and NSEvent.ModifierFlags share the same bit layout.
+    private static func currentHardwareModifierFlags() -> NSEvent.ModifierFlags {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        return NSEvent.ModifierFlags(rawValue: UInt(flags.rawValue))
+            .intersection(.deviceIndependentFlagsMask)
+    }
+
     private func handleModifierToggleFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
         guard let globalToggleHotkey else { return }
         guard case .modifier(let modifier) = globalToggleHotkey.hotkey else { return }
@@ -955,7 +1107,16 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     @discardableResult
     private func installEventTap() -> Bool {
-        guard eventTap == nil else { return true }
+        if let eventTap {
+            // Safety net for a tap the system disabled and nothing revived
+            // (e.g. a disable racing teardown of a deferred re-enable). This
+            // runs whenever recording starts and shortcut state is refreshed.
+            if !CGEvent.tapIsEnabled(tap: eventTap) {
+                Self.logger.warning("Event tap found disabled — re-enabling")
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return true
+        }
 
         let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
         let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
@@ -1186,12 +1347,30 @@ public final class MacHotkeyMonitor: HotkeyService {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let userInfo {
                 let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
-                if let machPort = ctx.claimReenablePort(debounce: reenableDebounceInterval) {
+                let reason = type == .tapDisabledByTimeout ? "timeout" : "user input"
+                switch ctx.claimReenable(debounce: reenableDebounceInterval) {
+                case .reenableNow(let machPort):
                     // Timeout disables mean the system considered us too slow
                     // to service the keystroke path — exactly the signal
                     // behind "typing lags while Voce runs" reports.
-                    logger.warning("Event tap disabled by system (\(type == .tapDisabledByTimeout ? "timeout" : "user input", privacy: .public)) — re-enabling")
+                    logger.warning("Event tap disabled by system (\(reason, privacy: .public)) — re-enabling")
                     CGEvent.tapEnable(tap: machPort, enable: true)
+                case .deferred(let delay):
+                    // A second disable inside the debounce window. Dropping it
+                    // would leave the tap disabled with nothing to revive it,
+                    // so re-enable once the window ends. tapEnable is
+                    // thread-safe; the closure retains the context.
+                    logger.warning("Event tap disabled by system (\(reason, privacy: .public)) inside debounce window — re-enabling shortly")
+                    DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + delay) {
+                        guard let machPort = ctx.claimDeferredReenablePort(),
+                              !CGEvent.tapIsEnabled(tap: machPort) else {
+                            return
+                        }
+                        logger.warning("Event tap re-enabled after debounce window")
+                        CGEvent.tapEnable(tap: machPort, enable: true)
+                    }
+                case .none:
+                    break
                 }
             }
             return Unmanaged.passUnretained(event)
@@ -1240,20 +1419,23 @@ public final class MacHotkeyMonitor: HotkeyService {
 
         if ctx.isAIFinishEnabled,
            flags.intersection(userMods).isEmpty,
-           event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
-           let matchedHotkey = matchingAIWorkflowHotkey(
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            let match = AIFinishHotkeyMatch.match(
                 keyCode: keyCode,
                 defaultHotkey: ctx.aiFinishHotkey,
                 workflowHotkeys: ctx.aiWorkflowFinishHotkeys
-           ) {
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    let monitor = ctx.monitor
-                    monitor?.markHandledActiveRecordingKey(keyCode)
+            )
+            if match != .noMatch {
+                let callbackHotkey = match.callbackHotkey
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        let monitor = ctx.monitor
+                        monitor?.markHandledActiveRecordingKey(keyCode)
+                    }
+                    ctx.onAIFinish?(callbackHotkey)
                 }
-                ctx.onAIFinish?(matchedHotkey)
+                return nil
             }
-            return nil
         }
 
         guard let configuredHotkey = ctx.hotkey,
@@ -1298,27 +1480,6 @@ public final class MacHotkeyMonitor: HotkeyService {
     private func markHandledActiveRecordingKey(_ keyCode: UInt16) {
         lastActiveRecordingKeyCode = keyCode
         lastActiveRecordingKeyTime = CFAbsoluteTimeGetCurrent()
-    }
-
-    private nonisolated static func matchingAIWorkflowHotkey(
-        keyCode: UInt16,
-        defaultHotkey: HandsFreeHotkey?,
-        workflowHotkeys: [HandsFreeHotkey]
-    ) -> HandsFreeHotkey? {
-        if let matchedCustom = workflowHotkeys.first(where: {
-            if case .keyCode(let customKeyCode) = $0 {
-                return customKeyCode == keyCode
-            }
-            return false
-        }) {
-            return matchedCustom
-        }
-
-        if case .keyCode(let aiKeyCode)? = defaultHotkey, aiKeyCode == keyCode {
-            return nil
-        }
-
-        return nil
     }
 
     private nonisolated static func matchesSelectionCorrectionHotkey(
