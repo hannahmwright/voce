@@ -212,6 +212,31 @@ struct DailyUsageActivityDay: Equatable {
     let sessionCount: Int
 }
 
+/// How a finished dictation was delivered. Published so views can react to
+/// the outcome without parsing the display status, which varies by app,
+/// permissions and polish.
+struct DictationCompletionOutcome: Equatable {
+    enum Delivery: Equatable {
+        case inserted
+        /// Left on the clipboard for the user to paste.
+        case copiedToClipboard
+        /// Copied; Voce pastes once the user clicks the input again.
+        case needsRefocus
+        /// A paste was sent but could not be confirmed.
+        case pasteUnverified
+        case failed
+    }
+
+    /// Increments per completion, so repeating the same text is observable.
+    let id: Int
+    let delivery: Delivery
+    let text: String
+
+    var leftTextOnClipboard: Bool {
+        delivery == .copiedToClipboard || delivery == .needsRefocus
+    }
+}
+
 private enum ActiveCloudUsageMetering {
     case voceHosted
     case directOpenAI
@@ -257,6 +282,7 @@ final class DictationController: ObservableObject {
     @Published var recordingElapsed: TimeInterval = 0
     @Published var hasBootstrapped = false
     @Published private(set) var backgroundProcessingSessionCount: Int = 0
+    @Published private(set) var lastCompletionOutcome: DictationCompletionOutcome?
     @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail {
         didSet {
             guard hasBootstrapped else { return }
@@ -365,6 +391,7 @@ final class DictationController: ObservableObject {
     private var lastCloudValidationToken: String?
     private var lastCloudValidationFailureMessage: String?
     private var nextBackgroundProcessingSequence = 0
+    private var nextCompletionOutcomeID = 0
     private var nextCompletionSequenceToCommit = 0
     private var completedCompletionSequences = Set<Int>()
     private var completionSequenceWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
@@ -3920,6 +3947,32 @@ final class DictationController: ObservableObject {
             messages.append("Polish skipped.")
         }
         status = messages.joined(separator: " ")
+        publishCompletionOutcome(for: result, text: execution.finalText)
+    }
+
+    private func publishCompletionOutcome(for result: InsertResult, text: String) {
+        let delivery: DictationCompletionOutcome.Delivery
+        switch result.status {
+        case .inserted:
+            delivery = .inserted
+        case .copiedOnly:
+            switch result.recoveryAction {
+            case .refocusToPaste:
+                delivery = .needsRefocus
+            case .checkBeforePasting:
+                delivery = .pasteUnverified
+            default:
+                delivery = .copiedToClipboard
+            }
+        case .failed:
+            delivery = .failed
+        }
+        nextCompletionOutcomeID += 1
+        lastCompletionOutcome = DictationCompletionOutcome(
+            id: nextCompletionOutcomeID,
+            delivery: delivery,
+            text: text
+        )
     }
 
     private func presentClipboardRecoveryPromptIfNeeded(

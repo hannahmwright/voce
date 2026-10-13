@@ -138,12 +138,13 @@ struct OnboardingView: View {
             practiceStartCharacterCount = 0
             focusPracticePadSoon()
         }
-        .onChange(of: controller.status) { _, newStatus in
+        .onChange(of: controller.lastCompletionOutcome) { _, outcome in
             guard currentStep == .walkthrough || currentStep == .practice else { return }
-            guard newStatus.localizedCaseInsensitiveContains("copied to clipboard")
-                || newStatus.localizedCaseInsensitiveContains("click the input again.") else { return }
+            // Text that ended up on the clipboard never reached the practice
+            // pad, so add it here.
+            guard let outcome, outcome.leftTextOnClipboard else { return }
 
-            let transcript = controller.lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            let transcript = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !transcript.isEmpty, transcript != lastPracticeTranscriptApplied else { return }
 
             appendTranscriptToPracticePad(transcript)
