@@ -38,14 +38,14 @@ struct AISettingsSection: View {
 
     private enum SheetMode: Identifiable {
         case add
-        case edit(index: Int)
+        case edit(workflowID: UUID)
 
         var id: String {
             switch self {
             case .add:
                 return "add"
-            case .edit(let index):
-                return "edit-\(index)"
+            case .edit(let workflowID):
+                return "edit-\(workflowID.uuidString)"
             }
         }
 
@@ -112,13 +112,13 @@ struct AISettingsSection: View {
                 .font(VoceDesign.heading3())
                 .foregroundStyle(VoceDesign.textPrimary)
 
-            workflowSection("Built in", indices: builtInWorkflowIndices)
+            workflowSection("Built in", workflows: preferences.ai.workflows.filter(\.isBuiltIn))
 
-            if !customWorkflowIndices.isEmpty {
-                workflowSection("Custom", indices: customWorkflowIndices, showsNewButton: true)
-            } else {
-                workflowSection("Custom", indices: [], showsNewButton: true)
-            }
+            workflowSection(
+                "Custom",
+                workflows: preferences.ai.workflows.filter { !$0.isBuiltIn },
+                showsNewButton: true
+            )
         }
     }
 
@@ -162,9 +162,12 @@ struct AISettingsSection: View {
         )
     }
 
+    // Rows are identified and edited by workflow ID, not array index: an
+    // index captured by a row or the edit sheet could point past the end (or
+    // at a different workflow) after a delete and crash or edit the wrong one.
     private func workflowSection(
         _ title: String,
-        indices: [Int],
+        workflows: [AIWorkflow],
         showsNewButton: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: VoceDesign.sm) {
@@ -190,7 +193,7 @@ struct AISettingsSection: View {
                 }
             }
 
-            if indices.isEmpty {
+            if workflows.isEmpty {
                 Text("No custom actions")
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
@@ -199,15 +202,14 @@ struct AISettingsSection: View {
                     .background(VoceDesign.surfaceSecondary)
                     .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous))
             } else {
-                ForEach(indices, id: \.self) { index in
-                    workflowRow(at: index)
+                ForEach(workflows) { workflow in
+                    workflowRow(workflow)
                 }
             }
         }
     }
 
-    private func workflowRow(at index: Int) -> some View {
-        let workflow = preferences.ai.workflows[index]
+    private func workflowRow(_ workflow: AIWorkflow) -> some View {
         let isHovered = hoveredWorkflowID == workflow.id
 
         return HStack(spacing: VoceDesign.md) {
@@ -228,14 +230,14 @@ struct AISettingsSection: View {
 
             workflowKeyColumn(for: workflow)
 
-            Toggle("", isOn: workflowEnabledBinding(at: index))
+            Toggle("", isOn: workflowEnabledBinding(for: workflow.id))
                 .labelsHidden()
                 .controlSize(.mini)
                 .disabled(!preferences.ai.isEnabled || !hasAccess)
                 .accessibilityLabel("\(workflow.name) enabled")
 
             Button {
-                editWorkflow(at: index)
+                editWorkflow(id: workflow.id)
             } label: {
                 Image(systemName: "pencil")
                     .font(VoceDesign.caption())
@@ -249,7 +251,7 @@ struct AISettingsSection: View {
                     .frame(width: 12, height: 1)
             } else {
                 Button(role: .destructive) {
-                    removeWorkflow(at: index)
+                    removeWorkflow(id: workflow.id)
                 } label: {
                     Image(systemName: "trash")
                         .font(VoceDesign.caption())
@@ -538,8 +540,8 @@ struct AISettingsSection: View {
                 .foregroundStyle(VoceDesign.textSecondary)
 
                 Button {
-                    if case .edit(let index) = mode {
-                        applyDraftToWorkflow(at: index)
+                    if case .edit(let workflowID) = mode {
+                        applyDraftToWorkflow(id: workflowID)
                     } else {
                         addCustomWorkflow()
                     }
@@ -611,18 +613,19 @@ struct AISettingsSection: View {
         }
     }
 
-    private var builtInWorkflowIndices: [Int] {
-        preferences.ai.workflows.indices.filter { preferences.ai.workflows[$0].isBuiltIn }
+    private func workflowIndex(for id: UUID) -> Int? {
+        preferences.ai.workflows.firstIndex { $0.id == id }
     }
 
-    private var customWorkflowIndices: [Int] {
-        preferences.ai.workflows.indices.filter { !preferences.ai.workflows[$0].isBuiltIn }
-    }
-
-    private func workflowEnabledBinding(at index: Int) -> Binding<Bool> {
+    private func workflowEnabledBinding(for id: UUID) -> Binding<Bool> {
         Binding(
-            get: { preferences.ai.workflows[index].isEnabled },
-            set: { preferences.ai.workflows[index].isEnabled = $0 }
+            get: {
+                workflowIndex(for: id).map { preferences.ai.workflows[$0].isEnabled } ?? false
+            },
+            set: { newValue in
+                guard let index = workflowIndex(for: id) else { return }
+                preferences.ai.workflows[index].isEnabled = newValue
+            }
         )
     }
 
@@ -644,14 +647,20 @@ struct AISettingsSection: View {
         sheetMode = nil
     }
 
-    private func editWorkflow(at index: Int) {
+    private func editWorkflow(id: UUID) {
+        guard let index = workflowIndex(for: id) else { return }
         draft = WorkflowDraft(from: preferences.ai.workflows[index])
-        sheetMode = .edit(index: index)
+        sheetMode = .edit(workflowID: id)
     }
 
-    private func applyDraftToWorkflow(at index: Int) {
+    private func applyDraftToWorkflow(id: UUID) {
         let trimmedTitle = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
+        guard let index = workflowIndex(for: id) else {
+            // The workflow went away while the sheet was open.
+            sheetMode = nil
+            return
+        }
 
         preferences.ai.workflows[index].name = trimmedTitle
         preferences.ai.workflows[index].promptTemplate = draft.prompt
@@ -664,7 +673,7 @@ struct AISettingsSection: View {
         sheetMode = nil
     }
 
-    private func removeWorkflow(at index: Int) {
-        preferences.ai.workflows.remove(at: index)
+    private func removeWorkflow(id: UUID) {
+        preferences.ai.workflows.removeAll { $0.id == id }
     }
 }
