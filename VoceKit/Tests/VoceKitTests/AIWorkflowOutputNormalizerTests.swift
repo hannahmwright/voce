@@ -120,6 +120,31 @@ func rewriteSummarizeStripBareNounPreambles(kind: AIWorkflowKind, preamble: Stri
     #expect(AIWorkflowOutputNormalizer.normalize("\(preamble)\nWe ship Monday.", kind: kind, input: "we ship monday") == "We ship Monday.")
 }
 
+@Test(
+    "Bare version/text preambles only strip when the colon ends the line",
+    arguments: [
+        (AIWorkflowKind.rewrite, "Here's the latest version: v2.3 ships Friday."),
+        (AIWorkflowKind.rewrite, "Here's the new version: it adds dark mode."),
+        (AIWorkflowKind.summarize, "Here's the latest version: v2.3 ships Friday."),
+        (AIWorkflowKind.rewrite, "Here's the email: we ship Monday."),
+    ]
+)
+func bareNounPreambleNeedsLineEndingColon(kind: AIWorkflowKind, output: String) {
+    #expect(AIWorkflowOutputNormalizer.normalize(output, kind: kind) == output)
+}
+
+@Test("Bare version preamble followed by a line break is stripped")
+func bareNounPreambleWithLineBreakIsStripped() {
+    #expect(
+        AIWorkflowOutputNormalizer.normalize("Here's a more professional version:\nWe ship Monday.", kind: .rewrite)
+            == "We ship Monday."
+    )
+    #expect(
+        AIWorkflowOutputNormalizer.normalize("Here's a more professional version:  \n\nWe ship Monday.", kind: .rewrite)
+            == "We ship Monday."
+    )
+}
+
 @Test("Bare-noun preambles stay conservative")
 func bareNounPreamblesStayConservative() {
     // Dictation polish never strips generic nouns.
