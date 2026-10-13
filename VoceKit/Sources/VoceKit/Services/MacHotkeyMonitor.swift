@@ -514,6 +514,7 @@ public final class MacHotkeyMonitor: HotkeyService {
     public var pressToTalkHotkey: PressToTalkHotkey = .default {
         didSet {
             isPressToTalkHeld = false
+            stopPressToTalkReleasePolling()
             cancelPendingPressToTalkStart()
             didEmitPressToTalkStart = false
             pressToTalkEmittedThisGesture = false
@@ -580,6 +581,17 @@ public final class MacHotkeyMonitor: HotkeyService {
     /// changes (user added Cmd, released Option, etc) before the deferral
     /// elapses.
     private var pendingPressToTalkStartTask: Task<Void, Never>?
+    /// Polls the hardware modifier state while the hold-to-talk chord is held.
+    /// Under Secure Event Input (password fields, some terminals) global
+    /// `flagsChanged` monitors receive nothing, so the release would otherwise
+    /// never be seen and recording would stay stuck on. Runs only while held.
+    private var pressToTalkReleasePollTask: Task<Void, Never>?
+    private static let pressToTalkReleasePollIntervalNanoseconds: UInt64 = 100_000_000
+    /// Consecutive polls that must observe the chord released before a release
+    /// is synthesized. Two polls (~200ms) give the normal flagsChanged path
+    /// ample time to handle the release itself, so the poll only acts when
+    /// event delivery is actually blocked.
+    private static let pressToTalkReleaseConfirmationPolls = 2
     /// True when `onPressToTalkStart` has actually emitted somewhere inside
     /// the current modifier gesture (the span between modifiers transitioning
     /// from empty → non-empty and returning to empty). Used by the Voce-
@@ -668,6 +680,7 @@ public final class MacHotkeyMonitor: HotkeyService {
         uninstallPressToTalkMonitors()
         uninstallActiveRecordingKeyMonitors()
         isPressToTalkHeld = false
+        stopPressToTalkReleasePolling()
         cancelPendingPressToTalkStart()
         didEmitPressToTalkStart = false
         pressToTalkEmittedThisGesture = false
@@ -780,7 +793,10 @@ public final class MacHotkeyMonitor: HotkeyService {
     }
 
     private func handleFlagsChanged(_ event: NSEvent) {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        handleModifierFlags(event.modifierFlags.intersection(.deviceIndependentFlagsMask))
+    }
+
+    private func handleModifierFlags(_ modifiers: NSEvent.ModifierFlags) {
         // Gesture boundary: every time the *user-pressed* modifiers go from
         // fully empty to any held state, a brand-new physical gesture is
         // beginning. Clear any gesture-scoped flags so state from a prior PTT
@@ -892,6 +908,11 @@ public final class MacHotkeyMonitor: HotkeyService {
 
         isPressToTalkHeld = hotkeyIsNowHeld
         let generation = callbackGeneration
+        if hotkeyIsNowHeld {
+            startPressToTalkReleasePolling()
+        } else {
+            stopPressToTalkReleasePolling()
+        }
 
         if hotkeyIsNowHeld {
             // Modifier set just became the configured PTT chord. If it
@@ -969,6 +990,56 @@ public final class MacHotkeyMonitor: HotkeyService {
     private func cancelPendingPressToTalkStart() {
         pendingPressToTalkStartTask?.cancel()
         pendingPressToTalkStartTask = nil
+    }
+
+    private func startPressToTalkReleasePolling() {
+        guard pressToTalkReleasePollTask == nil else { return }
+        let generation = callbackGeneration
+        pressToTalkReleasePollTask = Task { @MainActor [weak self] in
+            var consecutiveReleasedPolls = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.pressToTalkReleasePollIntervalNanoseconds)
+                guard !Task.isCancelled,
+                      let self,
+                      self.hasStarted,
+                      self.callbackGeneration == generation,
+                      self.isPressToTalkHeld else {
+                    return
+                }
+                let currentModifiers = Self.currentHardwareModifierFlags()
+                if currentModifiers.contains(self.pressToTalkHotkey.eventFlags) {
+                    consecutiveReleasedPolls = 0
+                    continue
+                }
+                consecutiveReleasedPolls += 1
+                guard consecutiveReleasedPolls >= Self.pressToTalkReleaseConfirmationPolls else {
+                    continue
+                }
+                Self.logger.notice(
+                    "Hold-to-talk release detected by modifier polling; flagsChanged was not delivered (Secure Event Input likely active)"
+                )
+                self.pressToTalkReleasePollTask = nil
+                // Feed the observed state through the normal path so every
+                // gesture handler stays consistent with what a real
+                // flagsChanged event would have produced.
+                self.handleModifierFlags(currentModifiers)
+                return
+            }
+        }
+    }
+
+    private func stopPressToTalkReleasePolling() {
+        pressToTalkReleasePollTask?.cancel()
+        pressToTalkReleasePollTask = nil
+    }
+
+    /// Current modifier state from the window server, independent of event
+    /// delivery (still accurate while Secure Event Input blocks monitors).
+    /// CGEventFlags and NSEvent.ModifierFlags share the same bit layout.
+    private static func currentHardwareModifierFlags() -> NSEvent.ModifierFlags {
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        return NSEvent.ModifierFlags(rawValue: UInt(flags.rawValue))
+            .intersection(.deviceIndependentFlagsMask)
     }
 
     private func handleModifierToggleFlagsChanged(_ modifiers: NSEvent.ModifierFlags) {
