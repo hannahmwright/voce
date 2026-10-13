@@ -3266,14 +3266,33 @@ final class DictationController: ObservableObject {
         let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
 
         pasteboard.clearContents()
+        let clearedChangeCount = pasteboard.changeCount
         guard simulateCommandC() else {
             snapshot.restore(to: pasteboard)
             return nil
         }
 
-        try? await Task.sleep(nanoseconds: 160_000_000)
-        let copied = pasteboard.string(forType: .string)
-        snapshot.restore(to: pasteboard)
+        // Apps answer Cmd+C at different speeds. Poll until the pasteboard
+        // changes and holds text (up to ~500 ms) instead of guessing a delay.
+        var copied: String?
+        var expectedChangeCount = clearedChangeCount
+        for _ in 0..<25 {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let changeCount = pasteboard.changeCount
+            guard changeCount != clearedChangeCount else { continue }
+            expectedChangeCount = changeCount
+            if let text = pasteboard.string(forType: .string) {
+                copied = text
+                break
+            }
+        }
+
+        // Restore the user's clipboard only if it still holds the generation
+        // we cleared or read. Anything newer was written by someone else (the
+        // user copying, or the app writing again) and must not be clobbered.
+        if pasteboard.changeCount == expectedChangeCount {
+            snapshot.restore(to: pasteboard)
+        }
         return copied
     }
 
