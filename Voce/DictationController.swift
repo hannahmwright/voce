@@ -3165,10 +3165,17 @@ final class DictationController: ObservableObject {
         noteLexiconAppliedToRuntime()
         savePreferences()
 
+        // Paste over the word only while it is still selected: the popover
+        // took focus, and if the app moved the caret or dropped the selection
+        // the replacement would land beside the word. The paste helper also
+        // requires the captured field to still be focused. Otherwise (or when
+        // the selection cannot be read back) copy the replacement as before.
+        let selectionIsUnchanged = capture.inputTarget != nil
+            && accessibilitySelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines) == capture.text
         let result = await insertionService.insert(
             text: trimmedReplacement,
             target: capture.appContext,
-            inputTarget: capture.inputTarget
+            inputTarget: selectionIsUnchanged ? capture.inputTarget : nil
         )
         switch result.status {
         case .inserted:
