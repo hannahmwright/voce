@@ -146,12 +146,13 @@ export const createEmailCode = internalMutation({
     const email = normalizeEmail(args.email);
     const now = Date.now();
     // At most MAX_ACTIVE_CODES codes stay valid, including the new one.
-    // Codes that hit the failed-attempt limit are burned so that requesting
-    // a new code clears the lockout.
+    // Codes with any failed attempt are burned so the new code starts with a
+    // full set of attempts (failures are shared across active codes). The
+    // per-email hourly failure cap in consumeEmailCode bounds brute force.
     const usableCodes = await usableCodesNewestFirst(ctx, email, now);
     let keptCodes = 0;
     for (const code of usableCodes) {
-      if (code.attempts >= MAX_CODE_ATTEMPTS || keptCodes >= MAX_ACTIVE_CODES - 1) {
+      if (code.attempts > 0 || keptCodes >= MAX_ACTIVE_CODES - 1) {
         await ctx.db.patch(code._id, { invalidatedAt: now });
       } else {
         keptCodes += 1;
