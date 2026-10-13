@@ -312,6 +312,10 @@ final class DictationController: ObservableObject {
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activeStartTaskID: UUID?
+    /// The start task that is still running, even after a stop or failure
+    /// cleared `activeStartTask`. Only the start task itself clears this, so
+    /// every stop and failure path can wait for setup to settle.
+    private var inFlightStartTask: (id: UUID, task: Task<Void, Never>)?
     private var activePreviewSession: AppleSpeechPreviewSession?
     private var activeRealtimeWhisperSession: OpenAIRealtimeWhisperCaptureSession?
     private var activeCloudUsageMetering: ActiveCloudUsageMetering?
@@ -482,6 +486,9 @@ final class DictationController: ObservableObject {
         overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
         activeStartTask = nil
+        activeStartTaskID = nil
+        inFlightStartTask?.task.cancel()
+        inFlightStartTask = nil
         activeDictationSequence = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
@@ -1907,13 +1914,20 @@ final class DictationController: ObservableObject {
         let startTaskID = UUID()
         activeStartTaskID = startTaskID
         captureReadyOverlayStartTaskID = nil
-        activeStartTask = Task { @MainActor in
+        let startTask = Task { @MainActor in
+            defer {
+                if inFlightStartTask?.id == startTaskID {
+                    inFlightStartTask = nil
+                }
+            }
+            var startMediaToken: MediaInterruptionToken?
             do {
                 try await ensureMicrophonePermission()
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
 
                 if shouldPauseMedia {
-                    activeMediaToken = await mediaInterruption.beginInterruption()
+                    startMediaToken = await mediaInterruption.beginInterruption()
+                    activeMediaToken = startMediaToken
                 }
 
                 status = "Arming microphone..."
@@ -1941,7 +1955,7 @@ final class DictationController: ObservableObject {
                         },
                         onTerminalError: { [weak self] error in
                             Task { @MainActor [weak self] in
-                                self?.handleStreamingFailure(error)
+                                self?.handleStreamingFailure(error, dictationSequence: dictationSequence)
                             }
                         },
                         onAudioLevel: { [weak self, weak overlay] level in
@@ -1967,7 +1981,7 @@ final class DictationController: ObservableObject {
                         onPartialText: { _ in },
                         onTerminalError: { [weak self] error in
                             Task { @MainActor [weak self] in
-                                self?.handleStreamingFailure(error)
+                                self?.handleStreamingFailure(error, dictationSequence: dictationSequence)
                             }
                         },
                         onAudioLevel: { [weak self, weak overlay] level in
@@ -2023,6 +2037,20 @@ final class DictationController: ObservableObject {
                     captureReadyOverlayStartTaskID = startTaskID
                 }
             } catch {
+                // A stop that landed while arming is waiting for this task and
+                // leaves the shared state to it; a newer dictation owns that
+                // state outright, so only this start's own resources are released.
+                let ownsSharedState = activeStartTaskID == startTaskID
+                    || (activeStartTaskID == nil && latestDictationSequence == dictationSequence)
+                guard ownsSharedState else {
+                    if let startMediaToken {
+                        mediaInterruption.endInterruption(token: startMediaToken)
+                        if activeMediaToken == startMediaToken {
+                            activeMediaToken = nil
+                        }
+                    }
+                    return
+                }
                 if let token = activeMediaToken {
                     mediaInterruption.endInterruption(token: token)
                     activeMediaToken = nil
@@ -2061,6 +2089,8 @@ final class DictationController: ObservableObject {
                 activeStartTaskID = nil
             }
         }
+        activeStartTask = startTask
+        inFlightStartTask = (startTaskID, startTask)
     }
 
     private func shouldDisplayStreamingCaptureFeedback(for mode: RecordingMode) -> Bool {
@@ -2084,13 +2114,16 @@ final class DictationController: ObservableObject {
         overlay.updateAudioLevel(level)
     }
 
-    private func handleStreamingFailure(_ error: Error) {
+    private func handleStreamingFailure(_ error: Error, dictationSequence failingSequence: UInt64) {
+        // The error comes from a capture session's callback; once a stop has
+        // claimed that dictation (or a newer one started) the session slots
+        // belong to someone else and must not be torn down here.
+        guard activeDictationSequence == failingSequence else { return }
         let previewSession = activePreviewSession
         let realtimeSession = activeRealtimeWhisperSession
         guard previewSession != nil || realtimeSession != nil else { return }
 
-        let failingSequence = activeDictationSequence
-        let pendingStart = activeStartTask
+        let pendingStart = inFlightStartTask?.task
         activeStartTask = nil
         activeStartTaskID = nil
         activePreviewSession = nil
@@ -2115,38 +2148,49 @@ final class DictationController: ObservableObject {
             previewSession?.cancel()
             realtimeSession?.cancel()
 
-            if let sessionID = currentSessionID, let coordinator {
-                await coordinator.cancel(sessionID: sessionID)
+            // While setup settled, a stop may have claimed this dictation or a
+            // newer dictation may have started; only release state we still own.
+            var sessionToCancel: (id: SessionID, coordinator: SessionCoordinator)?
+            if activeDictationSequence == failingSequence {
+                if let sessionID = currentSessionID, let coordinator {
+                    sessionToCancel = (sessionID, coordinator)
+                }
+                currentSessionID = nil
+                activeDictationSequence = nil
+
+                if let token = activeMediaToken {
+                    mediaInterruption.endInterruption(token: token)
+                    activeMediaToken = nil
+                }
+
+                activeAppContext = nil
+                activeInputTarget = nil
+                overlayPersistenceBundleIdentifier = nil
+                pendingCompletionActionOverride = nil
+                activeStyleOverride = nil
+
+                markRecordingFinished(owner: failingSequence)
             }
-            currentSessionID = nil
-            activeDictationSequence = nil
-
-            if let token = activeMediaToken {
-                mediaInterruption.endInterruption(token: token)
-                activeMediaToken = nil
+            if let sessionToCancel {
+                await sessionToCancel.coordinator.cancel(sessionID: sessionToCancel.id)
             }
 
-            activeAppContext = nil
-            activeInputTarget = nil
-            overlayPersistenceBundleIdentifier = nil
-            pendingCompletionActionOverride = nil
-            activeStyleOverride = nil
-
-            markRecordingFinished(owner: failingSequence)
             clipboardRecoveryPrompt.hide()
-            if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
+            if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false,
+               latestDictationSequence == failingSequence {
                 status = streamingFailureStatusMessage(for: error)
                 lastError = error.localizedDescription
                 overlay.show(state: .failure(message: error.localizedDescription))
                 dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
             }
+            startPendingRecordingAfterAudioSecuredIfNeeded()
             await applyDeferredRebuildIfNeeded()
         }
     }
 
     private func stopSession(mode: RecordingMode) {
         recordStopForResidualStartSuppression(mode: mode)
-        let pendingStart = activeStartTask
+        let pendingStart = inFlightStartTask?.task
         activeStartTask = nil
         activeStartTaskID = nil
 
@@ -2228,6 +2272,18 @@ final class DictationController: ObservableObject {
                 // If stop happens while the microphone is still arming, wait
                 // only until setup either publishes a session ID or fails.
                 await pendingStart?.value
+                // A failed start, a streaming failure or teardown may have
+                // finished this dictation meanwhile, and a newer dictation may
+                // already own the shared state; claim it only if it is still ours.
+                guard let readyDictationSequence,
+                      activeDictationSequence == readyDictationSequence
+                else {
+                    previewSession?.cancel()
+                    realtimeSession?.cancel()
+                    markRecordingFinished(owner: readyDictationSequence)
+                    startPendingRecordingAfterAudioSecuredIfNeeded()
+                    return
+                }
                 // Setup may have created the capture session after this stop
                 // snapshotted the (then empty) session slots.
                 if previewSession == nil, realtimeSession == nil {
@@ -2240,7 +2296,7 @@ final class DictationController: ObservableObject {
                 }
                 coordinator = self.coordinator
                 sessionID = currentSessionID
-                dictationSequence = activeDictationSequence ?? readyDictationSequence
+                dictationSequence = readyDictationSequence
                 preferredCompletionAction = pendingCompletionActionOverride
                 styleOverride = activeStyleOverride
                 mediaToken = activeMediaToken
@@ -2254,7 +2310,6 @@ final class DictationController: ObservableObject {
                 activeStyleOverride = nil
                 activeMediaToken = nil
                 markRecordingFinished(owner: dictationSequence)
-                startPendingRecordingAfterAudioSecuredIfNeeded()
             }
 
             guard let coordinator, let sessionID, let dictationSequence else {
@@ -2268,7 +2323,13 @@ final class DictationController: ObservableObject {
                     overlay.show(state: .failure(message: status))
                     dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
                 }
+                // Only start a queued dictation once this one has fully
+                // released the shared state, so cleanup cannot reset it.
+                startPendingRecordingAfterAudioSecuredIfNeeded()
                 return
+            }
+            if readySessionID == nil {
+                startPendingRecordingAfterAudioSecuredIfNeeded()
             }
             beginBackgroundProcessingSession()
             isBackgroundProcessing = true
@@ -2643,6 +2704,9 @@ final class DictationController: ObservableObject {
 
     private func startPendingRecordingAfterAudioSecuredIfNeeded() {
         guard let mode = pendingStartAfterAudioSecured else { return }
+        // Still finishing the dictation that queued this start; whichever
+        // path completes it calls back here once the state is idle.
+        guard recordingStateMachine.state != .transcribing else { return }
         pendingStartAfterAudioSecured = nil
 
         guard recordingStateMachine.state == .idle else { return }
