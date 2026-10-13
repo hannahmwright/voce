@@ -56,6 +56,50 @@ extension IdleKeyCodeHotkeyRegistration {
     }
 }
 
+/// Result of matching a key press against the configured AI finish keys.
+///
+/// The default AI finish key and "no match" must be distinguishable: the
+/// `onFinishActiveRecordingWithAI` callback receives `nil` to mean "use the
+/// default workflow", so collapsing both into `nil` made the default key
+/// unreachable.
+enum AIFinishHotkeyMatch: Equatable, Sendable {
+    case noMatch
+    case defaultKey
+    case workflow(HandsFreeHotkey)
+
+    /// Argument for `onFinishActiveRecordingWithAI`; `nil` selects the default
+    /// workflow. Only meaningful when the match is not `.noMatch`.
+    var callbackHotkey: HandsFreeHotkey? {
+        switch self {
+        case .noMatch, .defaultKey:
+            return nil
+        case .workflow(let hotkey):
+            return hotkey
+        }
+    }
+
+    static func match(
+        keyCode: UInt16,
+        defaultHotkey: HandsFreeHotkey?,
+        workflowHotkeys: [HandsFreeHotkey]
+    ) -> AIFinishHotkeyMatch {
+        if let matchedCustom = workflowHotkeys.first(where: {
+            if case .keyCode(let customKeyCode) = $0 {
+                return customKeyCode == keyCode
+            }
+            return false
+        }) {
+            return .workflow(matchedCustom)
+        }
+
+        if case .keyCode(let aiKeyCode)? = defaultHotkey, aiKeyCode == keyCode {
+            return .defaultKey
+        }
+
+        return .noMatch
+    }
+}
+
 @MainActor
 private final class CarbonHotkeyRegistrar {
     private nonisolated static let signature: OSType = 0x564F4345 // "VOCE"
@@ -678,31 +722,20 @@ public final class MacHotkeyMonitor: HotkeyService {
             return canSuppress
         }
 
-        if isAIFinishEnabled,
-           let matchedHotkey = matchingAIWorkflowHotkey(for: keyCode) {
-            guard shouldHandleActiveRecordingKey(keyCode) else { return false }
-            onFinishActiveRecordingWithAI?(matchedHotkey)
-            return canSuppress
+        if isAIFinishEnabled {
+            let match = AIFinishHotkeyMatch.match(
+                keyCode: keyCode,
+                defaultHotkey: aiFinishHotkey,
+                workflowHotkeys: aiWorkflowFinishHotkeys
+            )
+            if match != .noMatch {
+                guard shouldHandleActiveRecordingKey(keyCode) else { return false }
+                onFinishActiveRecordingWithAI?(match.callbackHotkey)
+                return canSuppress
+            }
         }
 
         return false
-    }
-
-    private func matchingAIWorkflowHotkey(for keyCode: UInt16) -> HandsFreeHotkey? {
-        if let matchedCustom = aiWorkflowFinishHotkeys.first(where: {
-            if case .keyCode(let customKeyCode) = $0 {
-                return customKeyCode == keyCode
-            }
-            return false
-        }) {
-            return matchedCustom
-        }
-
-        if case .keyCode(let aiKeyCode)? = aiFinishHotkey, aiKeyCode == keyCode {
-            return nil
-        }
-
-        return nil
     }
 
     private func shouldHandleActiveRecordingKey(_ keyCode: UInt16) -> Bool {
@@ -1240,20 +1273,23 @@ public final class MacHotkeyMonitor: HotkeyService {
 
         if ctx.isAIFinishEnabled,
            flags.intersection(userMods).isEmpty,
-           event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
-           let matchedHotkey = matchingAIWorkflowHotkey(
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            let match = AIFinishHotkeyMatch.match(
                 keyCode: keyCode,
                 defaultHotkey: ctx.aiFinishHotkey,
                 workflowHotkeys: ctx.aiWorkflowFinishHotkeys
-           ) {
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    let monitor = ctx.monitor
-                    monitor?.markHandledActiveRecordingKey(keyCode)
+            )
+            if match != .noMatch {
+                let callbackHotkey = match.callbackHotkey
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        let monitor = ctx.monitor
+                        monitor?.markHandledActiveRecordingKey(keyCode)
+                    }
+                    ctx.onAIFinish?(callbackHotkey)
                 }
-                ctx.onAIFinish?(matchedHotkey)
+                return nil
             }
-            return nil
         }
 
         guard let configuredHotkey = ctx.hotkey,
@@ -1298,27 +1334,6 @@ public final class MacHotkeyMonitor: HotkeyService {
     private func markHandledActiveRecordingKey(_ keyCode: UInt16) {
         lastActiveRecordingKeyCode = keyCode
         lastActiveRecordingKeyTime = CFAbsoluteTimeGetCurrent()
-    }
-
-    private nonisolated static func matchingAIWorkflowHotkey(
-        keyCode: UInt16,
-        defaultHotkey: HandsFreeHotkey?,
-        workflowHotkeys: [HandsFreeHotkey]
-    ) -> HandsFreeHotkey? {
-        if let matchedCustom = workflowHotkeys.first(where: {
-            if case .keyCode(let customKeyCode) = $0 {
-                return customKeyCode == keyCode
-            }
-            return false
-        }) {
-            return matchedCustom
-        }
-
-        if case .keyCode(let aiKeyCode)? = defaultHotkey, aiKeyCode == keyCode {
-            return nil
-        }
-
-        return nil
     }
 
     private nonisolated static func matchesSelectionCorrectionHotkey(
