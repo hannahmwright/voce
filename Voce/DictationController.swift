@@ -2648,12 +2648,33 @@ final class DictationController: ObservableObject {
                 }
 
                 let routingBeganAt = clock.now
-                let routedCompletion = try completionRoutingService.route(
-                    finalizedTranscript: finalizedTranscript,
-                    preferredAction: preferredCompletionAction,
-                    leadingPhraseSelectionEnabled: aiRuntimeEnabled && preferences.ai.leadingPhraseSelectionEnabled,
-                    workflows: preferences.ai.workflows
-                )
+                let routedCompletion: RoutedCompletion
+                do {
+                    routedCompletion = try completionRoutingService.route(
+                        finalizedTranscript: finalizedTranscript,
+                        preferredAction: preferredCompletionAction,
+                        leadingPhraseSelectionEnabled: aiRuntimeEnabled && preferences.ai.leadingPhraseSelectionEnabled,
+                        workflows: preferences.ai.workflows
+                    )
+                } catch {
+                    // Routing only picks what to do with the transcript; it
+                    // must never lose it. Fall back to plain insertion (or the
+                    // requested non-AI action) of the finalized transcript.
+                    Self.logger.error(
+                        "Completion routing failed, inserting plain transcript: \(error.localizedDescription, privacy: .public)"
+                    )
+                    let fallbackAction: CompletionAction
+                    if case .aiWorkflow = preferredCompletionAction {
+                        fallbackAction = .insert
+                    } else {
+                        fallbackAction = preferredCompletionAction ?? .insert
+                    }
+                    routedCompletion = RoutedCompletion(
+                        action: fallbackAction,
+                        inputText: finalizedTranscript.cleanText,
+                        selectedBy: .defaultBehavior
+                    )
+                }
                 let routingElapsed = routingBeganAt.duration(to: clock.now)
                 let routingElapsedSeconds = Double(routingElapsed.components.seconds)
                     + Double(routingElapsed.components.attoseconds) / 1_000_000_000_000_000_000
