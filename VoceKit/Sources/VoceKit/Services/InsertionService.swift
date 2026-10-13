@@ -194,6 +194,15 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             || normalized.contains("failed to update focused element text")
     }
 
+    /// Clipboard paste always runs first, by design: it is the only transport
+    /// whose result is positively verified against the exact captured field,
+    /// and its outcome (inserted, unverified, or skipped with the transcript
+    /// left on the clipboard) is final. Direct typing and AX insertion run
+    /// only when the clipboard transport throws, in their configured relative
+    /// order, and never when `exactTargetRequired` is set. The app pins the
+    /// configured order to `[.clipboardPaste, .accessibility, .direct]`
+    /// (`AppPreferences.reliableInsertionOrder`), so there is no user-facing
+    /// ordering preference to honor.
     private func prioritizedTransports(for _: AppContext) -> [any InsertionTransport] {
         var clipboard: [any InsertionTransport] = []
         var others: [any InsertionTransport] = []

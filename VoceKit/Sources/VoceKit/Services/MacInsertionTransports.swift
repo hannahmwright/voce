@@ -473,6 +473,16 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
         }
 
         let element = unsafeDowncast(focusedRef as AnyObject, to: AXUIElement.self)
+
+        // Prefer replacing only the selection: setting AXSelectedText inserts
+        // at the caret like typing and leaves the rest of the field (rich
+        // text formatting, content outside the selection) untouched.
+        // Rewriting the whole AXValue is kept only as a fallback for elements
+        // that do not support it.
+        if Self.insertViaSelectedText(text, into: element) {
+            return
+        }
+
         let composedUpdate = try composeUpdatedValue(for: element, insertion: text)
         let setStatus = AXUIElementSetAttributeValue(
             element,
@@ -493,6 +503,26 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
                 selectionValue
             )
         }
+    }
+
+    /// Returns true when the element accepted the text as its new selected
+    /// text. A success status is trusted (as the whole-value path does):
+    /// re-checking and falling back on an unchanged value could insert the
+    /// text twice in apps that apply the change asynchronously.
+    private static func insertViaSelectedText(_ text: String, into element: AXUIElement) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            &isSettable
+        ) == .success, isSettable.boolValue else {
+            return false
+        }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFTypeRef
+        ) == .success
     }
 
     private struct AccessibilityComposedUpdate {
