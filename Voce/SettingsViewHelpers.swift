@@ -629,6 +629,13 @@ func keyboardShortcutDisplayName(for shortcut: VoceKeyboardShortcut) -> String {
 
 // MARK: - Preferences draft committing
 
+extension Notification.Name {
+    /// Post synchronously on the main thread to push every pending preferences
+    /// draft (and a complete Settings email draft) into the controller right
+    /// away, e.g. before the app quits. Observers handle it synchronously.
+    static let voceFlushPendingPreferenceDrafts = Notification.Name("VoceFlushPendingPreferenceDrafts")
+}
+
 /// Moves a view's local `AppPreferences` draft into the controller without
 /// doing so on every keystroke.
 ///
@@ -660,12 +667,38 @@ final class PreferencesDraftCommitter {
     private var pendingDraft: AppPreferences?
     private var pendingCommitTask: Task<Void, Never>?
     private var lastEditAt: ContinuousClock.Instant?
+    /// Registered on first use rather than in init: SwiftUI re-runs `@State`
+    /// initial-value expressions on every parent re-init and discards the
+    /// extra instances, which shouldn't each register an observer.
+    nonisolated(unsafe) private var flushObserver: NSObjectProtocol?
+
+    deinit {
+        if let flushObserver {
+            NotificationCenter.default.removeObserver(flushObserver)
+        }
+    }
+
+    private func observeFlushRequestsIfNeeded() {
+        guard flushObserver == nil else { return }
+        // queue: nil delivers synchronously on the posting thread, so a flush
+        // posted on main has reached the controller by the time post returns.
+        flushObserver = NotificationCenter.default.addObserver(
+            forName: .voceFlushPendingPreferenceDrafts,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.flush()
+            }
+        }
+    }
 
     /// Call on appear and whenever `controller.preferences` changes. Returns the
     /// value the draft should hold: the controller's value, or a merge of it
     /// with the pending local edits.
     func reconcile(draft: AppPreferences, with controller: DictationController) -> AppPreferences {
         self.controller = controller
+        observeFlushRequestsIfNeeded()
         let remote = controller.preferences
         defer { base = remote }
 
@@ -681,6 +714,7 @@ final class PreferencesDraftCommitter {
     /// Call from the draft's `onChange`.
     func draftDidChange(_ draft: AppPreferences, controller: DictationController) {
         self.controller = controller
+        observeFlushRequestsIfNeeded()
         if base == nil {
             base = controller.preferences
         }
@@ -717,7 +751,8 @@ final class PreferencesDraftCommitter {
         commitPendingDraft()
     }
 
-    /// Commits any pending edit right away.
+    /// Commits any pending edit to the controller right away, synchronously.
+    /// Also triggered by `.voceFlushPendingPreferenceDrafts`.
     func flush() {
         guard pendingDraft != nil else { return }
         commitPendingDraft()
