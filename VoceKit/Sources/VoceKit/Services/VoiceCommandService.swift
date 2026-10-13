@@ -164,9 +164,21 @@ public final class VoiceCommandService: Sendable {
             // Mid-utterance, period/colon fire when the recognizer started a new
             // sentence after them: "the note period I will send it",
             // "Dear team colon Please review". "The trial period ended" does not.
-            if firesAtEnd, Self.sentenceBreakTriggers.contains(trigger), context.nextWordStartsSentence {
-                return !isCompoundNoun(trigger, context: context)
-                    && !(context.previousWord.map { Self.ambiguousGuardWords.contains($0) } ?? false)
+            if firesAtEnd, Self.sentenceBreakTriggers.contains(trigger) {
+                let isLowerConfidenceNoun = isCompoundNoun(trigger, context: context)
+                    || (context.previousWord.map { Self.ambiguousGuardWords.contains($0) } ?? false)
+                // The recognizer started a new sentence after the trigger (a
+                // capitalized or uncased-script word, or a snippet), or appended
+                // its own punctuation to it: "Call me period. Thanks",
+                // "I'm done period, see you".
+                if context.nextWordStartsSentence || context.punctuationDirectlyAfter != nil {
+                    return !isLowerConfidenceNoun
+                }
+                // "Dear team colon please review": a colon closing a short
+                // salutation or heading.
+                if trigger == "colon", context.isAfterShortSalutation {
+                    return !isCompoundNoun(trigger, context: context)
+                }
             }
             return false
 
@@ -336,10 +348,19 @@ public final class VoiceCommandService: Sendable {
         let spaceAndSoftPunctuation = horizontalSpace.union(Self.softPunctuation)
 
         let kind = Self.insertionKind(for: replacement, isBuiltIn: isBuiltIn)
+        var effectiveReplacement = replacement
         switch kind {
         case .closingPunctuation:
             // "how are you, period." → "how are you."
             absorbBefore(spaceAndSoftPunctuation)
+            // When the recognizer already put a comma/semicolon/colon right
+            // after a spoken "period", keep that softer mark rather than
+            // doubling up: "I'm done period, see you" → "I'm done, see you".
+            if replacement == ".", end < nextLimit,
+               let scalar = Unicode.Scalar(text.character(at: end)),
+               CharacterSet(charactersIn: ",;:").contains(scalar) {
+                effectiveReplacement = String(Character(scalar))
+            }
             absorbAfter(Self.softPunctuation)
         case .closingBracket:
             absorbBefore(horizontalSpace)
@@ -371,7 +392,7 @@ public final class VoiceCommandService: Sendable {
         }
         return Edit(
             range: NSRange(location: start, length: end - start),
-            replacement: replacement,
+            replacement: effectiveReplacement,
             trimsPrecedingSpace: trimsPrecedingSpace
         )
     }
@@ -581,9 +602,15 @@ private struct MatchContext {
     var isAtSentenceStart: Bool
     /// The trigger is followed directly by a sentence terminator.
     var isFollowedBySentenceEnd: Bool
-    /// The next word (after spaces only) is capitalized, e.g. the recognizer
-    /// started a new sentence: "…the note period I will…".
+    /// The next word (after spaces only) starts a sentence: it is capitalized
+    /// ("…the note period I will…"), in a script without case (CJK, Hebrew,
+    /// Arabic…), or is a snippet placeholder.
     var nextWordStartsSentence: Bool
+    /// Punctuation attached directly to the trigger ("period." / "period,").
+    var punctuationDirectlyAfter: Character?
+    /// The current sentence is a short salutation/heading before the trigger
+    /// ("Dear team", "Hi all").
+    var isAfterShortSalutation: Bool
 
     init(range: NSRange, in text: NSString) {
         let before = text.substring(to: range.location)
@@ -606,7 +633,19 @@ private struct MatchContext {
         nextWord = (firstAfter.map { $0.isLetter || $0.isNumber } ?? false)
             ? WordTokenizer.words(in: String(afterTrimmed.prefix(64))).first
             : nil
-        nextWordStartsSentence = firstAfter.map { $0.isLetter && $0.isUppercase } ?? false
+        nextWordStartsSentence = firstAfter.map { character in
+            if character.unicodeScalars.first.map({ (0xE000...0xE01F).contains($0.value) }) ?? false {
+                return true
+            }
+            return character.isLetter && (character.isUppercase || !character.isCased)
+        } ?? false
+        punctuationDirectlyAfter = after.first.flatMap { ".,;:!?".contains($0) ? $0 : nil }
+
+        let sentenceStart = beforeTrimmed.lastIndex(where: { ".!?\n".contains($0) })
+            .map { beforeTrimmed.index(after: $0) } ?? beforeTrimmed.startIndex
+        let sentenceWords = WordTokenizer.words(in: String(beforeTrimmed[sentenceStart...]))
+        isAfterShortSalutation = sentenceWords.count <= 4
+            && (sentenceWords.first.map { ["dear", "hi", "hello", "hey", "greetings", "to"].contains($0) } ?? false)
     }
 }
 
