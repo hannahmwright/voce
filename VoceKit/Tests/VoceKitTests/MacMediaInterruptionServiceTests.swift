@@ -2818,4 +2818,77 @@ func newInterruptionDetectsAfreshWhenOwnerResumedManually() async {
     #expect(detector.detectCalls == 4, "An audible owner must trigger fresh detection instead of inheriting.")
     #expect(await spotify.pauseCalls == 2, "Manually resumed media must be paused for the new dictation.")
 }
+@MainActor
+@Test("Inherited pause is restored when fresh detection after an audible owner finds nothing")
+func inheritedPauseFallbackWhenFreshDetectionFindsNothing() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([], fallbackState: .paused)
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying],
+        fallback: .notPlaying,
+        fallbackDisplayID: MediaDisplayID.spotify
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        // A false-positive audibility signal: Spotify looks audible, but the
+        // media is still paused by Voce.
+        audibleProcessBundleIDs: { ["com.spotify.client"] },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    guard let secondToken = await service.beginInterruption() else {
+        Issue.record("Fresh detection found nothing to pause; the pending pause must be inherited.")
+        return
+    }
+    #expect(detector.detectCalls == 3, "Audible owner triggers one fresh detection.")
+    #expect(await spotify.pauseCalls == 1)
+
+    service.endInterruption(token: secondToken)
+    let didResume = await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "Media paused by the first dictation must still resume.")
+}
+
+@MainActor
+@Test("Shared WebKit audio does not make Safari look audible while Safari is not running")
+func sharedWebKitAudioDoesNotMakeSafariAudibleWhenNotRunning() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let safari = FakeChromePlaybackController([], fallbackState: .paused, pauseSucceeds: true)
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying],
+        fallback: .notPlaying,
+        fallbackDisplayID: MediaDisplayID.safari
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        playbackControllerOverrides: [.safari: safari],
+        sendPlayPauseKey: { keyRecorder.send() },
+        audibleProcessBundleIDs: { ["com.apple.WebKit.GPU"] },
+        isApplicationRunning: { $0 != "com.apple.Safari" },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Safari playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    let secondToken = await service.beginInterruption()
+    #expect(secondToken != nil)
+    #expect(detector.detectCalls == 2, "Another app's WebKit audio must not discard the inherited pause.")
+}
 #endif

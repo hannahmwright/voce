@@ -142,8 +142,16 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         return blockedMediaDisplayIDs.contains { lowered.hasPrefix($0.lowercased()) }
     }
 
-    private static func ownerIsAudible(_ owner: InterruptedPlaybackOwner, in bundleIDs: [String]) -> Bool {
-        let prefixes = audibleBundleIDOwnerPrefixes.filter { $0.owner == owner }.map(\.prefix)
+    /// Whether `owner` is among the audible processes. The shared WebKit
+    /// helper only counts for Safari while Safari is running (the same gate as
+    /// owner identification); otherwise any WKWebView app's audio would make
+    /// Safari look audible.
+    private func ownerIsAudible(_ owner: InterruptedPlaybackOwner, in bundleIDs: [String]) -> Bool {
+        var prefixes = Self.audibleBundleIDOwnerPrefixes.filter { $0.owner == owner }.map(\.prefix)
+        if prefixes.contains(Self.sharedWebKitHelperPrefix),
+           !isApplicationRunning(Self.safariDisplayID) {
+            prefixes.removeAll { $0 == Self.sharedWebKitHelperPrefix }
+        }
         return bundleIDs.contains { candidate in
             let lowered = candidate.lowercased()
             return prefixes.contains { lowered.hasPrefix($0) }
@@ -380,10 +388,11 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             var canInheritPause = resumeAttemptID != nil
                 && !resumeCommandIssued
                 && interruptedPlaybackResumeStrategy != nil
+            var inheritableFallback: InheritablePauseState?
             if canInheritPause,
                let owner = interruptedPlaybackOwnerForResume,
                let audibleNow = audibleProcessBundleIDs(),
-               Self.ownerIsAudible(owner, in: audibleNow) {
+               ownerIsAudible(owner, in: audibleNow) {
                 // The user resumed the media themselves during the previous
                 // dictation. It is playing now, so inheriting the old pause
                 // would leave it playing through this dictation; detect afresh.
@@ -391,6 +400,15 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     "Media interruption not inheriting pending-resume pause because \(owner.logValue, privacy: .public) is audible."
                 )
                 canInheritPause = false
+                // Audibility can be a false positive (another process sharing
+                // the owner's helper). If fresh detection then finds nothing to
+                // pause, the media is most likely still paused by Voce, so
+                // fall back to inheriting this state rather than never resuming.
+                inheritableFallback = InheritablePauseState(
+                    resumeStrategy: interruptedPlaybackResumeStrategy,
+                    owner: interruptedPlaybackOwnerForResume,
+                    pauseSentAtUptimeNanoseconds: pauseSentAtUptimeNanoseconds
+                )
             }
             resumeAttemptID = nil
             resumeCommandIssued = false
@@ -409,10 +427,40 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 )
                 return token
             }
-            // The previous resume already issued a play command; its state is stale.
+            // The previous resume already issued a play command (or the owner
+            // is audible again); its state is stale.
             clearInterruptedPlaybackState()
+
+            if let inheritableFallback {
+                if let freshToken = await beginFreshInterruption(token: token) {
+                    return freshToken
+                }
+                guard activeTokens.isEmpty, interruptedPlaybackResumeStrategy == nil else {
+                    return nil
+                }
+                activeTokens.insert(token.id)
+                interruptedPlaybackResumeStrategy = inheritableFallback.resumeStrategy
+                interruptedPlaybackOwnerForResume = inheritableFallback.owner
+                pauseSentAtUptimeNanoseconds = inheritableFallback.pauseSentAtUptimeNanoseconds
+                Self.logger.notice(
+                    "Media interruption fresh detection found nothing to pause; inheriting the pending-resume pause after all."
+                )
+                return token
+            }
         }
 
+        return await beginFreshInterruption(token: token)
+    }
+
+    private struct InheritablePauseState {
+        let resumeStrategy: InterruptedPlaybackResumeStrategy?
+        let owner: InterruptedPlaybackOwner?
+        let pauseSentAtUptimeNanoseconds: UInt64?
+    }
+
+    /// Detects current playback and pauses it, returning a token when an
+    /// interruption became active.
+    private func beginFreshInterruption(token: MediaInterruptionToken) async -> MediaInterruptionToken? {
         let detection = await playbackDetector.detect()
         let interruptedApplicationDisplayID = playbackDetector.lastDetectedDisplayID
         let audibleBundleIDs = audibleProcessBundleIDs()
@@ -580,7 +628,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
                 }
                 var postPauseDetection = await playbackDetector.detect()
-                var pauseVerified = Self.weakPauseVerified(
+                var pauseVerified = weakPauseVerified(
                     detection: postPauseDetection,
                     owner: interruptedPlaybackOwner,
                     audibleBundleIDs: audibleProcessBundleIDs()
@@ -588,7 +636,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                 if !pauseVerified, escalatesToMediaKeyOnUnverifiedCommand {
                     // Confirm before toggling; see `confirmingDetection()`.
                     postPauseDetection = await confirmingDetection()
-                    pauseVerified = Self.weakPauseVerified(
+                    pauseVerified = weakPauseVerified(
                         detection: postPauseDetection,
                         owner: interruptedPlaybackOwner,
                         audibleBundleIDs: audibleProcessBundleIDs()
@@ -604,7 +652,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                             try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
                         }
                         postPauseDetection = await playbackDetector.detect()
-                        pauseVerified = Self.weakPauseVerified(
+                        pauseVerified = weakPauseVerified(
                             detection: postPauseDetection,
                             owner: interruptedPlaybackOwner,
                             audibleBundleIDs: audibleProcessBundleIDs()
@@ -815,7 +863,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         case .likelyPlaying:
             if let owner = interruptedPlaybackOwnerForResume,
                let audibleNow = audibleProcessBundleIDs(),
-               !Self.ownerIsAudible(owner, in: audibleNow) {
+               !ownerIsAudible(owner, in: audibleNow) {
                 Self.logger.notice(
                     """
                     Media interruption resume proceeding despite weak active detection because \
@@ -837,7 +885,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             // otherwise paused media would never come back.
             if let owner = interruptedPlaybackOwnerForResume,
                let audibleNow = audibleProcessBundleIDs(),
-               !Self.ownerIsAudible(owner, in: audibleNow) {
+               !ownerIsAudible(owner, in: audibleNow) {
                 Self.logger.notice(
                     """
                     Media interruption resume proceeding despite unknown detection because \
@@ -866,7 +914,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         guard !Task.isCancelled, activeTokens.isEmpty else { return }
         if let owner = interruptedPlaybackOwnerForResume,
            let audibleNow = audibleProcessBundleIDs(),
-           Self.ownerIsAudible(owner, in: audibleNow) {
+           ownerIsAudible(owner, in: audibleNow) {
             // Ground truth: the interrupted app is emitting audio again. Do not press
             // the media key — that would pause it right back.
             Self.logger.notice(
@@ -884,7 +932,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             guard !Task.isCancelled, activeTokens.isEmpty else { return }
             if let owner = interruptedPlaybackOwnerForResume,
                let audibleNow = audibleProcessBundleIDs(),
-               Self.ownerIsAudible(owner, in: audibleNow) {
+               ownerIsAudible(owner, in: audibleNow) {
                 Self.logger.notice(
                     "Media interruption resume verified because \(owner.logValue, privacy: .public) is audible again."
                 )
@@ -1027,7 +1075,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     /// stopped, or when CoreAudio proves the owner's process stopped emitting audio.
     /// The second signal matters on macOS 15.4+ where MediaRemote's post-pause
     /// representation can stay ambiguous for non-entitled processes.
-    private static func weakPauseVerified(
+    private func weakPauseVerified(
         detection: PlaybackDetectionResult,
         owner: InterruptedPlaybackOwner,
         audibleBundleIDs: [String]?
