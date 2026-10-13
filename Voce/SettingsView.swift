@@ -431,6 +431,7 @@ struct SettingsView: View {
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
                 onRequestAccessCode: requestAccessCodeForSettingsEmail,
                 onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
+                onSaveEmail: saveSubscriberEmail,
                 onSubscribeBase: { cycle in
                     controller.openVoceCheckout(plan: .base, billingCycle: cycle)
                 },
@@ -451,6 +452,7 @@ struct SettingsView: View {
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
                 onRequestAccessCode: requestAccessCodeForSettingsEmail,
                 onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
+                onSaveEmail: saveSubscriberEmail,
                 onSubscribeBase: { cycle in
                     controller.openVoceCheckout(plan: .base, billingCycle: cycle)
                 },
@@ -535,12 +537,22 @@ struct SettingsView: View {
         }
     }
 
+    // These read the controller rather than the draft: the access section
+    // saves a just-typed email through saveSubscriberEmail first, which
+    // updates the controller synchronously.
     private func requestAccessCodeForSettingsEmail() {
-        onRequestAccessCode(preferencesDraft.billing.subscriberEmail)
+        onRequestAccessCode(controller.preferences.billing.subscriberEmail)
     }
 
     private func verifyAccessCodeForSettingsEmail() {
-        onVerifyAccessCode(preferencesDraft.billing.subscriberEmail)
+        onVerifyAccessCode(controller.preferences.billing.subscriberEmail)
+    }
+
+    private func saveSubscriberEmail(_ email: String) {
+        var snapshot = preferencesDraft
+        snapshot.billing.subscriberEmail = email
+        preferencesDraft = snapshot
+        draftCommitter.commitImmediately(snapshot, controller: controller)
     }
 
     private var settingsHoldToTalkLabel: String {

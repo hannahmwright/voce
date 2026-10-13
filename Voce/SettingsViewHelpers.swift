@@ -702,6 +702,19 @@ final class PreferencesDraftCommitter {
         }
     }
 
+    /// Commits `draft` right away, bypassing the quiet period, for edits that a
+    /// following action depends on (e.g. saving the subscriber email before
+    /// requesting an access code). The owner should also assign `draft` to its
+    /// draft state; the resulting `onChange` then finds nothing left to commit.
+    func commitImmediately(_ draft: AppPreferences, controller: DictationController) {
+        self.controller = controller
+        if base == nil {
+            base = controller.preferences
+        }
+        pendingDraft = draft
+        commitPendingDraft()
+    }
+
     /// Commits any pending edit right away.
     func flush() {
         guard pendingDraft != nil else { return }
