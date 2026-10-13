@@ -997,6 +997,8 @@ public final class MacHotkeyMonitor: HotkeyService {
         let generation = callbackGeneration
         pressToTalkReleasePollTask = Task { @MainActor [weak self] in
             var consecutiveReleasedPolls = 0
+            var hasObservedChordHeld = false
+            var pollsWithoutObservingChord = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: Self.pressToTalkReleasePollIntervalNanoseconds)
                 guard !Task.isCancelled,
@@ -1008,7 +1010,22 @@ public final class MacHotkeyMonitor: HotkeyService {
                 }
                 let currentModifiers = Self.currentHardwareModifierFlags()
                 if currentModifiers.contains(self.pressToTalkHotkey.eventFlags) {
+                    hasObservedChordHeld = true
                     consecutiveReleasedPolls = 0
+                    continue
+                }
+                guard hasObservedChordHeld else {
+                    // The polled state has not shown the chord held yet. It
+                    // may never reflect it (Fn/Globe, Sticky Keys), and a
+                    // "released" reading would then end every hold early, so
+                    // give up polling for this gesture and rely on
+                    // flagsChanged alone.
+                    pollsWithoutObservingChord += 1
+                    if pollsWithoutObservingChord >= Self.pressToTalkReleaseConfirmationPolls {
+                        Self.logger.debug("Hold-to-talk modifier polling stopped: polled state never showed the chord held")
+                        self.pressToTalkReleasePollTask = nil
+                        return
+                    }
                     continue
                 }
                 consecutiveReleasedPolls += 1
