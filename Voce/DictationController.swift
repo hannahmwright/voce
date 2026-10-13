@@ -3572,10 +3572,30 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Whether the active capture has used `limitSeconds`, measured the way
+    /// it is billed: wall clock from capture start, rounded up to a whole
+    /// second. Checking at the 1 Hz tick then stops at or just before the
+    /// allowance instead of up to a few seconds past it.
+    private func usageLimitReached(_ limitSeconds: TimeInterval) -> Bool {
+        let elapsed: TimeInterval
+        if let meter = activeCaptureUsageMeter,
+           meter.dictationSequence == activeDictationSequence {
+            elapsed = Self.seconds(meter.startedAt.duration(to: .now))
+        } else {
+            elapsed = recordingElapsed
+        }
+        return elapsed.rounded(.up) >= limitSeconds
+    }
+
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
     private func stopIfFreeUsageLimitReached() {
         guard let activeFreeUsageLimitSeconds,
               activeFreeUsageLimitSeconds > 0,
-              recordingElapsed >= activeFreeUsageLimitSeconds,
+              usageLimitReached(activeFreeUsageLimitSeconds),
               isRecording
         else {
             return
@@ -3588,7 +3608,7 @@ final class DictationController: ObservableObject {
     private func stopIfHostedCloudUsageLimitReached() {
         guard let activeHostedCloudUsageLimitSeconds,
               activeHostedCloudUsageLimitSeconds > 0,
-              recordingElapsed >= activeHostedCloudUsageLimitSeconds,
+              usageLimitReached(activeHostedCloudUsageLimitSeconds),
               isRecording
         else {
             return
@@ -3660,9 +3680,7 @@ final class DictationController: ObservableObject {
         else { return }
         activeCaptureUsageMeter = nil
 
-        let elapsed = meter.startedAt.duration(to: .now)
-        let seconds = Double(elapsed.components.seconds)
-            + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+        let seconds = Self.seconds(meter.startedAt.duration(to: .now))
         guard seconds > 0 else { return }
 
         accumulateRecordingSeconds(seconds)
