@@ -22,6 +22,29 @@ func pendingUsageReportsCoalesce() {
     #expect(Set(queue.reports.map(\.id)).count == 3)
 }
 
+@Test("Coalesced usage reports never exceed the backend's per-report cap")
+func pendingUsageReportsSplitAtCap() {
+    let cap = PendingUsageReportQueue.maximumReportSeconds
+    let now = Date()
+    var queue = PendingUsageReportQueue()
+
+    // A long offline stretch: the open report fills up, then new ones start.
+    queue.enqueue(email: "a@example.com", feature: "app", seconds: cap - 100, now: now)
+    queue.enqueue(email: "a@example.com", feature: "app", seconds: 300, now: now)
+    #expect(queue.reports.map(\.seconds) == [cap, 200])
+
+    // A single amount larger than the cap is split across reports.
+    queue.enqueue(email: "a@example.com", feature: "app", seconds: 2 * cap + 50, now: now)
+    #expect(queue.reports.map(\.seconds) == [cap, cap, cap, 250])
+    #expect(queue.reports.reduce(0) { $0 + $1.seconds } == 3 * cap + 250)
+    #expect(Set(queue.reports.map(\.id)).count == 4)
+    #expect(queue.reports.allSatisfy { $0.seconds <= cap })
+
+    // Other features are unaffected.
+    queue.enqueue(email: "a@example.com", feature: "cloud", seconds: 5, now: now)
+    #expect(queue.reports.last?.seconds == 5)
+}
+
 @Test("Usage reports ignore empty input")
 func pendingUsageReportsIgnoreEmptyInput() {
     var queue = PendingUsageReportQueue()

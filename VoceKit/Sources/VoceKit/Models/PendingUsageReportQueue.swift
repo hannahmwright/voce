@@ -65,17 +65,29 @@ public struct PendingUsageReportQueue: Sendable, Codable, Equatable {
         reports.isEmpty
     }
 
+    /// The backend records at most this much per report (it clamps larger
+    /// values), so a merged report must never exceed it or the excess is lost.
+    public static let maximumReportSeconds = 14_400
+
     /// Adds `seconds` for `email`/`feature`, merging with a queued report
-    /// whose send has not started yet.
+    /// whose send has not started yet. Seconds that would push a report past
+    /// `maximumReportSeconds` go into new reports.
     public mutating func enqueue(email: String, feature: String, seconds: Int, now: Date) {
         guard !email.isEmpty, !feature.isEmpty, seconds > 0 else { return }
 
+        var remaining = seconds
         if let index = reports.firstIndex(where: {
             $0.email == email && $0.feature == feature && !$0.sendStarted
+                && $0.seconds < Self.maximumReportSeconds
         }) {
-            reports[index].seconds += seconds
-        } else {
-            reports.append(Report(email: email, feature: feature, seconds: seconds, firstQueuedAt: now))
+            let added = min(remaining, Self.maximumReportSeconds - reports[index].seconds)
+            reports[index].seconds += added
+            remaining -= added
+        }
+        while remaining > 0 {
+            let chunk = min(remaining, Self.maximumReportSeconds)
+            reports.append(Report(email: email, feature: feature, seconds: chunk, firstQueuedAt: now))
+            remaining -= chunk
         }
     }
 
