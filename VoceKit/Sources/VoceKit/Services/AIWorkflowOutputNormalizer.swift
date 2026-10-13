@@ -92,7 +92,7 @@ public enum AIWorkflowOutputNormalizer {
            isPreambleCandidate(
                firstLine,
                vocabulary: vocabulary,
-               endsWithColon: firstLine.trimmingCharacters(in: .whitespaces).hasSuffix(":")
+               preambleEndsLine: firstLine.trimmingCharacters(in: .whitespaces).hasSuffix(":")
            ),
            !inputStarts(with: firstLine, input: input) {
             let remainder = lines
@@ -120,7 +120,10 @@ public enum AIWorkflowOutputNormalizer {
             return nil
         }
 
-        guard isPreambleCandidate(prefix, vocabulary: vocabulary, endsWithColon: true), !inputStarts(with: prefix, input: input) else {
+        // Does the preamble end its line ("…version:\n…" or nothing after)?
+        let afterColon = text[text.index(after: separator)...].drop { $0 == " " || $0 == "\t" }
+        let endsLine = afterColon.isEmpty || afterColon.first?.isNewline == true
+        guard isPreambleCandidate(prefix, vocabulary: vocabulary, preambleEndsLine: endsLine), !inputStarts(with: prefix, input: input) else {
             return nil
         }
 
@@ -145,7 +148,11 @@ public enum AIWorkflowOutputNormalizer {
     /// - "[Sure, ]here's [the|a|your] [up to three words] <label | modifier noun>
     ///   [of <up to three words>]": "Here is the rewritten email"
     /// - an acknowledgement: "Sure, I can do that.", "Certainly!"
-    private static func isPreambleCandidate(_ text: String, vocabulary: Vocabulary, endsWithColon: Bool) -> Bool {
+    /// - Parameter preambleEndsLine: The candidate ends with a colon that ends
+    ///   its line. Bare-noun forms ("Here's a friendlier version:", "Here's the
+    ///   email:") are only preambles then; "Here's the new version: it adds
+    ///   dark mode." is content.
+    private static func isPreambleCandidate(_ text: String, vocabulary: Vocabulary, preambleEndsLine: Bool) -> Bool {
         let normalized = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ":.!"))
@@ -163,13 +170,13 @@ public enum AIWorkflowOutputNormalizer {
         let here = #"(?:here(?:'|\x{2019})s|here is|below is)"#
         let ofPhrase = #"(?:\s+of\s+(?:(?:the|your|this|my|our)\s+)?[\p{L}-]+(?:\s+[\p{L}-]+){0,2})?"#
         var heads = ["(?:\(here)\\s+(?:(?:the|a|an|your)\\s+)?(?:[\\p{L}-]+\\s+){0,3}?(?:\(labels)|\(modifiedNoun)))"]
-        if !vocabulary.bareNouns.isEmpty {
+        if preambleEndsLine, !vocabulary.bareNouns.isEmpty {
             // "Here's a more professional version" (not "Here's my text").
             heads.append(
                 "(?:\(here)\\s+(?:(?:the|a|an|your)\\s+)?(?!(?:my|our)\\b)(?:[\\p{L}-]+\\s+){0,3}?(?:\(alternatives(vocabulary.bareNouns))))"
             )
         }
-        if endsWithColon, !vocabulary.colonOnlyNouns.isEmpty {
+        if preambleEndsLine, !vocabulary.colonOnlyNouns.isEmpty {
             heads.append("(?:\(here)\\s+(?:the|your)\\s+(?:\(alternatives(vocabulary.colonOnlyNouns))))")
         }
         heads.append("(?:\(labels))")
