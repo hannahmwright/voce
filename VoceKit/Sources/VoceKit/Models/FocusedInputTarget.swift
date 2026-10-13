@@ -141,11 +141,15 @@ enum FocusedInputTargetPolicy {
 /// call, so an unresponsive target app could freeze Voce for many seconds
 /// across the several reads a capture or paste verification performs.
 /// Setting the timeout on the system-wide element sets the process-wide
-/// default for every element. 1 second leaves headroom for slow but healthy
-/// responders (large text values, Chromium building its AX tree on first
-/// access) while still bounding a hung app.
+/// default for every element, including the app's selection capture and
+/// overlay anchoring. 2 seconds leaves headroom for slow but healthy
+/// responders (large text values, Chromium/Electron building their AX tree
+/// on first access) while still bounding a hung app well below the default.
+/// Focused-element capture additionally retries once on
+/// `kAXErrorCannotComplete`, the error a timed-out or still-initializing
+/// responder returns.
 enum AccessibilityMessaging {
-    static let timeoutSeconds: Float = 1.0
+    static let timeoutSeconds: Float = 2.0
 
     static func systemWideElement() -> AXUIElement {
         let systemWide = AXUIElementCreateSystemWide()
@@ -217,7 +221,7 @@ public final class FocusedInputTarget: @unchecked Sendable {
             return nil
         }
 
-        guard let element = currentFocusedElement() else {
+        guard let element = currentFocusedElement(retryOnCannotComplete: true) else {
             recordCaptureFailure("focused_element_unavailable")
             return nil
         }
@@ -357,14 +361,25 @@ public final class FocusedInputTarget: @unchecked Sendable {
         CFEqual(element, candidate)
     }
 
-    private static func currentFocusedElement() -> AXUIElement? {
+    private static func currentFocusedElement(retryOnCannotComplete: Bool = false) -> AXUIElement? {
         let systemWide = AccessibilityMessaging.systemWideElement()
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
+        var status = AXUIElementCopyAttributeValue(
             systemWide,
             kAXFocusedUIElementAttribute as CFString,
             &focusedRef
-        ) == .success,
+        )
+        if status == .cannotComplete, retryOnCannotComplete {
+            // Chromium/Electron can time out the first query while building
+            // their accessibility tree; the second query usually succeeds.
+            focusedRef = nil
+            status = AXUIElementCopyAttributeValue(
+                systemWide,
+                kAXFocusedUIElementAttribute as CFString,
+                &focusedRef
+            )
+        }
+        guard status == .success,
         let focusedRef,
         CFGetTypeID(focusedRef) == AXUIElementGetTypeID() else {
             return nil
