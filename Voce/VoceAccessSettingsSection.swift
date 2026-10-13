@@ -10,6 +10,9 @@ struct VoceAccessSettingsSection: View {
     let onRefreshEntitlement: () -> Void
     let onRequestAccessCode: () -> Void
     let onVerifyAccessCode: () -> Void
+    /// Persists a new subscriber email immediately (not through the debounced
+    /// draft), so actions that follow see it.
+    let onSaveEmail: (String) -> Void
     let onSubscribeBase: (VoceCheckoutBillingCycle) -> Void
     let onSubscribePro: (VoceCheckoutBillingCycle) -> Void
     let onManageSubscription: () -> Void
@@ -17,8 +20,49 @@ struct VoceAccessSettingsSection: View {
     let onResetAccessSession: () -> Void
     #endif
     @State private var selectedBillingCycle: VoceCheckoutBillingCycle = .monthly
+    @State private var emailDraft = ""
+    @FocusState private var emailFieldIsFocused: Bool
+    @Environment(\.voceTabIsActive) private var tabIsActive
 
     var body: some View {
+        accessCard
+            .onAppear {
+                emailDraft = preferences.billing.subscriberEmail
+            }
+            .onChange(of: preferences.billing.subscriberEmail) { _, savedEmail in
+                // Follow saves made elsewhere (the access prompt, normalization)
+                // unless the user is mid-edit.
+                if !emailFieldIsFocused {
+                    emailDraft = savedEmail
+                }
+            }
+            .onChange(of: emailFieldIsFocused) { _, isFocused in
+                guard !isFocused else { return }
+                // A hidden Settings tab can lose focus to another tab's
+                // field; treat that as leaving, not as finishing the edit.
+                if tabIsActive {
+                    commitEmailDraft()
+                } else {
+                    commitEmailDraftIfComplete()
+                }
+            }
+            .onChange(of: tabIsActive) { _, isActive in
+                if !isActive {
+                    commitEmailDraftIfComplete()
+                }
+            }
+            .onDisappear {
+                commitEmailDraftIfComplete()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .voceFlushPendingPreferenceDrafts)) { _ in
+                commitEmailDraftIfComplete()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                commitEmailDraftIfComplete()
+            }
+    }
+
+    private var accessCard: some View {
         settingsCard("Access") {
             VStack(alignment: .leading, spacing: VoceDesign.lg) {
                 accessStatusCard
@@ -30,10 +74,18 @@ struct VoceAccessSettingsSection: View {
                     )
 
                     HStack(alignment: .center, spacing: VoceDesign.sm) {
-                        TextField("email@example.com", text: $preferences.billing.subscriberEmail)
+                        // Edits a local draft: writing straight into the shared
+                        // preferences normalized (lowercased) and saved on every
+                        // keystroke, started an entitlement check per character,
+                        // and made the cursor jump.
+                        TextField("email@example.com", text: $emailDraft)
                             .textFieldStyle(.plain)
                             .settingsInputChrome()
                             .frame(maxWidth: 460)
+                            .focused($emailFieldIsFocused)
+                            .onSubmit {
+                                commitEmailDraft()
+                            }
 
                         accessButton(
                             primaryAccessButtonTitle,
@@ -159,9 +211,9 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         proButtonTitle,
                         systemImage: "cloud.fill",
-                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isEnabled: draftEmailIsComplete,
                         isProminent: true,
-                        action: { onSubscribePro(selectedBillingCycle) }
+                        action: { subscribe(onSubscribePro) }
                     )
                 }
             } else {
@@ -169,17 +221,17 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         baseButtonTitle,
                         systemImage: "mic.fill",
-                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isEnabled: draftEmailIsComplete,
                         isProminent: false,
-                        action: { onSubscribeBase(selectedBillingCycle) }
+                        action: { subscribe(onSubscribeBase) }
                     )
 
                     accessButton(
                         proButtonTitle,
                         systemImage: "cloud.fill",
-                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isEnabled: draftEmailIsComplete,
                         isProminent: true,
-                        action: { onSubscribePro(selectedBillingCycle) }
+                        action: { subscribe(onSubscribePro) }
                     )
                 }
             }
@@ -259,6 +311,7 @@ struct VoceAccessSettingsSection: View {
                     }
                     .onSubmit {
                         if canVerifyCode {
+                            commitEmailDraft()
                             onVerifyAccessCode()
                         }
                     }
@@ -269,10 +322,14 @@ struct VoceAccessSettingsSection: View {
                     showsSpinner: isAuthWorking,
                     isEnabled: canVerifyCode,
                     isProminent: true,
-                    action: onVerifyAccessCode
+                    action: {
+                        commitEmailDraft()
+                        onVerifyAccessCode()
+                    }
                 )
 
                 Button {
+                    commitEmailDraft()
                     onRequestAccessCode()
                 } label: {
                     Text(didSendVerificationCode ? "Send a new code" : "Send code")
@@ -318,6 +375,7 @@ struct VoceAccessSettingsSection: View {
                 Spacer(minLength: 0)
 
                 Button("Reset code login") {
+                    commitEmailDraft()
                     onResetAccessSession()
                 }
                 .buttonStyle(.plain)
@@ -341,10 +399,60 @@ struct VoceAccessSettingsSection: View {
 
     // MARK: - Helpers
 
+    /// The email as currently typed, normalized the way it will be saved.
     private var normalizedSubscriberEmail: String {
-        preferences.billing.subscriberEmail
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        Self.normalizedEmail(emailDraft)
+    }
+
+    /// Subscribe is available once the field holds a complete-looking address
+    /// (saved or not); the action saves it before opening checkout. Gating on
+    /// the saved email instead let Subscribe save "bob@" or an empty field, and
+    /// kept a new user who hadn't pressed Return from subscribing at all.
+    private var draftEmailIsComplete: Bool {
+        Self.looksLikeCompleteEmail(normalizedSubscriberEmail)
+    }
+
+    private func subscribe(_ openCheckout: (VoceCheckoutBillingCycle) -> Void) {
+        guard draftEmailIsComplete else { return }
+        commitEmailDraft()
+        openCheckout(selectedBillingCycle)
+    }
+
+    private var savedSubscriberEmail: String {
+        Self.normalizedEmail(preferences.billing.subscriberEmail)
+    }
+
+    private static func normalizedEmail(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// Saves the typed email if it differs from the stored one. Called on
+    /// submit, blur, and before any action that relies on the saved email.
+    private func commitEmailDraft() {
+        let email = normalizedSubscriberEmail
+        if email != savedSubscriberEmail {
+            onSaveEmail(email)
+        }
+        // Show what was saved (trimmed, lowercased), not the typed casing.
+        if emailDraft != email {
+            emailDraft = email
+        }
+    }
+
+    /// Leaving Settings mid-edit saves a complete-looking address (the user
+    /// most likely meant it) but leaves a half-typed one in the field unsaved.
+    /// Saving it would fail the entitlement check and greet the user with the
+    /// access prompt on whatever tab they went to.
+    private func commitEmailDraftIfComplete() {
+        guard Self.looksLikeCompleteEmail(normalizedSubscriberEmail) else { return }
+        commitEmailDraft()
+    }
+
+    private static func looksLikeCompleteEmail(_ email: String) -> Bool {
+        let parts = email.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty else { return false }
+        let domain = parts[1]
+        return domain.contains(".") && !domain.hasPrefix(".") && !domain.hasSuffix(".")
     }
 
     private var isEntitled: Bool {
@@ -419,6 +527,7 @@ struct VoceAccessSettingsSection: View {
     }
 
     private func primaryAccessButtonAction() {
+        commitEmailDraft()
         if shouldSendCodeFromPrimaryButton {
             onRequestAccessCode()
         } else {

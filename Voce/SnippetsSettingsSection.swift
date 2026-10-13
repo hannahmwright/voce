@@ -8,6 +8,7 @@ struct SnippetsSettingsSection: View {
 
     @State private var snippetSuggestions: [SnippetSuggestion] = []
     @State private var editingSnippet: SnippetEditDraft?
+    @Environment(\.voceTabIsActive) private var tabIsActive
 
     private var builtInCommands: [VoiceCommand] {
         preferences.voiceCommands.filter(\.isBuiltIn)
@@ -44,7 +45,12 @@ struct SnippetsSettingsSection: View {
                 builtInSection
             }
         }
-        .task { await refreshSnippetSuggestions() }
+        // The Snippets tab stays mounted while hidden, so a plain .task would
+        // fetch once at launch and never again; refresh each time it's shown.
+        .task(id: tabIsActive) {
+            guard tabIsActive else { return }
+            await refreshSnippetSuggestions()
+        }
         .overlay {
             if let draft = editingSnippet {
                 SnippetEditSheet(

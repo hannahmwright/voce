@@ -4,6 +4,7 @@ import VoceKit
 struct SettingsView: View {
     @EnvironmentObject private var controller: DictationController
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let initialLaunchTarget: SettingsLaunchTarget?
     private let isActive: Bool
     @Binding private var accessVerificationCode: String
@@ -14,6 +15,7 @@ struct SettingsView: View {
     private let onVerifyAccessCode: (String) -> Void
     private let onClose: (() -> Void)?
     @State private var preferencesDraft: AppPreferences = .default
+    @State private var draftCommitter = PreferencesDraftCommitter()
     @State private var selectedGroup: SettingsGroup = .setup
     @State private var settingsSearchText = ""
     @FocusState private var settingsSearchIsFocused: Bool
@@ -22,6 +24,10 @@ struct SettingsView: View {
     @State private var pendingSearchScrollAnchor: String?
     /// Card title currently glowing after a search jump; cleared after a beat.
     @State private var highlightedSettingsCard: String?
+    /// True while a launch target asked for the tap-to-talk recorder to start
+    /// capturing. Cleared when the user moves to another group so returning to
+    /// Behavior later doesn't unexpectedly start a capture again.
+    @State private var autoStartsHandsFreeCapture: Bool
 
     init(
         initialLaunchTarget: SettingsLaunchTarget? = nil,
@@ -44,6 +50,7 @@ struct SettingsView: View {
         self.onVerifyAccessCode = onVerifyAccessCode
         self.onClose = onClose
         _selectedGroup = State(initialValue: Self.group(for: initialLaunchTarget))
+        _autoStartsHandsFreeCapture = State(initialValue: initialLaunchTarget == .handsFreeGlobalHotkey)
     }
 
     var body: some View {
@@ -73,7 +80,9 @@ struct SettingsView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .keyboardShortcut(.escape, modifiers: [])
+                    // Settings stays mounted (hidden) while other tabs show, so
+                    // only claim Esc while it's actually the visible tab.
+                    .keyboardShortcut(isActive ? KeyboardShortcut(.escape, modifiers: []) : nil)
                     .accessibilityLabel("Back")
 
 	                    Text("Settings")
@@ -110,11 +119,27 @@ struct SettingsView: View {
             if !visibleGroups.contains(selectedGroup) {
                 selectedGroup = .setup
             }
-            preferencesDraft = controller.preferences
+            preferencesDraft = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
         }
-        .onChange(of: controller.preferences) { _, newValue in
-            if newValue != preferencesDraft {
-                preferencesDraft = newValue
+        .onChange(of: controller.preferences) { _, _ in
+            let reconciled = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
+            if reconciled != preferencesDraft {
+                preferencesDraft = reconciled
+            }
+        }
+        // SettingsView stays mounted behind the other tabs, so the launch target
+        // only reaches the State initializer once; follow later requests (e.g.
+        // Home's "Edit tap to talk shortcut") here.
+        .onChange(of: initialLaunchTarget) { _, launchTarget in
+            if let launchTarget {
+                settingsSearchText = ""
+                selectedGroup = Self.group(for: launchTarget)
+            }
+            autoStartsHandsFreeCapture = launchTarget == .handsFreeGlobalHotkey
+        }
+        .onChange(of: selectedGroup) { _, group in
+            if group != .behavior {
+                autoStartsHandsFreeCapture = false
             }
         }
         .onChange(of: controller.aiAvailabilityIsAvailable) { _, isAvailable in
@@ -123,16 +148,30 @@ struct SettingsView: View {
             }
         }
         .onChange(of: preferencesDraft) { _, newValue in
-            let normalized = normalizedPreferences(newValue)
-            guard normalized != controller.preferences else { return }
-
-            if normalized.requiresRuntimeRebuild(comparedTo: controller.preferences) {
-                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
-            } else {
-                controller.savePreferencesQuietly(preferences: newValue)
+            // Coalesces keystrokes in settings text fields; see
+            // PreferencesDraftCommitter.
+            draftCommitter.draftDidChange(newValue, controller: controller)
+        }
+        .onChange(of: isActive) { _, isActive in
+            if !isActive {
+                settingsSearchIsFocused = false
+                draftCommitter.flush()
             }
         }
+        .onDisappear {
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            draftCommitter.flush()
+        }
+        // Recorder fields and other children stop global work (key capture)
+        // when Settings is hidden behind another tab or the window goes inactive.
+        .environment(\.voceTabIsActive, isActive)
         .onExitCommand {
+            guard isActive else { return }
             if isSearchingSettings {
                 settingsSearchText = ""
             } else {
@@ -197,7 +236,7 @@ struct SettingsView: View {
         .background(
             // Invisible ⌘F target: focuses the search field from anywhere in Settings.
             Button("") { settingsSearchIsFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
+                .keyboardShortcut(isActive ? KeyboardShortcut("f", modifiers: .command) : nil)
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
@@ -264,7 +303,7 @@ struct SettingsView: View {
                     // Let the freshly selected group lay out before scrolling.
                     try? await Task.sleep(nanoseconds: 80_000_000)
                     guard !Task.isCancelled else { return }
-                    withAnimation(.easeInOut(duration: 0.3)) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) {
                         // Cards align to the top; rows (anchor "Card › Row")
                         // center so surrounding context stays visible.
                         scrollProxy.scrollTo(anchor, anchor: anchor.contains(" › ") ? .center : .top)
@@ -393,6 +432,7 @@ struct SettingsView: View {
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
                 onRequestAccessCode: requestAccessCodeForSettingsEmail,
                 onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
+                onSaveEmail: saveSubscriberEmail,
                 onSubscribeBase: { cycle in
                     controller.openVoceCheckout(plan: .base, billingCycle: cycle)
                 },
@@ -413,6 +453,7 @@ struct SettingsView: View {
                 onRefreshEntitlement: controller.refreshVoceProEntitlement,
                 onRequestAccessCode: requestAccessCodeForSettingsEmail,
                 onVerifyAccessCode: verifyAccessCodeForSettingsEmail,
+                onSaveEmail: saveSubscriberEmail,
                 onSubscribeBase: { cycle in
                     controller.openVoceCheckout(plan: .base, billingCycle: cycle)
                 },
@@ -427,7 +468,7 @@ struct SettingsView: View {
             RecordingSettingsSection(
                 preferences: $preferencesDraft,
                 hotkeyRegistrationMessage: controller.hotkeyRegistrationMessage,
-                autoStartHandsFreeCapture: initialLaunchTarget == .handsFreeGlobalHotkey
+                autoStartHandsFreeCapture: autoStartsHandsFreeCapture
             )
             MediaSettingsSection(preferences: $preferencesDraft)
         case .speech:
@@ -497,18 +538,22 @@ struct SettingsView: View {
         }
     }
 
-    private func normalizedPreferences(_ preferences: AppPreferences) -> AppPreferences {
-        var snapshot = preferences
-        snapshot.normalize()
-        return snapshot
-    }
-
+    // These read the controller rather than the draft: the access section
+    // saves a just-typed email through saveSubscriberEmail first, which
+    // updates the controller synchronously.
     private func requestAccessCodeForSettingsEmail() {
-        onRequestAccessCode(preferencesDraft.billing.subscriberEmail)
+        onRequestAccessCode(controller.preferences.billing.subscriberEmail)
     }
 
     private func verifyAccessCodeForSettingsEmail() {
-        onVerifyAccessCode(preferencesDraft.billing.subscriberEmail)
+        onVerifyAccessCode(controller.preferences.billing.subscriberEmail)
+    }
+
+    private func saveSubscriberEmail(_ email: String) {
+        var snapshot = preferencesDraft
+        snapshot.billing.subscriberEmail = email
+        preferencesDraft = snapshot
+        draftCommitter.commitImmediately(snapshot, controller: controller)
     }
 
     private var settingsHoldToTalkLabel: String {

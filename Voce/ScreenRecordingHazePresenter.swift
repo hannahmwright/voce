@@ -18,10 +18,12 @@ final class ScreenRecordingHazePresenter {
         }
     }
 
+    /// Hides the haze but keeps one panel per screen for the next dictation.
+    /// Previously every hide dropped the panels and every show built new
+    /// full-screen panels and hosting views for each display.
     func hide() {
         stopObservingScreens()
         panelsByScreenID.values.forEach { $0.orderOut(nil) }
-        panelsByScreenID.removeAll()
         isVisible = false
     }
 
@@ -36,8 +38,9 @@ final class ScreenRecordingHazePresenter {
 
         let staleScreenIDs = panelsByScreenID.keys.filter { !activeIDs.contains($0) }
         for screenID in staleScreenIDs {
-            panelsByScreenID[screenID]?.orderOut(nil)
-            panelsByScreenID.removeValue(forKey: screenID)
+            // Disconnected display: release its window rather than just
+            // hiding it.
+            panelsByScreenID.removeValue(forKey: screenID)?.close()
         }
 
         for screen in screens {
@@ -56,6 +59,8 @@ final class ScreenRecordingHazePresenter {
             backing: .buffered,
             defer: false
         )
+        // Owned by panelsByScreenID; close() must not also release it.
+        panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
