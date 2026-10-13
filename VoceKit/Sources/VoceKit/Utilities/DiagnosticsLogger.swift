@@ -32,17 +32,46 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
         qos: .utility
     )
     private var events: [Event] = []
+    /// Persistence is coalesced: `record` only marks the trail dirty and
+    /// schedules one write per `persistenceCoalescingInterval` on the
+    /// background queue, so callers (often the main actor) never encode JSON or
+    /// touch the disk. Protected by `lock`.
+    private let persistenceCoalescingInterval: TimeInterval
+    private var hasUnpersistedEvents = false
+    private var isPersistenceScheduled = false
+    private var persistenceWrites = 0
+    private var terminationObserver: NSObjectProtocol?
 
     public init(
         maximumEventCount: Int = 80,
-        persistenceURL: URL? = nil
+        persistenceURL: URL? = nil,
+        persistenceCoalescingInterval: TimeInterval = 1
     ) {
         self.maximumEventCount = max(1, maximumEventCount)
         self.persistenceURL = persistenceURL
+        self.persistenceCoalescingInterval = max(0, persistenceCoalescingInterval)
         if let persistenceURL,
            let data = try? Data(contentsOf: persistenceURL),
            let storedEvents = try? JSONDecoder().decode([Event].self, from: data) {
             events = Array(storedEvents.suffix(self.maximumEventCount))
+        }
+        if persistenceURL != nil {
+            // Flush the coalesced trail when the app quits so the last events
+            // of a session are not lost. Uses the raw notification name to keep
+            // this utility free of an AppKit dependency.
+            terminationObserver = NotificationCenter.default.addObserver(
+                forName: Notification.Name("NSApplicationWillTerminateNotification"),
+                object: nil,
+                queue: nil
+            ) { [weak self] _ in
+                self?.flush()
+            }
+        }
+    }
+
+    deinit {
+        if let terminationObserver {
+            NotificationCenter.default.removeObserver(terminationObserver)
         }
     }
 
@@ -65,10 +94,20 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
         if events.count > maximumEventCount {
             events.removeFirst(events.count - maximumEventCount)
         }
-        let persistenceSnapshot = events
+        let shouldSchedulePersistence = persistenceURL != nil && !isPersistenceScheduled
+        if persistenceURL != nil {
+            hasUnpersistedEvents = true
+        }
+        if shouldSchedulePersistence {
+            isPersistenceScheduled = true
+        }
         lock.unlock()
 
-        persist(persistenceSnapshot)
+        if shouldSchedulePersistence {
+            persistenceQueue.asyncAfter(deadline: .now() + persistenceCoalescingInterval) { [self] in
+                persistPendingEvents()
+            }
+        }
 
         let detailText = Self.renderDetails(event.details)
         if detailText.isEmpty {
@@ -115,22 +154,50 @@ public final class VoceDiagnosticStore: @unchecked Sendable {
         return String(singleLine.prefix(240))
     }
 
-    private func persist(_ events: [Event]) {
-        guard let persistenceURL else { return }
+    /// Synchronously writes any events recorded since the last write. Safe to
+    /// call from any thread; called automatically on app termination.
+    public func flush() {
+        guard persistenceURL != nil else { return }
         persistenceQueue.sync {
-            do {
-                let directory = persistenceURL.deletingLastPathComponent()
-                try FileManager.default.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true
-                )
-                let data = try JSONEncoder().encode(events)
-                try data.write(to: persistenceURL, options: .atomic)
-            } catch {
-                VoceKitDiagnostics.logger.error(
-                    "Failed to persist recent diagnostics: \(error.localizedDescription, privacy: .public)"
-                )
-            }
+            persistPendingEvents()
+        }
+    }
+
+    /// Number of file writes performed so far. Exposed for tests.
+    var persistenceWriteCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return persistenceWrites
+    }
+
+    /// Must run on `persistenceQueue`.
+    private func persistPendingEvents() {
+        dispatchPrecondition(condition: .onQueue(persistenceQueue))
+        guard let persistenceURL else { return }
+
+        lock.lock()
+        isPersistenceScheduled = false
+        guard hasUnpersistedEvents else {
+            lock.unlock()
+            return
+        }
+        hasUnpersistedEvents = false
+        let snapshot = events
+        persistenceWrites += 1
+        lock.unlock()
+
+        do {
+            let directory = persistenceURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(snapshot)
+            try data.write(to: persistenceURL, options: .atomic)
+        } catch {
+            VoceKitDiagnostics.logger.error(
+                "Failed to persist recent diagnostics: \(error.localizedDescription, privacy: .public)"
+            )
         }
     }
 }
