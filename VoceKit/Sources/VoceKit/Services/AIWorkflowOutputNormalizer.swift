@@ -32,6 +32,12 @@ public enum AIWorkflowOutputNormalizer {
         var modifiers: [String]
         /// Generic nouns allowed after a modifier.
         var nouns: [String]
+        /// Nouns that close a "here's …" preamble on their own
+        /// ("Here's a friendlier version").
+        var bareNouns: [String] = []
+        /// Nouns accepted only as "here's the/your <noun>:" ending in a colon
+        /// ("Here's the email:").
+        var colonOnlyNouns: [String] = []
 
         init?(kind: AIWorkflowKind) {
             switch kind {
@@ -42,10 +48,13 @@ public enum AIWorkflowOutputNormalizer {
                     "clearer", "tighter", "concise", "shorter", "cleaner", "reworded",
                 ]
                 nouns = ["email", "message", "draft", "reply", "response", "note", "notes", "text", "version", "paragraph", "prompt"]
+                bareNouns = ["version", "text"]
+                colonOnlyNouns = ["email", "message"]
             case .summarize:
                 labels = ["summary", "summarized text", "concise summary"]
                 modifiers = ["summarized", "condensed", "concise", "brief", "short"]
                 nouns = ["version", "text", "notes", "overview", "recap", "summary"]
+                bareNouns = ["version", "text"]
             case .dictationPolish:
                 // Only explicit cleanup labels; generic nouns such as "email"
                 // or "draft" are the user's own words in dictation.
@@ -80,7 +89,11 @@ public enum AIWorkflowOutputNormalizer {
         }
 
         if lines.count > 1,
-           isPreambleCandidate(firstLine, vocabulary: vocabulary),
+           isPreambleCandidate(
+               firstLine,
+               vocabulary: vocabulary,
+               endsWithColon: firstLine.trimmingCharacters(in: .whitespaces).hasSuffix(":")
+           ),
            !inputStarts(with: firstLine, input: input) {
             let remainder = lines
                 .dropFirst()
@@ -107,7 +120,7 @@ public enum AIWorkflowOutputNormalizer {
             return nil
         }
 
-        guard isPreambleCandidate(prefix, vocabulary: vocabulary), !inputStarts(with: prefix, input: input) else {
+        guard isPreambleCandidate(prefix, vocabulary: vocabulary, endsWithColon: true), !inputStarts(with: prefix, input: input) else {
             return nil
         }
 
@@ -132,7 +145,7 @@ public enum AIWorkflowOutputNormalizer {
     /// - "[Sure, ]here's [the|a|your] [up to three words] <label | modifier noun>
     ///   [of <up to three words>]": "Here is the rewritten email"
     /// - an acknowledgement: "Sure, I can do that.", "Certainly!"
-    private static func isPreambleCandidate(_ text: String, vocabulary: Vocabulary) -> Bool {
+    private static func isPreambleCandidate(_ text: String, vocabulary: Vocabulary, endsWithColon: Bool) -> Bool {
         let normalized = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: ":.!"))
@@ -149,9 +162,18 @@ public enum AIWorkflowOutputNormalizer {
         let opener = #"(?:sure|certainly|absolutely|of course|okay|ok)\b"#
         let here = #"(?:here(?:'|\x{2019})s|here is|below is)"#
         let ofPhrase = #"(?:\s+of\s+(?:(?:the|your|this|my|our)\s+)?[\p{L}-]+(?:\s+[\p{L}-]+){0,2})?"#
-        let labelPattern = "^(?:\(opener)[\\s,!.]*)?"
-            + "(?:\(here)\\s+(?:(?:the|a|an|your)\\s+)?(?:[\\p{L}-]+\\s+){0,3}?(?:\(labels)|\(modifiedNoun))"
-            + "|(?:\(labels)))\(ofPhrase)$"
+        var heads = ["(?:\(here)\\s+(?:(?:the|a|an|your)\\s+)?(?:[\\p{L}-]+\\s+){0,3}?(?:\(labels)|\(modifiedNoun)))"]
+        if !vocabulary.bareNouns.isEmpty {
+            // "Here's a more professional version" (not "Here's my text").
+            heads.append(
+                "(?:\(here)\\s+(?:(?:the|a|an|your)\\s+)?(?!(?:my|our)\\b)(?:[\\p{L}-]+\\s+){0,3}?(?:\(alternatives(vocabulary.bareNouns))))"
+            )
+        }
+        if endsWithColon, !vocabulary.colonOnlyNouns.isEmpty {
+            heads.append("(?:\(here)\\s+(?:the|your)\\s+(?:\(alternatives(vocabulary.colonOnlyNouns))))")
+        }
+        heads.append("(?:\(labels))")
+        let labelPattern = "^(?:\(opener)[\\s,!.]*)?(?:" + heads.joined(separator: "|") + ")\(ofPhrase)$"
         let acknowledgementPattern = "^\(opener)(?:[\\s,!.]+(?:i can do that|i can help with that|here you go|here it is|no problem|happy to help))?$"
 
         return [labelPattern, acknowledgementPattern].contains { pattern in
