@@ -16,16 +16,21 @@ public struct LearningData: Sendable, Codable, Equatable {
     /// Per-app usage statistics for style profile auto-tuning.
     public var appStats: [String: AppUsageStats]
 
+    /// Lowercased snippet-suggestion phrases the user dismissed; never suggested again.
+    public var dismissedSnippetPhrases: Set<String>
+
     public init(
         wordFrequencies: [String: Int] = [:],
         corrections: [Correction] = [],
         phraseFrequencies: [String: Int] = [:],
-        appStats: [String: AppUsageStats] = [:]
+        appStats: [String: AppUsageStats] = [:],
+        dismissedSnippetPhrases: Set<String> = []
     ) {
         self.wordFrequencies = wordFrequencies
         self.corrections = corrections
         self.phraseFrequencies = phraseFrequencies
         self.appStats = appStats
+        self.dismissedSnippetPhrases = dismissedSnippetPhrases
     }
 
     public static let empty = LearningData()
@@ -35,6 +40,7 @@ public struct LearningData: Sendable, Codable, Equatable {
         case corrections
         case phraseFrequencies
         case appStats
+        case dismissedSnippetPhrases
     }
 
     /// Tolerant decoding: a missing or malformed section falls back to empty and
@@ -45,6 +51,8 @@ public struct LearningData: Sendable, Codable, Equatable {
         corrections = container.decodeLenientLossyArrayIfPresent([Correction].self, forKey: .corrections, decoder: decoder) ?? []
         phraseFrequencies = container.decodeLenientIfPresent([String: Int].self, forKey: .phraseFrequencies, decoder: decoder) ?? [:]
         appStats = container.decodeLenientIfPresent([String: AppUsageStats].self, forKey: .appStats, decoder: decoder) ?? [:]
+        // Absent in files written before dismissals were persisted.
+        dismissedSnippetPhrases = container.decodeLenientIfPresent(Set<String>.self, forKey: .dismissedSnippetPhrases, decoder: decoder) ?? []
     }
 }
 
