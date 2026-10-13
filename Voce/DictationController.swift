@@ -350,6 +350,7 @@ final class DictationController: ObservableObject {
     private var completedCompletionSequences = Set<Int>()
     private var completionSequenceWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     private var pendingStartAfterAudioSecured: RecordingMode?
+    private var pendingStartCompletionActionOverride: CompletionAction?
     private var lastRecordingStopTime: CFAbsoluteTime = 0
     private var lastRecordingStopMode: RecordingMode?
 
@@ -810,6 +811,7 @@ final class DictationController: ObservableObject {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
         if pendingStartAfterAudioSecured == .pressToTalk {
             pendingStartAfterAudioSecured = nil
+            pendingStartCompletionActionOverride = nil
             return
         }
         if suppressNextPressToTalkStop {
@@ -836,27 +838,52 @@ final class DictationController: ObservableObject {
     }
 
     func toggleHandsFree() {
+        toggleHandsFree(completionActionOverride: nil)
+    }
+
+    /// - Parameter completionActionOverride: How the dictation this toggle
+    ///   starts or stops should complete. Applied only when the toggle
+    ///   actually starts, queues or stops a dictation.
+    private func toggleHandsFree(completionActionOverride: CompletionAction?) {
         if isRecording,
            activeRecordingMode == .handsFree,
            recordingStateMachine.state != .recordingHandsFree {
+            if let completionActionOverride {
+                pendingCompletionActionOverride = completionActionOverride
+            }
             stopSession(mode: .handsFree)
             return
         }
         if recordingStateMachine.state == .idle {
             guard !shouldIgnoreResidualStartSignal(mode: .handsFree) else { return }
         }
-        if queueStartAfterAudioSecuredIfNeeded(mode: .handsFree) {
+        if queueStartAfterAudioSecuredIfNeeded(
+            mode: .handsFree,
+            completionActionOverride: completionActionOverride
+        ) {
             return
         }
         if recordingStateMachine.state == .idle {
             guard canStartRecordingNow() else { return }
         }
-        apply(transition: recordingStateMachine.handleHandsFreeToggle())
+        let transition = recordingStateMachine.handleHandsFreeToggle()
+        switch transition {
+        case .start(let mode):
+            startSession(mode: mode, completionActionOverride: completionActionOverride)
+        case .stop:
+            if let completionActionOverride {
+                pendingCompletionActionOverride = completionActionOverride
+            }
+            apply(transition: transition)
+        case .ignore:
+            apply(transition: transition)
+        }
     }
 
+    /// Dictation started or stopped from the menu bar is copied to the
+    /// clipboard instead of inserted, since there is no focused input.
     func toggleMenuBarTranscription() {
-        pendingCompletionActionOverride = .copyToClipboard
-        toggleHandsFree()
+        toggleHandsFree(completionActionOverride: .copyToClipboard)
     }
 
     func stopActiveRecording() {
@@ -1870,7 +1897,7 @@ final class DictationController: ObservableObject {
         return true
     }
 
-    private func startSession(mode: RecordingMode) {
+    private func startSession(mode: RecordingMode, completionActionOverride: CompletionAction? = nil) {
         guard let coordinator else {
             status = "Runtime not ready yet."
             recordingStateMachine.markTranscriptionFailed()
@@ -1899,7 +1926,7 @@ final class DictationController: ObservableObject {
         activeAppContext = capturedContext
         activeInputTarget = capturedInputTarget
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
-        pendingCompletionActionOverride = nil
+        pendingCompletionActionOverride = completionActionOverride
         activeStyleOverride = nil
         activeCloudUsageMetering = nil
         activeFreeUsageLimitSeconds = voceProEntitlementStatus.freeRecordingRemainingSeconds
@@ -2732,7 +2759,10 @@ final class DictationController: ObservableObject {
         backgroundProcessingSessionCount = max(0, backgroundProcessingSessionCount - 1)
     }
 
-    private func queueStartAfterAudioSecuredIfNeeded(mode: RecordingMode) -> Bool {
+    private func queueStartAfterAudioSecuredIfNeeded(
+        mode: RecordingMode,
+        completionActionOverride: CompletionAction? = nil
+    ) -> Bool {
         guard recordingStateMachine.state == .transcribing else {
             return false
         }
@@ -2746,6 +2776,7 @@ final class DictationController: ObservableObject {
         }
 
         pendingStartAfterAudioSecured = mode
+        pendingStartCompletionActionOverride = completionActionOverride
         status = "Starting next dictation..."
         lastError = ""
         return true
@@ -2768,17 +2799,25 @@ final class DictationController: ObservableObject {
         // Still finishing the dictation that queued this start; whichever
         // path completes it calls back here once the state is idle.
         guard recordingStateMachine.state != .transcribing else { return }
+        let completionActionOverride = pendingStartCompletionActionOverride
         pendingStartAfterAudioSecured = nil
+        pendingStartCompletionActionOverride = nil
 
         guard recordingStateMachine.state == .idle else { return }
         guard canStartRecordingNow() else { return }
 
+        let transition: RecordingTransition
         switch mode {
         case .pressToTalk:
             suppressNextPressToTalkStop = false
-            apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
+            transition = recordingStateMachine.handlePressToTalkKeyDown()
         case .handsFree:
-            apply(transition: recordingStateMachine.handleHandsFreeToggle())
+            transition = recordingStateMachine.handleHandsFreeToggle()
+        }
+        if case .start(let mode) = transition {
+            startSession(mode: mode, completionActionOverride: completionActionOverride)
+        } else {
+            apply(transition: transition)
         }
     }
 
