@@ -253,6 +253,9 @@ private final class TapContext: @unchecked Sendable {
     /// Monotonic timestamp of the last tap re-enable, used to debounce rapid
     /// disable/re-enable cycles that can occur when the system times out the tap.
     private var _lastReenableTime: CFAbsoluteTime = 0
+    /// True while a deferred re-enable (scheduled because a disable arrived
+    /// inside the debounce window) is pending.
+    private var _isDeferredReenableScheduled = false
 
     var monitor: MacHotkeyMonitor? {
         get { lock.withLock { _monitor } }
@@ -311,14 +314,42 @@ private final class TapContext: @unchecked Sendable {
         set { lock.withLock { _machPort = newValue } }
     }
 
-    /// Atomically applies the re-enable debounce and claims the port.
-    /// Returns the mach port to re-enable, or nil when debounced or when the
-    /// tap is being torn down (`machPort` already cleared by uninstall).
-    func claimReenablePort(debounce: CFAbsoluteTime) -> CFMachPort? {
+    enum ReenableDecision {
+        /// Re-enable this port now.
+        case reenableNow(CFMachPort)
+        /// Inside the debounce window: re-enable after this many seconds.
+        case deferred(after: CFAbsoluteTime)
+        /// Nothing to do: the tap is being torn down, or a deferred re-enable
+        /// is already pending.
+        case none
+    }
+
+    /// Atomically applies the re-enable debounce. A disable inside the
+    /// debounce window is never dropped: it schedules one deferred re-enable
+    /// at the end of the window, otherwise the tap would stay disabled until
+    /// the next app restart.
+    func claimReenable(debounce: CFAbsoluteTime) -> ReenableDecision {
         lock.withLock {
+            guard let port = _machPort else { return .none }
             let now = CFAbsoluteTimeGetCurrent()
-            guard let port = _machPort, now - _lastReenableTime >= debounce else { return nil }
-            _lastReenableTime = now
+            let elapsed = now - _lastReenableTime
+            if elapsed >= debounce {
+                _lastReenableTime = now
+                return .reenableNow(port)
+            }
+            guard !_isDeferredReenableScheduled else { return .none }
+            _isDeferredReenableScheduled = true
+            return .deferred(after: max(0, debounce - elapsed))
+        }
+    }
+
+    /// Claims the port for a deferred re-enable. Returns nil when the tap was
+    /// torn down in the meantime.
+    func claimDeferredReenablePort() -> CFMachPort? {
+        lock.withLock {
+            _isDeferredReenableScheduled = false
+            guard let port = _machPort else { return nil }
+            _lastReenableTime = CFAbsoluteTimeGetCurrent()
             return port
         }
     }
@@ -988,7 +1019,16 @@ public final class MacHotkeyMonitor: HotkeyService {
 
     @discardableResult
     private func installEventTap() -> Bool {
-        guard eventTap == nil else { return true }
+        if let eventTap {
+            // Safety net for a tap the system disabled and nothing revived
+            // (e.g. a disable racing teardown of a deferred re-enable). This
+            // runs whenever recording starts and shortcut state is refreshed.
+            if !CGEvent.tapIsEnabled(tap: eventTap) {
+                Self.logger.warning("Event tap found disabled — re-enabling")
+                CGEvent.tapEnable(tap: eventTap, enable: true)
+            }
+            return true
+        }
 
         let refcon = Unmanaged.passUnretained(tapContext).toOpaque()
         let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
@@ -1219,12 +1259,30 @@ public final class MacHotkeyMonitor: HotkeyService {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let userInfo {
                 let ctx = Unmanaged<TapContext>.fromOpaque(userInfo).takeUnretainedValue()
-                if let machPort = ctx.claimReenablePort(debounce: reenableDebounceInterval) {
+                let reason = type == .tapDisabledByTimeout ? "timeout" : "user input"
+                switch ctx.claimReenable(debounce: reenableDebounceInterval) {
+                case .reenableNow(let machPort):
                     // Timeout disables mean the system considered us too slow
                     // to service the keystroke path — exactly the signal
                     // behind "typing lags while Voce runs" reports.
-                    logger.warning("Event tap disabled by system (\(type == .tapDisabledByTimeout ? "timeout" : "user input", privacy: .public)) — re-enabling")
+                    logger.warning("Event tap disabled by system (\(reason, privacy: .public)) — re-enabling")
                     CGEvent.tapEnable(tap: machPort, enable: true)
+                case .deferred(let delay):
+                    // A second disable inside the debounce window. Dropping it
+                    // would leave the tap disabled with nothing to revive it,
+                    // so re-enable once the window ends. tapEnable is
+                    // thread-safe; the closure retains the context.
+                    logger.warning("Event tap disabled by system (\(reason, privacy: .public)) inside debounce window — re-enabling shortly")
+                    DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + delay) {
+                        guard let machPort = ctx.claimDeferredReenablePort(),
+                              !CGEvent.tapIsEnabled(tap: machPort) else {
+                            return
+                        }
+                        logger.warning("Event tap re-enabled after debounce window")
+                        CGEvent.tapEnable(tap: machPort, enable: true)
+                    }
+                case .none:
+                    break
                 }
             }
             return Unmanaged.passUnretained(event)
