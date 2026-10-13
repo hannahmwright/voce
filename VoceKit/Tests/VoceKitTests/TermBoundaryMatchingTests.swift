@@ -79,3 +79,58 @@ func snippetSymbolTriggerExpands() async {
     #expect(expanded == "Thanks again Best, Hannah")
     #expect(untouched == "Thanks again foo@@sigbar")
 }
+
+// MARK: - Snippet ordering
+
+@Test("Longer snippet trigger wins over a shorter trigger it contains")
+func snippetLongestTriggerWins() async {
+    let service = SnippetService(snippets: [
+        Snippet(trigger: "my address", expansion: "1 Main St"),
+        Snippet(trigger: "my address work", expansion: "500 Market St"),
+    ])
+
+    let expanded = await service.apply(to: "Send it to my address work please", appContext: nil)
+    let shortStillWorks = await service.apply(to: "Send it to my address please", appContext: nil)
+
+    #expect(expanded == "Send it to 500 Market St please")
+    #expect(shortStillWorks == "Send it to 1 Main St please")
+}
+
+@Test("App-specific snippet wins over a global snippet with the same trigger")
+func snippetAppSpecificWinsOverGlobal() async {
+    let slack = AppContext(bundleIdentifier: "com.tinyspeck.slackmacgap", appName: "Slack")
+    let notes = AppContext(bundleIdentifier: "com.apple.Notes", appName: "Notes")
+    let service = SnippetService(snippets: [
+        Snippet(trigger: "sig", expansion: "Global signature"),
+        Snippet(trigger: "sig", expansion: "Slack signature", scope: .app(bundleID: slack.bundleIdentifier)),
+    ])
+
+    let inSlack = await service.apply(to: "thanks sig", appContext: slack)
+    let inNotes = await service.apply(to: "thanks sig", appContext: notes)
+
+    #expect(inSlack == "thanks Slack signature")
+    #expect(inNotes == "thanks Global signature")
+}
+
+@Test("Snippet expansions are not re-expanded")
+func snippetExpansionIsSinglePass() async {
+    let service = SnippetService(snippets: [
+        Snippet(trigger: "greet", expansion: "hello sig"),
+        Snippet(trigger: "sig", expansion: "Hannah"),
+    ])
+
+    let expanded = await service.apply(to: "greet and sig", appContext: nil)
+
+    #expect(expanded == "hello sig and Hannah")
+}
+
+@Test("Snippet expansion preserves multi-line text and template characters")
+func snippetExpansionPreservesNewlinesAndTemplateCharacters() async {
+    let service = SnippetService(snippets: [
+        Snippet(trigger: "addr", expansion: "1 Main St\nSpringfield $1 \\0"),
+    ])
+
+    let expanded = await service.apply(to: "Ship to ADDR.", appContext: nil)
+
+    #expect(expanded == "Ship to 1 Main St\nSpringfield $1 \\0.")
+}
