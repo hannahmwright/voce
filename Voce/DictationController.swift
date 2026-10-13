@@ -263,7 +263,11 @@ final class DictationController: ObservableObject {
             if voceProEntitlementStatus.isEntitled {
                 prefetchRealtimeWhisperClientSecretIfNeeded()
             }
-            if cloudRoutingSignature(for: oldValue) != cloudRoutingSignature(for: voceProEntitlementStatus) {
+            // Every refresh passes through `.checking`, which looks like
+            // "no cloud". Comparing against what the runtime was built with,
+            // and skipping that transient state, avoids two rebuilds per refresh.
+            guard !voceProEntitlementStatus.isChecking else { return }
+            if cloudRoutingSignature(for: voceProEntitlementStatus) != runtimeCloudRoutingSignature {
                 Task { @MainActor [weak self] in
                     await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
                 }
@@ -337,6 +341,12 @@ final class DictationController: ObservableObject {
     private var activeCaptureUsageMeter: CaptureUsageMeter?
     private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
+    /// What the current runtime was built from, so saves that change nothing
+    /// runtime-relevant (or that were already applied in place) skip the
+    /// rebuild.
+    private var runtimeAppliedPreferences: AppPreferences?
+    private var runtimeCloudRoutingSignature: String?
+    private var appliedLaunchAtLoginEnabled: Bool?
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var overlayDismissTask: Task<Void, Never>?
@@ -604,8 +614,19 @@ final class DictationController: ObservableObject {
 
         Task {
             await preferencesStore.save(snapshot)
+            guard runtimeRebuildNeeded(for: preferences) else { return }
             await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
         }
+    }
+
+    /// Whether `candidate` differs from what the current runtime was built
+    /// from in a way the runtime has to be rebuilt for.
+    private func runtimeRebuildNeeded(for candidate: AppPreferences) -> Bool {
+        guard let runtimeAppliedPreferences else { return true }
+        var normalized = candidate
+        normalized.normalize()
+        return normalized.requiresRuntimeRebuild(comparedTo: runtimeAppliedPreferences)
+            || normalized.billing.subscriberEmail != runtimeAppliedPreferences.billing.subscriberEmail
     }
 
     func applySettingsDraft(preferences draft: AppPreferences, announceImmediateSave: Bool = true) {
@@ -3001,6 +3022,20 @@ final class DictationController: ObservableObject {
         return SelectionCapture(text: trimmed, appContext: appContext)
     }
 
+    /// The live lexicon service (shared with the coordinator) was updated in
+    /// place, so the saved entries no longer require a runtime rebuild.
+    private func noteLexiconAppliedToRuntime() {
+        runtimeAppliedPreferences?.lexiconEntries = preferences.lexiconEntries
+        // Realtime transcription hints come from the lexicon; re-warm them.
+        prefetchRealtimeWhisperClientSecretIfNeeded()
+    }
+
+    /// The live snippet service (shared with the coordinator) was updated in
+    /// place, so the saved snippets no longer require a runtime rebuild.
+    private func noteSnippetsAppliedToRuntime() {
+        runtimeAppliedPreferences?.snippets = preferences.snippets
+    }
+
     private func saveSelectionCorrection(capture: SelectionCapture, replacement: String) async {
         let trimmedReplacement = replacement.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedReplacement.isEmpty else { return }
@@ -3014,6 +3049,7 @@ final class DictationController: ObservableObject {
             preferences.lexiconEntries.append(entry)
         }
         await lexiconService.upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope)
+        noteLexiconAppliedToRuntime()
         savePreferences()
 
         let result = await insertionService.insert(text: trimmedReplacement, target: capture.appContext)
@@ -3034,15 +3070,23 @@ final class DictationController: ObservableObject {
         let trimmedTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTrigger.isEmpty else { return }
 
-        let snippet = Snippet(trigger: trimmedTrigger, expansion: capture.text, scope: .global)
-        if let existingIndex = preferences.snippets.firstIndex(where: {
-            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
-        }) {
+        let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(trimmedTrigger) == .orderedSame && $0.scope == .global
+        })
+        // Reuse the replaced snippet's ID: SnippetService upserts by ID.
+        let snippet = Snippet(
+            id: existingIndex.map { preferences.snippets[$0].id } ?? UUID(),
+            trigger: trimmedTrigger,
+            expansion: capture.text,
+            scope: .global
+        )
+        if let existingIndex {
             preferences.snippets[existingIndex] = snippet
         } else {
             preferences.snippets.append(snippet)
         }
         await snippetService.upsert(snippet)
+        noteSnippetsAppliedToRuntime()
         savePreferences()
         status = "Shortcut saved for \"\(capture.text)\"."
         lastError = ""
@@ -3062,6 +3106,7 @@ final class DictationController: ObservableObject {
             preferences.lexiconEntries.append(entry)
         }
         await lexiconService.upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope)
+        noteLexiconAppliedToRuntime()
         savePreferences()
         status = "Dictionary item saved for \"\(trimmedTerm)\"."
         lastError = ""
@@ -3072,15 +3117,23 @@ final class DictationController: ObservableObject {
         let trimmedTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedExpansion.isEmpty, !trimmedTrigger.isEmpty else { return }
 
-        let snippet = Snippet(trigger: trimmedTrigger, expansion: trimmedExpansion, scope: .global)
-        if let existingIndex = preferences.snippets.firstIndex(where: {
-            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
-        }) {
+        let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(trimmedTrigger) == .orderedSame && $0.scope == .global
+        })
+        // Reuse the replaced snippet's ID: SnippetService upserts by ID.
+        let snippet = Snippet(
+            id: existingIndex.map { preferences.snippets[$0].id } ?? UUID(),
+            trigger: trimmedTrigger,
+            expansion: trimmedExpansion,
+            scope: .global
+        )
+        if let existingIndex {
             preferences.snippets[existingIndex] = snippet
         } else {
             preferences.snippets.append(snippet)
         }
         await snippetService.upsert(snippet)
+        noteSnippetsAppliedToRuntime()
         savePreferences()
         status = "Shortcut saved for \"\(trimmedExpansion)\"."
         lastError = ""
@@ -3287,12 +3340,21 @@ final class DictationController: ObservableObject {
             voiceCommandService: voiceCommandService,
             learningEngine: learningEngine
         )
+        runtimeAppliedPreferences = snapshot
+        runtimeCloudRoutingSignature = cloudRoutingSignature(for: voceProEntitlementStatus)
 
-        do {
-            try launchAtLoginService.setEnabled(snapshot.general.launchAtLoginEnabled)
-            launchAtLoginWarning = ""
-        } catch {
-            launchAtLoginWarning = error.localizedDescription
+        // SMAppService register/unregister is synchronous on the main thread;
+        // only call it when the setting changed (or the last attempt failed).
+        let launchAtLoginEnabled = snapshot.general.launchAtLoginEnabled
+        if appliedLaunchAtLoginEnabled != launchAtLoginEnabled {
+            do {
+                try launchAtLoginService.setEnabled(launchAtLoginEnabled)
+                launchAtLoginWarning = ""
+                appliedLaunchAtLoginEnabled = launchAtLoginEnabled
+            } catch {
+                launchAtLoginWarning = error.localizedDescription
+                appliedLaunchAtLoginEnabled = nil
+            }
         }
 
         status = runtimeFactory.runtimeStatusText()
