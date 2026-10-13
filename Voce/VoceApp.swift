@@ -77,6 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Push debounced settings edits into the controller before any
+        // willTerminate observer runs, so its exit-time save sees them.
+        // Observers of this notification handle it synchronously on main.
+        NotificationCenter.default.post(name: .voceFlushPendingPreferenceDrafts, object: nil)
+        return .terminateNow
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         installWindowObservers()
 

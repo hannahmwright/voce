@@ -608,21 +608,27 @@ final class DictationController: ObservableObject {
         activeRealtimeWhisperSession?.cancel()
         activeRealtimeWhisperSession = nil
         endActiveMediaInterruption()
-        persistLearningDataBeforeExit()
+        persistStateBeforeExit()
     }
 
-    /// Saves learning data before the process exits. LearningEngine is an
-    /// actor, so wait for the save on another executor, bounded so a busy
-    /// engine cannot hang quitting.
-    private func persistLearningDataBeforeExit() {
+    /// Saves learning data and the latest preferences before the process
+    /// exits. Saves queued as main-actor Tasks never run once willTerminate
+    /// returns, so write the current snapshot directly. Both stores are
+    /// actors, so wait on another executor, bounded so a busy store cannot
+    /// hang quitting.
+    private func persistStateBeforeExit() {
         let learningEngine = learningEngine
+        let preferencesStore = preferencesStore
+        let preferencesSnapshot = preferences
         let saved = DispatchSemaphore(value: 0)
         Task.detached(priority: .userInitiated) {
-            await learningEngine.save()
+            async let learningSave: Void = learningEngine.save()
+            async let preferencesSave: Void = preferencesStore.save(preferencesSnapshot)
+            _ = await (learningSave, preferencesSave)
             saved.signal()
         }
-        if saved.wait(timeout: .now() + 1.5) == .timedOut {
-            Self.logger.error("Timed out saving learning data before exit")
+        if saved.wait(timeout: .now() + 2) == .timedOut {
+            Self.logger.error("Timed out saving state before exit")
         }
     }
 
