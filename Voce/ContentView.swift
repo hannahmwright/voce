@@ -91,6 +91,9 @@ struct ContentView: View {
             idealHeight: VoceDesign.windowIdealHeight
         )
         .onAppear {
+            // Start early so "Use current app" in Settings knows which app the
+            // user came from before switching to Voce.
+            ExternalFrontmostAppTracker.startIfNeeded()
             preferencesDraft = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
             accessEmailDraft = controller.preferences.billing.subscriberEmail
         }

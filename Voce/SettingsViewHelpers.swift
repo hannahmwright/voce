@@ -1834,3 +1834,46 @@ func settingsAppIconView(for bundleID: String, size: CGFloat = 16) -> some View 
             .frame(width: size, height: size)
     }
 }
+
+/// Bundle ID of the most recently active app other than Voce.
+///
+/// "Use current app" in the per-app override pickers read
+/// `NSWorkspace.frontmostApplication`, but Voce is frontmost while the user
+/// clicks it, so the picker chose Voce itself. Started from ContentView at
+/// launch so the app the user came from is already known.
+@MainActor
+enum ExternalFrontmostAppTracker {
+    private static var lastExternalBundleIDStorage: String?
+    private static var activationObserver: NSObjectProtocol?
+
+    static var lastExternalBundleID: String? {
+        startIfNeeded()
+        return lastExternalBundleIDStorage
+    }
+
+    static func startIfNeeded() {
+        guard activationObserver == nil else { return }
+        record(NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let bundleID = app?.bundleIdentifier
+            Task { @MainActor in
+                record(bundleID)
+            }
+        }
+    }
+
+    private static func record(_ bundleID: String?) {
+        guard let bundleID,
+              !bundleID.isEmpty,
+              bundleID != "unknown",
+              bundleID != Bundle.main.bundleIdentifier else {
+            return
+        }
+        lastExternalBundleIDStorage = bundleID
+    }
+}

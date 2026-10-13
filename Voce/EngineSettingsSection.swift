@@ -492,8 +492,10 @@ struct EngineSettingsSection: View {
         )
     }
 
+    /// The app the user was in before Voce, never Voce itself (which is
+    /// frontmost while this picker is clicked).
     private var currentFrontmostBundleID: String? {
-        NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        ExternalFrontmostAppTracker.lastExternalBundleID
     }
 
     private var availableAppBundleIDs: [String] {
