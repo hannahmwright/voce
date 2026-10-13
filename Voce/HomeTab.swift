@@ -194,9 +194,11 @@ struct HomeTab: View {
                         .font(VoceDesign.captionEmphasis())
                         .foregroundStyle(VoceDesign.accent)
 
-                    Text(formatElapsedTime(controller.recordingElapsed))
-                        .font(VoceDesign.caption().monospacedDigit())
-                        .foregroundStyle(VoceDesign.textSecondary)
+                    RecordingElapsedReader(clock: controller.recordingElapsedClock) { elapsed in
+                        Text(formatElapsedTime(elapsed))
+                            .font(VoceDesign.caption().monospacedDigit())
+                            .foregroundStyle(VoceDesign.textSecondary)
+                    }
 
                     Spacer()
                 }

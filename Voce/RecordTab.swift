@@ -84,13 +84,15 @@ struct RecordTab: View {
 
             // Recording elapsed time
             if controller.isRecording {
-                Text(formatElapsedTime(controller.recordingElapsed))
-                    .font(VoceDesign.caption().monospacedDigit())
-                    .foregroundStyle(VoceDesign.accent)
-                    .padding(.top, VoceDesign.xs)
-                    .transition(.opacity)
-                    .accessibilityLabel("Recording time")
-                    .accessibilityValue(formatElapsedTime(controller.recordingElapsed))
+                RecordingElapsedReader(clock: controller.recordingElapsedClock) { elapsed in
+                    Text(formatElapsedTime(elapsed))
+                        .font(VoceDesign.caption().monospacedDigit())
+                        .foregroundStyle(VoceDesign.accent)
+                        .padding(.top, VoceDesign.xs)
+                        .accessibilityLabel("Recording time")
+                        .accessibilityValue(formatElapsedTime(elapsed))
+                }
+                .transition(.opacity)
             }
 
             // Status text

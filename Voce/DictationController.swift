@@ -205,6 +205,24 @@ final class ClipboardRecoveryPromptPresenter: NSObject {
     }
 }
 
+/// Publishes the recording time apart from DictationController, so the 1 Hz
+/// tick re-renders only the views that show it rather than every view that
+/// observes the controller.
+@MainActor
+final class RecordingElapsedClock: ObservableObject {
+    @Published fileprivate(set) var seconds: TimeInterval = 0
+}
+
+/// Renders `content` with the current recording time, observing only `clock`.
+struct RecordingElapsedReader<Content: View>: View {
+    @ObservedObject var clock: RecordingElapsedClock
+    @ViewBuilder let content: (TimeInterval) -> Content
+
+    var body: some View {
+        content(clock.seconds)
+    }
+}
+
 @MainActor
 struct DailyUsageActivityDay: Equatable {
     let day: Date
@@ -279,7 +297,16 @@ final class DictationController: ObservableObject {
     @Published var speechRecognitionPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
-    @Published var recordingElapsed: TimeInterval = 0
+    let recordingElapsedClock = RecordingElapsedClock()
+    /// Whole timer ticks since recording started; for display and usage-limit
+    /// checks only (usage is metered from the capture itself).
+    private(set) var recordingElapsed: TimeInterval {
+        get { recordingElapsedClock.seconds }
+        set {
+            guard recordingElapsedClock.seconds != newValue else { return }
+            recordingElapsedClock.seconds = newValue
+        }
+    }
     @Published var hasBootstrapped = false
     @Published private(set) var backgroundProcessingSessionCount: Int = 0
     @Published private(set) var lastCompletionOutcome: DictationCompletionOutcome?
