@@ -128,6 +128,28 @@ public struct PendingUsageReportQueue: Sendable, Codable, Equatable {
         }
     }
 
+    public enum FailureDisposition: Sendable, Equatable {
+        /// The backend will never accept it; drop it.
+        case discard
+        /// The account's session is invalid; keep it, and skip the rest of
+        /// that email's reports until the next delivery attempt.
+        case retryLaterSkippingEmail
+        /// Keep it, and skip that email/feature until the next attempt.
+        case retryLaterSkippingFeature
+    }
+
+    /// What to do with a report whose delivery failed. Auth failures for an
+    /// email that is no longer the signed-in subscriber can never be fixed
+    /// by re-verifying, so those reports are dropped rather than retried
+    /// until they expire.
+    public static func failureDisposition(httpStatus: Int?, isCurrentSubscriber: Bool) -> FailureDisposition {
+        if httpStatus == 401 || httpStatus == 403 {
+            guard isCurrentSubscriber, httpStatus == 401 else { return .discard }
+            return .retryLaterSkippingEmail
+        }
+        return shouldRetry(httpStatus: httpStatus) ? .retryLaterSkippingFeature : .discard
+    }
+
     private func index(of reportID: UUID) -> Int? {
         reports.firstIndex { $0.id == reportID }
     }

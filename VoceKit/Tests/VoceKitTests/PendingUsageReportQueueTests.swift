@@ -132,3 +132,16 @@ func pendingUsageReportsRetryPolicy() {
     #expect(!PendingUsageReportQueue.shouldRetry(httpStatus: 404))
     #expect(!PendingUsageReportQueue.shouldRetry(httpStatus: 422))
 }
+
+@Test("Failed reports skip only their own email or feature, and stale accounts are dropped")
+func pendingUsageReportsFailureDisposition() {
+    typealias Queue = PendingUsageReportQueue
+    #expect(Queue.failureDisposition(httpStatus: nil, isCurrentSubscriber: true) == .retryLaterSkippingFeature)
+    #expect(Queue.failureDisposition(httpStatus: nil, isCurrentSubscriber: false) == .retryLaterSkippingFeature)
+    #expect(Queue.failureDisposition(httpStatus: 503, isCurrentSubscriber: true) == .retryLaterSkippingFeature)
+    #expect(Queue.failureDisposition(httpStatus: 401, isCurrentSubscriber: true) == .retryLaterSkippingEmail)
+    #expect(Queue.failureDisposition(httpStatus: 401, isCurrentSubscriber: false) == .discard)
+    #expect(Queue.failureDisposition(httpStatus: 403, isCurrentSubscriber: false) == .discard)
+    #expect(Queue.failureDisposition(httpStatus: 403, isCurrentSubscriber: true) == .discard)
+    #expect(Queue.failureDisposition(httpStatus: 400, isCurrentSubscriber: true) == .discard)
+}

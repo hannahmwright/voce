@@ -3740,12 +3740,20 @@ final class DictationController: ObservableObject {
     /// successful entitlement check, report, or launch.
     private func deliverPendingUsageReports() async {
         defer { usageReportFlushTask = nil }
+        // A failure only holds back reports that would fail the same way
+        // (that email's session, or that email/feature); others still go.
+        var skippedEmails = Set<String>()
+        var skippedFeatures = Set<String>()
+        func isSkipped(_ report: PendingUsageReportQueue.Report) -> Bool {
+            skippedEmails.contains(report.email)
+                || skippedFeatures.contains("\(report.email)|\(report.feature)")
+        }
         repeat {
             usageReportFlushRequested = false
             pendingUsageReports.pruneExpired(now: Date())
             persistPendingUsageReports()
 
-            for queuedReport in pendingUsageReports.reports {
+            for queuedReport in pendingUsageReports.reports where !isSkipped(queuedReport) {
                 // Earlier sends in this pass may have let more seconds
                 // coalesce into a report that had not started; send what is
                 // queued now, and freeze it so a resend is identical.
@@ -3788,20 +3796,34 @@ final class DictationController: ObservableObject {
                     default:
                         httpStatus = nil
                     }
-                    Self.logger.error(
-                        "Could not report \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage: \(error.localizedDescription, privacy: .public)"
+                    let disposition = PendingUsageReportQueue.failureDisposition(
+                        httpStatus: httpStatus,
+                        isCurrentSubscriber: normalizedSubscriberEmail == report.email
                     )
-                    guard PendingUsageReportQueue.shouldRetry(httpStatus: httpStatus) else {
+                    switch disposition {
+                    case .discard:
+                        Self.logger.error(
+                            "Dropping \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage the backend will not accept: \(error.localizedDescription, privacy: .public)"
+                        )
                         pendingUsageReports.discard(reportID: report.id)
                         persistPendingUsageReports()
-                        continue
+                    case .retryLaterSkippingEmail:
+                        Self.logger.error(
+                            "Could not report \(report.feature, privacy: .public) usage until the account is verified again: \(error.localizedDescription, privacy: .public)"
+                        )
+                        skippedEmails.insert(report.email)
+                    case .retryLaterSkippingFeature:
+                        // Likely offline or the backend is down; keep it
+                        // queued until the next trigger.
+                        Self.logger.error(
+                            "Could not report \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage: \(error.localizedDescription, privacy: .public)"
+                        )
+                        skippedFeatures.insert("\(report.email)|\(report.feature)")
                     }
-                    // Likely offline or the backend is down; keep everything
-                    // queued until the next trigger rather than retrying now.
-                    return
                 }
             }
-        } while usageReportFlushRequested && !pendingUsageReports.isEmpty
+        } while usageReportFlushRequested
+            && pendingUsageReports.reports.contains(where: { !isSkipped($0) })
     }
 
     private func applyUsageReportResponse(
