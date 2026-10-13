@@ -349,6 +349,9 @@ final class DictationController: ObservableObject {
     private var nextCompletionSequenceToCommit = 0
     private var completedCompletionSequences = Set<Int>()
     private var completionSequenceWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var pendingUsageReports = PendingUsageReportQueue()
+    private var usageReportFlushTask: Task<Void, Never>?
+    private var usageReportFlushRequested = false
     private var pendingStartAfterAudioSecured: RecordingMode?
     private var pendingStartCompletionActionOverride: CompletionAction?
     private var lastRecordingStopTime: CFAbsoluteTime = 0
@@ -405,6 +408,7 @@ final class DictationController: ObservableObject {
         )
         self.snippetService = SnippetService(snippets: AppPreferences.default.snippets)
         self.voiceCommandService = VoiceCommandService(commands: AppPreferences.default.voiceCommands)
+        self.pendingUsageReports = Self.loadPendingUsageReports()
 
         captureService.onAudioLevelChanged = { [weak overlay] level in
             overlay?.updateAudioLevel(level)
@@ -3365,6 +3369,9 @@ final class DictationController: ObservableObject {
             do {
                 let entitlement = try await entitlementService.check(email: email)
                 await MainActor.run {
+                    // The backend is reachable again: send usage that an
+                    // earlier report could not deliver.
+                    self?.flushPendingUsageReports()
                     guard self?.normalizedSubscriberEmail == email else { return }
                     self?.voceProEntitlementStatus = entitlement.entitled
                         ? .entitled(entitlement)
@@ -3386,35 +3393,7 @@ final class DictationController: ObservableObject {
     }
 
     private func recordVoceUsageSeconds(_ seconds: TimeInterval) {
-        let email = normalizedSubscriberEmail
-        guard !email.isEmpty, seconds > 0 else { return }
-
-        let wholeSeconds = max(1, Int(ceil(seconds)))
-        Task { [weak self, entitlementService] in
-            do {
-                let entitlement = try await entitlementService.recordUsage(
-                    email: email,
-                    seconds: wholeSeconds
-                )
-                await MainActor.run {
-                    guard self?.normalizedSubscriberEmail == email else { return }
-                    self?.voceProEntitlementStatus = entitlement.entitled
-                        ? .entitled(entitlement)
-                        : .notEntitled(email: email)
-                }
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription
-                    ?? "Could not update Voce usage."
-                await MainActor.run {
-                    guard self?.normalizedSubscriberEmail == email else { return }
-                    if case VoceProEntitlementError.authenticationRequired = error {
-                        self?.voceProEntitlementStatus = .needsVerification(email: email)
-                    } else {
-                        self?.voceProEntitlementStatus = .failed(email: email, message: message)
-                    }
-                }
-            }
-        }
+        enqueueUsageReport(feature: .appAccess, seconds: seconds)
     }
 
     private func recordDictationAuditUsage(mode: ActiveCloudUsageMetering?, seconds: TimeInterval) {
@@ -3432,49 +3411,138 @@ final class DictationController: ObservableObject {
     }
 
     private func recordAuditUsageSeconds(feature: VoceEntitlementFeature, seconds: TimeInterval) {
-        let email = normalizedSubscriberEmail
-        guard !email.isEmpty, seconds > 0 else { return }
-
-        let wholeSeconds = max(1, Int(ceil(seconds)))
-        Task { [entitlementService] in
-            do {
-                _ = try await entitlementService.recordUsage(
-                    email: email,
-                    feature: feature,
-                    seconds: wholeSeconds
-                )
-            } catch {
-                Self.logger.error(
-                    "Could not update dictation audit usage \(feature.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-            }
-        }
+        enqueueUsageReport(feature: feature, seconds: seconds)
     }
 
     private func recordHostedCloudUsageSeconds(_ seconds: TimeInterval) {
+        enqueueUsageReport(feature: .cloudDictation, seconds: seconds)
+    }
+
+    // MARK: - Usage report delivery
+
+    private static let pendingUsageReportsDefaultsKey = "voce.pendingUsageReports"
+
+    private static func loadPendingUsageReports() -> PendingUsageReportQueue {
+        guard let data = UserDefaults.standard.data(forKey: pendingUsageReportsDefaultsKey),
+              let queue = try? JSONDecoder().decode(PendingUsageReportQueue.self, from: data)
+        else { return PendingUsageReportQueue() }
+        return queue
+    }
+
+    private func persistPendingUsageReports() {
+        if pendingUsageReports.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.pendingUsageReportsDefaultsKey)
+        } else if let data = try? JSONEncoder().encode(pendingUsageReports) {
+            UserDefaults.standard.set(data, forKey: Self.pendingUsageReportsDefaultsKey)
+        }
+    }
+
+    /// Queues usage for delivery (persisted first, so a failed request, a
+    /// quit or a crash does not lose it) and tries to send it right away.
+    private func enqueueUsageReport(feature: VoceEntitlementFeature, seconds: TimeInterval) {
         let email = normalizedSubscriberEmail
         guard !email.isEmpty, seconds > 0 else { return }
 
-        let wholeSeconds = max(1, Int(ceil(seconds)))
-        Task { [weak self, entitlementService] in
-            do {
-                let entitlement = try await entitlementService.recordUsage(
-                    email: email,
-                    feature: .cloudDictation,
-                    seconds: wholeSeconds
-                )
-                await MainActor.run {
-                    guard self?.normalizedSubscriberEmail == email else { return }
-                    self?.voceProEntitlementStatus = entitlement.hasFeature(.appAccess)
-                        ? .entitled(entitlement)
-                        : .notEntitled(email: email)
+        pendingUsageReports.enqueue(
+            email: email,
+            feature: feature.rawValue,
+            seconds: max(1, Int(ceil(seconds))),
+            now: Date()
+        )
+        persistPendingUsageReports()
+        flushPendingUsageReports()
+    }
+
+    private func flushPendingUsageReports() {
+        guard usageReportFlushTask == nil else {
+            usageReportFlushRequested = true
+            return
+        }
+        guard !pendingUsageReports.isEmpty else { return }
+        usageReportFlushTask = Task { [weak self] in
+            await self?.deliverPendingUsageReports()
+        }
+    }
+
+    /// Sends queued reports one at a time. A failed delivery never changes
+    /// the entitlement to `.failed`: that would block dictation over a
+    /// metering hiccup. Transient failures stay queued for the next
+    /// successful entitlement check, report, or launch.
+    private func deliverPendingUsageReports() async {
+        defer { usageReportFlushTask = nil }
+        repeat {
+            usageReportFlushRequested = false
+            pendingUsageReports.pruneExpired(now: Date())
+            persistPendingUsageReports()
+
+            for report in pendingUsageReports.reports {
+                guard let feature = VoceEntitlementFeature(rawValue: report.feature) else {
+                    pendingUsageReports.discard(email: report.email, feature: report.feature)
+                    persistPendingUsageReports()
+                    continue
                 }
-            } catch {
-                // Hosted usage metering should not make a completed dictation
-                // look failed. The next entitlement refresh will retry the read
-                // side and recover the visible usage state.
-                Self.logger.error("Could not update hosted cloud usage: \(error.localizedDescription, privacy: .public)")
+
+                do {
+                    let entitlement = try await entitlementService.recordUsage(
+                        email: report.email,
+                        feature: feature,
+                        seconds: report.seconds
+                    )
+                    pendingUsageReports.acknowledge(email: report.email, feature: report.feature, seconds: report.seconds)
+                    persistPendingUsageReports()
+                    applyUsageReportResponse(entitlement, email: report.email, feature: feature)
+                } catch is DecodingError {
+                    // The backend answered 2xx, so it recorded the usage;
+                    // resending would charge it twice.
+                    pendingUsageReports.acknowledge(email: report.email, feature: report.feature, seconds: report.seconds)
+                    persistPendingUsageReports()
+                } catch {
+                    let httpStatus: Int?
+                    switch error {
+                    case VoceProEntitlementError.authenticationRequired:
+                        httpStatus = 401
+                        if normalizedSubscriberEmail == report.email {
+                            voceProEntitlementStatus = .needsVerification(email: report.email)
+                        }
+                    case VoceProEntitlementError.server(let status):
+                        httpStatus = status
+                    default:
+                        httpStatus = nil
+                    }
+                    Self.logger.error(
+                        "Could not report \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage: \(error.localizedDescription, privacy: .public)"
+                    )
+                    guard PendingUsageReportQueue.shouldRetry(httpStatus: httpStatus) else {
+                        pendingUsageReports.discard(email: report.email, feature: report.feature)
+                        persistPendingUsageReports()
+                        continue
+                    }
+                    // Likely offline or the backend is down; keep everything
+                    // queued until the next trigger rather than retrying now.
+                    return
+                }
             }
+        } while usageReportFlushRequested && !pendingUsageReports.isEmpty
+    }
+
+    private func applyUsageReportResponse(
+        _ entitlement: VoceProEntitlement,
+        email: String,
+        feature: VoceEntitlementFeature
+    ) {
+        guard normalizedSubscriberEmail == email else { return }
+        switch feature {
+        case .appAccess:
+            voceProEntitlementStatus = entitlement.entitled
+                ? .entitled(entitlement)
+                : .notEntitled(email: email)
+        case .cloudDictation:
+            voceProEntitlementStatus = entitlement.hasFeature(.appAccess)
+                ? .entitled(entitlement)
+                : .notEntitled(email: email)
+        default:
+            // Audit counters do not affect access.
+            break
         }
     }
 
