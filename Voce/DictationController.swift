@@ -255,6 +255,16 @@ struct DictationCompletionOutcome: Equatable {
     }
 }
 
+private extension CompletionRoutingError {
+    /// The transcript was only a trigger phrase, so there is nothing to
+    /// insert. Other routing errors (a missing or disabled workflow) still
+    /// leave a transcript worth inserting.
+    var isMissingSpokenContent: Bool {
+        if case .noContentAfterTrigger = self { return true }
+        return false
+    }
+}
+
 private enum ActiveCloudUsageMetering {
     case voceHosted
     case directOpenAI
@@ -2664,10 +2674,17 @@ final class DictationController: ObservableObject {
                         leadingPhraseSelectionEnabled: aiRuntimeEnabled && preferences.ai.leadingPhraseSelectionEnabled,
                         workflows: preferences.ai.workflows
                     )
+                } catch let routingError as CompletionRoutingError where routingError.isMissingSpokenContent {
+                    // Only a trigger phrase was spoken ("Summarize."). Ask for
+                    // the content instead of inserting the trigger word.
+                    presentRoutingError(routingError, finalizedTranscript: finalizedTranscript)
+                    realtimeSession?.discardRecoveryCheckpoint()
+                    await applyDeferredRebuildIfNeeded()
+                    return
                 } catch {
-                    // Routing only picks what to do with the transcript; it
-                    // must never lose it. Fall back to plain insertion (or the
-                    // requested non-AI action) of the finalized transcript.
+                    // A missing or disabled workflow only changes what to do
+                    // with the transcript; it must never lose it. Fall back to
+                    // plain insertion (or the requested non-AI action).
                     Self.logger.error(
                         "Completion routing failed, inserting plain transcript: \(error.localizedDescription, privacy: .public)"
                     )
@@ -2790,19 +2807,7 @@ final class DictationController: ObservableObject {
                         dismissOverlaySoon()
                     }
                 } catch let routingError as CompletionRoutingError {
-                    lastTranscript = finalizedTranscript.cleanText
-                    if isRecording {
-                        restoreActiveRecordingStatus()
-                    } else {
-                        status = routingErrorStatusMessage(for: routingError)
-                        lastError = ""
-                        overlay.hide()
-                        clipboardRecoveryPrompt.hide()
-                    }
-                    scheduleLearningUpdate(for: finalizedTranscript)
-                    if !isRecording {
-                        dismissOverlaySoon()
-                    }
+                    presentRoutingError(routingError, finalizedTranscript: finalizedTranscript)
                 }
                 await refreshHistory()
                 realtimeSession?.discardRecoveryCheckpoint()
@@ -3050,6 +3055,27 @@ final class DictationController: ObservableObject {
             }
             overlayPersistenceBundleIdentifier = nil
             overlayDismissTask = nil
+        }
+    }
+
+    /// Reports a routing outcome that leaves nothing to insert, without the
+    /// failure overlay. Nothing is inserted or added to history.
+    private func presentRoutingError(
+        _ routingError: CompletionRoutingError,
+        finalizedTranscript: FinalizedTranscript
+    ) {
+        lastTranscript = finalizedTranscript.cleanText
+        if isRecording {
+            restoreActiveRecordingStatus()
+        } else {
+            status = routingErrorStatusMessage(for: routingError)
+            lastError = ""
+            overlay.hide()
+            clipboardRecoveryPrompt.hide()
+        }
+        scheduleLearningUpdate(for: finalizedTranscript)
+        if !isRecording {
+            dismissOverlaySoon()
         }
     }
 
