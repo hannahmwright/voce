@@ -210,22 +210,17 @@ public struct LocalCleanupRanker: Sendable {
             return 0
         }
 
-        let loweredRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
+        // Only reward list formatting when the raw text carries the same list
+        // cue the cleanup engine accepts, so prose that merely starts with
+        // "First" or "Bullet points" is not pushed into a list.
         switch structureRewrite.to {
         case "auto-bullets":
-            if loweredRaw.hasPrefix("bullet list ")
-                || loweredRaw.hasPrefix("bullet points ")
-                || loweredRaw.hasPrefix("bulleted list ")
-                || loweredRaw.hasPrefix("bullet point ") {
+            if RuleBasedCleanupEngine.explicitListCue(in: rawText)?.kind == .bullets {
                 return 1
             }
         case "auto-numbered":
-            if loweredRaw.hasPrefix("numbered list ")
-                || loweredRaw.hasPrefix("number list ")
-                || loweredRaw.hasPrefix("numbered points ")
-                || loweredRaw.hasPrefix("numbered items ")
-                || loweredRaw.hasPrefix("first ") {
+            if RuleBasedCleanupEngine.explicitListCue(in: rawText)?.kind == .numbered
+                || RuleBasedCleanupEngine.ordinalListItems(from: rawText) != nil {
                 return 1
             }
         default:

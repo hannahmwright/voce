@@ -1,7 +1,7 @@
 import Foundation
 
 public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
-    private enum AutoListKind {
+    enum AutoListKind: Sendable {
         case bullets
         case numbered
     }
@@ -317,86 +317,103 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     }
 
     private func explicitListRewrite(from text: String) -> (text: String, edits: [TranscriptEdit])? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let lowered = trimmed.lowercased()
-        let bulletPrefixes = [
-            "bullet list ",
-            "bullet points ",
-            "bulleted list ",
-            "bullet point "
-        ]
-        let numberedPrefixes = [
-            "numbered list ",
-            "number list ",
-            "numbered points ",
-            "numbered items "
-        ]
-
-        if let prefix = bulletPrefixes.first(where: { lowered.hasPrefix($0) }) {
-            let remainder = String(trimmed.dropFirst(prefix.count))
-            let items = splitListItems(remainder)
-            guard items.count >= 2 else { return nil }
+        guard let cue = Self.explicitListCue(in: text) else { return nil }
+        let items = splitListItems(cue.remainder)
+        guard items.count >= 2 else { return nil }
+        switch cue.kind {
+        case .bullets:
             return formatList(items: items, kind: .bullets, source: "auto-bullets")
-        }
-
-        if let prefix = numberedPrefixes.first(where: { lowered.hasPrefix($0) }) {
-            let remainder = String(trimmed.dropFirst(prefix.count))
-            let items = splitListItems(remainder)
-            guard items.count >= 2 else { return nil }
+        case .numbered:
             return formatList(items: items, kind: .numbered, source: "auto-numbered")
         }
+    }
 
+    /// Spoken list cues. "bullet list"/"numbered list" may be followed directly
+    /// by the items; the noun-like "bullet points"/"numbered items" require a
+    /// colon so prose such as "Bullet points are great, but…" is left alone.
+    private static let explicitListCueRegexes: [(regex: NSRegularExpression, kind: AutoListKind)] = {
+        let specs: [(String, AutoListKind)] = [
+            (#"^\s*(?:bullet(?:ed)? list)\s*:?\s+"#, .bullets),
+            (#"^\s*(?:bullet points?)\s*:\s*"#, .bullets),
+            (#"^\s*(?:numbered list|number list)\s*:?\s+"#, .numbered),
+            (#"^\s*(?:numbered points|numbered items)\s*:\s*"#, .numbered),
+        ]
+        return specs.compactMap { pattern, kind in
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+            return (regex, kind)
+        }
+    }()
+
+    /// Words that, right after a colon-less cue, show it is the sentence subject
+    /// ("Bullet list was too long, so I cut it.") rather than a dictated list.
+    private static let listCueProseFollowers: Set<String> = [
+        "is", "are", "was", "were", "has", "have", "had", "looks", "looked", "seems", "seemed",
+        "will", "would", "should", "could", "can", "might", "must", "does", "did", "that",
+        "which", "of", "in", "on", "for", "with", "needs", "needed", "items",
+    ]
+
+    static func explicitListCue(in text: String) -> (kind: AutoListKind, remainder: String)? {
+        let nsText = text as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+        for cue in explicitListCueRegexes {
+            guard let match = cue.regex.firstMatch(in: text, range: fullRange) else { continue }
+            let remainder = nsText.substring(from: match.range.location + match.range.length)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let matchedCue = nsText.substring(with: match.range)
+            if !matchedCue.contains(":"),
+               let firstWord = WordTokenizer.words(in: String(remainder.prefix(32))).first,
+               listCueProseFollowers.contains(firstWord) {
+                return nil
+            }
+            guard !remainder.isEmpty else { return nil }
+            return (cue.kind, remainder)
+        }
         return nil
     }
 
     private func ordinalListRewrite(from text: String) -> (text: String, edits: [TranscriptEdit])? {
+        guard let items = Self.ordinalListItems(from: text) else { return nil }
+        return formatList(items: items, kind: .numbered, source: "auto-numbered")
+    }
+
+    /// Ordinal list patterns ("first … second … [third …]"). An ordinal only
+    /// starts an item when it is not part of a phrase: never "first of all",
+    /// "second of", "a second", "the second", "in a second", and so on.
+    private static let ordinalListRegexes: [NSRegularExpression] = {
+        let notPhrase = #"(?!\s+of\b)"#
+        let notAfterDeterminer = #"(?<!\b(?:a|an|the|one|per|each|every|this|that|its|in|at|for|wait|just|split)\s)"#
+        func ordinal(_ word: String) -> String { notAfterDeterminer + word + notPhrase }
+
+        let base = #"(?is)^\s*first"# + notPhrase + #"\s+(.+?)\s+"# + ordinal("second") + #"\s+(.+?)"#
         let patterns = [
-            ("first", "second", "third"),
-            ("first", "second", nil),
+            base + #"\s+"# + ordinal("third") + #"\s+(.+?)\s*[.!?]?\s*$"#,
+            base + #"\s*[.!?]?\s*$"#,
         ]
+        return patterns.compactMap { try? NSRegularExpression(pattern: $0) }
+    }()
 
+    static func ordinalListItems(from text: String) -> [String]? {
         let fullRange = NSRange(text.startIndex..., in: text)
-        for pattern in patterns {
-            let regexPattern = ordinalPattern(first: pattern.0, second: pattern.1, third: pattern.2)
-            guard let regex = try? NSRegularExpression(pattern: regexPattern, options: [.caseInsensitive]) else {
-                continue
-            }
-
+        for regex in ordinalListRegexes {
             guard let match = regex.firstMatch(in: text, range: fullRange) else { continue }
 
-            let itemRanges = (1..<match.numberOfRanges).compactMap { index -> Range<String.Index>? in
-                let range = match.range(at: index)
-                guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else {
-                    return nil
+            let items = (1..<match.numberOfRanges)
+                .compactMap { index -> Range<String.Index>? in
+                    let range = match.range(at: index)
+                    guard range.location != NSNotFound else { return nil }
+                    return Range(range, in: text)
                 }
-                return swiftRange
-            }
-
-            let items = itemRanges
                 .map { text[$0].trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
                 .filter { !$0.contains("\n") }
 
             guard items.count >= 2 else { continue }
             guard items.allSatisfy({ $0.split(whereSeparator: \.isWhitespace).count <= 12 }) else { continue }
-
-            return formatList(items: items, kind: .numbered, source: "auto-numbered")
+            return items
         }
-
         return nil
     }
 
-    private func ordinalPattern(first: String, second: String, third: String?) -> String {
-        let base = #"(?is)^\s*"# +
-            first + #"\s+(.+?)\s+"# +
-            second + #"\s+(.+?)"#
-        if let third {
-            return base + #"\s+"# + third + #"\s+(.+?)\s*[.!?]?\s*$"#
-        }
-        return base + #"\s*[.!?]?\s*$"#
-    }
 
     private func splitListItems(_ text: String) -> [String] {
         let normalized = text
