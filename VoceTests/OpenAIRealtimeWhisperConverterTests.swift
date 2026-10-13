@@ -270,6 +270,31 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertEqual(combined, "The first session continues seamlessly.")
     }
 
+    func testRolloverFailsFastOnCredentialAndQuotaErrors() {
+        let nonRetryable: [Error] = [
+            CloudDictationError.missingAPIKey,
+            CloudDictationError.authenticationRequired,
+            CloudDictationError.authenticationFailed,
+            CloudDictationError.subscriptionRequired,
+            CloudDictationError.hostedCloudMinutesExhausted,
+            CloudDictationError.providerError("You exceeded your current quota, please check your plan.")
+        ]
+        for error in nonRetryable {
+            XCTAssertTrue(OpenAIRealtimeWhisperCaptureSession.isNonRetryableConnectionError(error), "\(error)")
+        }
+
+        let retryable: [Error] = [
+            CloudDictationError.timedOut,
+            CloudDictationError.networkUnavailable,
+            CloudDictationError.rateLimited,
+            CloudDictationError.providerError("Internal server error"),
+            URLError(.networkConnectionLost)
+        ]
+        for error in retryable {
+            XCTAssertFalse(OpenAIRealtimeWhisperCaptureSession.isNonRetryableConnectionError(error), "\(error)")
+        }
+    }
+
     func testRealtimeConnectionRollsBeforeProviderMaximum() {
         XCTAssertLessThan(
             OpenAIRealtimeWhisperCaptureSession.connectionRolloverIntervalSeconds,

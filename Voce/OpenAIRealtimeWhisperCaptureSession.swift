@@ -686,6 +686,46 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let writer: RealtimeWebSocketWriter
         let accumulator: RealtimeTranscriptAccumulator
         let receiveTask: Task<Void, Never>
+
+        /// The accumulator fails as soon as the receive loop errors, so an
+        /// open accumulator plus a running socket means the server has not
+        /// closed the session.
+        func isHealthy() async -> Bool {
+            guard socket.state == .running, socket.closeCode == .invalid else { return false }
+            return await accumulator.isOpen
+        }
+    }
+
+    /// Credential, entitlement and quota failures will not recover within the
+    /// rollover window, so they end the dictation right away (its transcript
+    /// is still recovered) instead of being retried for three minutes.
+    static func isNonRetryableConnectionError(_ error: Error) -> Bool {
+        switch error as? CloudDictationError {
+        case .missingAPIKey,
+             .authenticationRequired,
+             .authenticationFailed,
+             .subscriptionRequired,
+             .hostedCloudMinutesExhausted:
+            return true
+        case .providerError(let message):
+            let message = message.lowercased()
+            return message.contains("insufficient_quota")
+                || message.contains("exceeded your current quota")
+                || message.contains("invalid_api_key")
+                || message.contains("incorrect api key")
+        default:
+            return false
+        }
+    }
+
+    /// A rejected websocket upgrade surfaces as a generic URL error; report
+    /// 401/403 as an authentication failure so it is not retried.
+    private static func connectionError(for socket: URLSessionWebSocketTask, underlying error: Error) -> Error {
+        if let statusCode = (socket.response as? HTTPURLResponse)?.statusCode,
+           statusCode == 401 || statusCode == 403 {
+            return CloudDictationError.authenticationFailed
+        }
+        return error
     }
 
     /// Closes a connection that was never (or is no longer) installed and
@@ -748,7 +788,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             receiveTask.cancel()
             socket.cancel(with: .goingAway, reason: nil)
             await longFormTranscript.removeSegment(segmentID)
-            throw error
+            throw Self.connectionError(for: socket, underlying: error)
         }
     }
 
@@ -787,6 +827,9 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 Self.logger.error(
                     "Realtime connection rollover attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
                 )
+                if Self.isNonRetryableConnectionError(error) {
+                    break
+                }
                 if attempt < 12 {
                     try? await Task.sleep(nanoseconds: 15_000_000_000)
                 }
@@ -804,17 +847,27 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             throw CloudDictationError.invalidResponse
         }
 
-        let newConnection = try await openConnection(forceCredentialRefresh: true)
-        guard !Task.isCancelled, !isStopped else {
-            await discard(newConnection)
-            throw CancellationError()
-        }
-
         // Prefer a natural speech boundary so the provider never has to split
         // one spoken word across two transcription sessions. Continuous speech
-        // still rolls after the bounded wait, well before OpenAI's 60-minute cap.
+        // still rolls after the bounded wait, well before OpenAI's 60-minute
+        // cap. Wait before opening the replacement: an idle replacement socket
+        // can be closed while it waits, and its errors are not reported until
+        // it becomes the active connection.
+        try await waitForQuietRolloverBoundary(maximumWaitSeconds: 3 * 60)
+
+        let newConnection = try await openConnection(forceCredentialRefresh: true)
         do {
-            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 3 * 60)
+            guard !Task.isCancelled, !isStopped else {
+                throw CancellationError()
+            }
+            // Speech may have resumed during the handshake, so briefly
+            // re-align with a pause, then make sure the replacement is still
+            // open before routing audio to it. An unhealthy replacement is
+            // discarded and retried while the old connection keeps recording.
+            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 5)
+            guard await newConnection.isHealthy() else {
+                throw CloudDictationError.networkUnavailable
+            }
         } catch {
             await discard(newConnection)
             throw error
@@ -1534,6 +1587,11 @@ private actor RealtimeTranscriptAccumulator {
 
     func snapshot() -> String {
         OpenAIRealtimeWhisperCaptureSession.normalizeText(partialText)
+    }
+
+    /// `false` once the receive loop failed or the final transcript arrived.
+    var isOpen: Bool {
+        result == nil
     }
 
     func waitForFinal(timeoutSeconds: TimeInterval) async throws -> String {
