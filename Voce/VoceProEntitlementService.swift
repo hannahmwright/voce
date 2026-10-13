@@ -366,7 +366,8 @@ actor VoceProEntitlementService {
     func recordUsage(
         email: String,
         feature: VoceEntitlementFeature = .appAccess,
-        seconds: Int
+        seconds: Int,
+        reportID: UUID? = nil
     ) async throws -> VoceProEntitlement {
         var request = URLRequest(url: usageEndpointURL)
         request.httpMethod = "POST"
@@ -376,7 +377,12 @@ actor VoceProEntitlementService {
             request.setValue("Bearer \(apiSecret)", forHTTPHeaderField: "authorization")
         }
         request.httpBody = try JSONEncoder().encode(
-            RecordUsageRequest(email: email, feature: feature.rawValue, seconds: seconds)
+            RecordUsageRequest(
+                email: email,
+                feature: feature.rawValue,
+                seconds: seconds,
+                reportId: reportID?.uuidString
+            )
         )
 
         let (data, response) = try await session.data(for: request)
@@ -718,6 +724,9 @@ private struct RecordUsageRequest: Encodable {
     var email: String
     var feature: String
     var seconds: Int
+    /// Stable per queued report so the backend can ignore a resend of a
+    /// report it already recorded. Omitted when nil.
+    var reportId: String?
 }
 
 private struct PortalSessionRequest: Encodable {

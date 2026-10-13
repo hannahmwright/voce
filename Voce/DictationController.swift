@@ -205,11 +205,64 @@ final class ClipboardRecoveryPromptPresenter: NSObject {
     }
 }
 
+/// Publishes the recording time apart from DictationController, so the 1 Hz
+/// tick re-renders only the views that show it rather than every view that
+/// observes the controller.
+@MainActor
+final class RecordingElapsedClock: ObservableObject {
+    @Published fileprivate(set) var seconds: TimeInterval = 0
+}
+
+/// Renders `content` with the current recording time, observing only `clock`.
+struct RecordingElapsedReader<Content: View>: View {
+    @ObservedObject var clock: RecordingElapsedClock
+    @ViewBuilder let content: (TimeInterval) -> Content
+
+    var body: some View {
+        content(clock.seconds)
+    }
+}
+
 @MainActor
 struct DailyUsageActivityDay: Equatable {
     let day: Date
     let wordCount: Int
     let sessionCount: Int
+}
+
+/// How a finished dictation was delivered. Published so views can react to
+/// the outcome without parsing the display status, which varies by app,
+/// permissions and polish.
+struct DictationCompletionOutcome: Equatable {
+    enum Delivery: Equatable {
+        case inserted
+        /// Left on the clipboard for the user to paste.
+        case copiedToClipboard
+        /// Copied; Voce pastes once the user clicks the input again.
+        case needsRefocus
+        /// A paste was sent but could not be confirmed.
+        case pasteUnverified
+        case failed
+    }
+
+    /// Increments per completion, so repeating the same text is observable.
+    let id: Int
+    let delivery: Delivery
+    let text: String
+
+    var leftTextOnClipboard: Bool {
+        delivery == .copiedToClipboard || delivery == .needsRefocus
+    }
+}
+
+private extension CompletionRoutingError {
+    /// The transcript was only a trigger phrase, so there is nothing to
+    /// insert. Other routing errors (a missing or disabled workflow) still
+    /// leave a transcript worth inserting.
+    var isMissingSpokenContent: Bool {
+        if case .noContentAfterTrigger = self { return true }
+        return false
+    }
 }
 
 private enum ActiveCloudUsageMetering {
@@ -254,16 +307,30 @@ final class DictationController: ObservableObject {
     @Published var speechRecognitionPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var accessibilityPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
     @Published var inputMonitoringPermissionStatus: PermissionDiagnostics.AccessStatus = .unknown
-    @Published var recordingElapsed: TimeInterval = 0
+    let recordingElapsedClock = RecordingElapsedClock()
+    /// Whole timer ticks since recording started; for display and usage-limit
+    /// checks only (usage is metered from the capture itself).
+    private(set) var recordingElapsed: TimeInterval {
+        get { recordingElapsedClock.seconds }
+        set {
+            guard recordingElapsedClock.seconds != newValue else { return }
+            recordingElapsedClock.seconds = newValue
+        }
+    }
     @Published var hasBootstrapped = false
     @Published private(set) var backgroundProcessingSessionCount: Int = 0
+    @Published private(set) var lastCompletionOutcome: DictationCompletionOutcome?
     @Published var voceProEntitlementStatus: VoceProEntitlementStatus = .missingEmail {
         didSet {
             guard hasBootstrapped else { return }
             if voceProEntitlementStatus.isEntitled {
                 prefetchRealtimeWhisperClientSecretIfNeeded()
             }
-            if cloudRoutingSignature(for: oldValue) != cloudRoutingSignature(for: voceProEntitlementStatus) {
+            // Every refresh passes through `.checking`, which looks like
+            // "no cloud". Comparing against what the runtime was built with,
+            // and skipping that transient state, avoids two rebuilds per refresh.
+            guard !voceProEntitlementStatus.isChecking else { return }
+            if cloudRoutingSignature(for: voceProEntitlementStatus) != runtimeCloudRoutingSignature {
                 Task { @MainActor [weak self] in
                     await self?.rebuildRuntimeOrDefer(announceImmediateSave: false)
                 }
@@ -301,7 +368,15 @@ final class DictationController: ObservableObject {
     private var cachedAIAvailability: (status: AppleFoundationModelsAvailabilityStatus, checkedAt: CFAbsoluteTime)?
 
     private var recordingStateMachine = RecordingStateMachine()
-    private var currentSessionID: SessionID?
+    /// The coordinator a streaming session was registered on, kept with its
+    /// ID: a runtime rebuild can replace `coordinator` mid-dictation, and only
+    /// the original coordinator knows the session.
+    private struct RegisteredStreamingSession {
+        let id: SessionID
+        let coordinator: SessionCoordinator
+    }
+
+    private var currentSession: RegisteredStreamingSession?
     private var latestDictationSequence: UInt64 = 0
     private var activeDictationSequence: UInt64?
     private var activeAppContext: AppContext?
@@ -312,11 +387,29 @@ final class DictationController: ObservableObject {
     private var activeMediaToken: MediaInterruptionToken?
     private var activeStartTask: Task<Void, Never>?
     private var activeStartTaskID: UUID?
+    /// The start task that is still running, even after a stop or failure
+    /// cleared `activeStartTask`. Only the start task itself clears this, so
+    /// every stop and failure path can wait for setup to settle.
+    private var inFlightStartTask: (id: UUID, task: Task<Void, Never>)?
     private var activePreviewSession: AppleSpeechPreviewSession?
     private var activeRealtimeWhisperSession: OpenAIRealtimeWhisperCaptureSession?
     private var activeCloudUsageMetering: ActiveCloudUsageMetering?
+    /// When the active dictation's capture began. Whichever path takes the
+    /// capture over (stop, streaming failure, teardown) meters it once.
+    private struct CaptureUsageMeter {
+        let dictationSequence: UInt64
+        let startedAt: SuspendingClock.Instant
+    }
+
+    private var activeCaptureUsageMeter: CaptureUsageMeter?
     private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
+    /// What the current runtime was built from, so saves that change nothing
+    /// runtime-relevant (or that were already applied in place) skip the
+    /// rebuild.
+    private var runtimeAppliedPreferences: AppPreferences?
+    private var runtimeCloudRoutingSignature: String?
+    private var appliedLaunchAtLoginEnabled: Bool?
     private let menuBar = MenuBarController()
     private var recordingTimer: Timer?
     private var overlayDismissTask: Task<Void, Never>?
@@ -325,6 +418,7 @@ final class DictationController: ObservableObject {
     private var realtimeWhisperClientSecretRefreshTask: Task<Void, Never>?
     private var captureReadyOverlayStartTaskID: UUID?
     private var terminationObserver: Any?
+    private var hasTornDown = false
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
     private var activeHostedCloudUsageLimitSeconds: TimeInterval?
@@ -334,16 +428,24 @@ final class DictationController: ObservableObject {
     private var lastCloudValidationToken: String?
     private var lastCloudValidationFailureMessage: String?
     private var nextBackgroundProcessingSequence = 0
+    private var nextCompletionOutcomeID = 0
     private var nextCompletionSequenceToCommit = 0
     private var completedCompletionSequences = Set<Int>()
     private var completionSequenceWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var pendingUsageReports = PendingUsageReportQueue()
+    private var usageReportFlushTask: Task<Void, Never>?
+    private var usageReportFlushRequested = false
     private var pendingStartAfterAudioSecured: RecordingMode?
+    private var pendingStartCompletionActionOverride: CompletionAction?
     private var lastRecordingStopTime: CFAbsoluteTime = 0
     private var lastRecordingStopMode: RecordingMode?
 
     private struct SelectionCapture {
         var text: String
         var appContext: AppContext
+        /// The editable field holding the selection, so a quick fix can paste
+        /// its replacement back over it after the popover took focus.
+        var inputTarget: FocusedInputTarget?
     }
 
     private struct PasteboardSnapshot {
@@ -392,6 +494,7 @@ final class DictationController: ObservableObject {
         )
         self.snippetService = SnippetService(snippets: AppPreferences.default.snippets)
         self.voiceCommandService = VoiceCommandService(commands: AppPreferences.default.voiceCommands)
+        self.pendingUsageReports = Self.loadPendingUsageReports()
 
         captureService.onAudioLevelChanged = { [weak overlay] level in
             overlay?.updateAudioLevel(level)
@@ -449,7 +552,10 @@ final class DictationController: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            // The process exits as soon as willTerminate observers return, so
+            // a Task scheduled from here never runs. The observer is
+            // registered on the main queue, so run teardown synchronously.
+            MainActor.assumeIsolated {
                 self?.teardown()
             }
         }
@@ -462,6 +568,8 @@ final class DictationController: ObservableObject {
     /// Idempotent shutdown: stops hotkeys, cancels in-flight work, releases media,
     /// hides the overlay, and invalidates timers. Triggered by willTerminateNotification.
     func teardown() {
+        guard !hasTornDown else { return }
+        hasTornDown = true
         if let observer = terminationObserver {
             NotificationCenter.default.removeObserver(observer)
             terminationObserver = nil
@@ -475,27 +583,46 @@ final class DictationController: ObservableObject {
         realtimeWhisperClientSecretPrefetchTask = nil
         realtimeWhisperClientSecretRefreshTask?.cancel()
         realtimeWhisperClientSecretRefreshTask = nil
-        captureReadyOverlayStartTaskID = nil
+        resetRecordingIndicators()
         overlay.hide()
         screenRecordingHaze.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
         activeStartTask?.cancel()
         activeStartTask = nil
+        activeStartTaskID = nil
+        inFlightStartTask?.task.cancel()
+        inFlightStartTask = nil
+        if let meter = activeCaptureUsageMeter {
+            // Persisted by the usage queue, so it is reported on next launch.
+            finishCaptureUsageMetering(
+                dictationSequence: meter.dictationSequence,
+                cloudUsageMetering: activeCloudUsageMetering
+            )
+        }
         activeDictationSequence = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
         activeRealtimeWhisperSession?.preserveRecoveryCheckpoint()
         activeRealtimeWhisperSession?.cancel()
         activeRealtimeWhisperSession = nil
-        if let token = activeMediaToken {
-            mediaInterruption.endInterruption(token: token)
-            activeMediaToken = nil
+        endActiveMediaInterruption()
+        persistLearningDataBeforeExit()
+    }
+
+    /// Saves learning data before the process exits. LearningEngine is an
+    /// actor, so wait for the save on another executor, bounded so a busy
+    /// engine cannot hang quitting.
+    private func persistLearningDataBeforeExit() {
+        let learningEngine = learningEngine
+        let saved = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            await learningEngine.save()
+            saved.signal()
         }
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        // Persist learning data before exit.
-        Task { await learningEngine.save() }
+        if saved.wait(timeout: .now() + 1.5) == .timedOut {
+            Self.logger.error("Timed out saving learning data before exit")
+        }
     }
 
     var menuBarIconName: String {
@@ -549,8 +676,19 @@ final class DictationController: ObservableObject {
 
         Task {
             await preferencesStore.save(snapshot)
+            guard runtimeRebuildNeeded(for: preferences) else { return }
             await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
         }
+    }
+
+    /// Whether `candidate` differs from what the current runtime was built
+    /// from in a way the runtime has to be rebuilt for.
+    private func runtimeRebuildNeeded(for candidate: AppPreferences) -> Bool {
+        guard let runtimeAppliedPreferences else { return true }
+        var normalized = candidate
+        normalized.normalize()
+        return normalized.requiresRuntimeRebuild(comparedTo: runtimeAppliedPreferences)
+            || normalized.billing.subscriberEmail != runtimeAppliedPreferences.billing.subscriberEmail
     }
 
     func applySettingsDraft(preferences draft: AppPreferences, announceImmediateSave: Bool = true) {
@@ -563,6 +701,25 @@ final class DictationController: ObservableObject {
         Task {
             await preferencesStore.save(snapshot)
             await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
+        }
+    }
+
+    /// Applies a field-level change to the current preferences. Views that
+    /// hold a long-lived copy must use this instead of writing their copy back
+    /// whole, which would revert what the controller changed since (metrics,
+    /// usage counters, learned lexicon, overlay anchors).
+    func updatePreferences(_ mutate: (inout AppPreferences) -> Void) {
+        var draft = preferences
+        mutate(&draft)
+        var normalized = draft
+        normalized.normalize()
+        guard normalized != preferences else { return }
+
+        if normalized.requiresRuntimeRebuild(comparedTo: preferences)
+            || normalized.billing.subscriberEmail != preferences.billing.subscriberEmail {
+            applySettingsDraft(preferences: draft, announceImmediateSave: false)
+        } else {
+            savePreferencesQuietly(preferences: draft)
         }
     }
 
@@ -795,6 +952,7 @@ final class DictationController: ObservableObject {
         guard preferences.hotkeys.optionPressToTalkEnabled else { return }
         if pendingStartAfterAudioSecured == .pressToTalk {
             pendingStartAfterAudioSecured = nil
+            pendingStartCompletionActionOverride = nil
             return
         }
         if suppressNextPressToTalkStop {
@@ -811,39 +969,76 @@ final class DictationController: ObservableObject {
             stopSession(mode: .pressToTalk)
             return
         }
+        // Releasing the key after a start was refused or failed must not
+        // replace the reason (e.g. a permission error) with "No active
+        // hold-to-talk recording."
+        if case .ignore = transition, recordingStateMachine.state == .idle {
+            return
+        }
         apply(transition: transition)
     }
 
     func toggleHandsFree() {
+        toggleHandsFree(completionActionOverride: nil)
+    }
+
+    /// - Parameter completionActionOverride: How the dictation this toggle
+    ///   starts or stops should complete. Applied only when the toggle
+    ///   actually starts, queues or stops a dictation.
+    private func toggleHandsFree(completionActionOverride: CompletionAction?) {
         if isRecording,
            activeRecordingMode == .handsFree,
            recordingStateMachine.state != .recordingHandsFree {
+            if let completionActionOverride {
+                pendingCompletionActionOverride = completionActionOverride
+            }
             stopSession(mode: .handsFree)
             return
         }
         if recordingStateMachine.state == .idle {
             guard !shouldIgnoreResidualStartSignal(mode: .handsFree) else { return }
         }
-        if queueStartAfterAudioSecuredIfNeeded(mode: .handsFree) {
+        if queueStartAfterAudioSecuredIfNeeded(
+            mode: .handsFree,
+            completionActionOverride: completionActionOverride
+        ) {
             return
         }
         if recordingStateMachine.state == .idle {
             guard canStartRecordingNow() else { return }
         }
-        apply(transition: recordingStateMachine.handleHandsFreeToggle())
+        let transition = recordingStateMachine.handleHandsFreeToggle()
+        switch transition {
+        case .start(let mode):
+            startSession(mode: mode, completionActionOverride: completionActionOverride)
+        case .stop:
+            if let completionActionOverride {
+                pendingCompletionActionOverride = completionActionOverride
+            }
+            apply(transition: transition)
+        case .ignore:
+            apply(transition: transition)
+        }
     }
 
+    /// Dictation started or stopped from the menu bar is copied to the
+    /// clipboard instead of inserted, since there is no focused input.
     func toggleMenuBarTranscription() {
-        pendingCompletionActionOverride = .copyToClipboard
-        toggleHandsFree()
+        toggleHandsFree(completionActionOverride: .copyToClipboard)
     }
 
+    /// App-initiated stop (overlay stop button, usage-limit auto-stop). Unlike
+    /// a key release this must work even if hold-to-talk was disabled
+    /// mid-recording, and it never applies the "Return to send" override.
     func stopActiveRecording() {
         switch recordingLifecycleState {
         case .recordingHandsFree:
             toggleHandsFree()
         case .recordingPressToTalk:
-            pressToTalkStop()
+            // The hold-to-talk key may still be down; its release belongs to
+            // this stop and must not report "Still transcribing...".
+            suppressNextPressToTalkStop = true
+            apply(transition: recordingStateMachine.handlePressToTalkKeyUp())
         case .idle, .transcribing:
             if let activeRecordingMode, isRecording {
                 stopSession(mode: activeRecordingMode)
@@ -1833,7 +2028,47 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func startSession(mode: RecordingMode) {
+    /// Returns the lifecycle to idle on behalf of the dictation `owner`.
+    /// Late work from an earlier dictation is a no-op once a newer dictation
+    /// owns the state. With no owner the reset only applies to a state that no
+    /// dictation has claimed, which can only be a leftover of a failed start.
+    @discardableResult
+    private func markRecordingFinished(owner: UInt64?) -> Bool {
+        if let owner {
+            return recordingStateMachine.markTranscriptionCompleted(owner: owner)
+        }
+        guard recordingStateMachine.state != .idle,
+              recordingStateMachine.owner == nil
+        else { return false }
+        recordingStateMachine.markTranscriptionCompleted()
+        return true
+    }
+
+    /// Returns the recording indicators, timer and per-recording limits to
+    /// "not recording". Shared by every path that ends or abandons a
+    /// recording (start failure, streaming failure, stop, teardown); each
+    /// path still releases its own per-dictation state.
+    private func resetRecordingIndicators() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        captureReadyOverlayStartTaskID = nil
+        recordingElapsed = 0
+        isRecording = false
+        handsFreeOn = false
+        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
+        activeRecordingMode = nil
+        activeFreeUsageLimitSeconds = nil
+        activeHostedCloudUsageLimitSeconds = nil
+        updateActiveRecordingHotkeys()
+    }
+
+    private func endActiveMediaInterruption() {
+        guard let token = activeMediaToken else { return }
+        mediaInterruption.endInterruption(token: token)
+        activeMediaToken = nil
+    }
+
+    private func startSession(mode: RecordingMode, completionActionOverride: CompletionAction? = nil) {
         guard let coordinator else {
             status = "Runtime not ready yet."
             recordingStateMachine.markTranscriptionFailed()
@@ -1847,6 +2082,7 @@ final class DictationController: ObservableObject {
         latestDictationSequence &+= 1
         let dictationSequence = latestDictationSequence
         activeDictationSequence = dictationSequence
+        recordingStateMachine.claim(owner: dictationSequence)
         let capturedContext = AppContextProvider.current()
         let capturedInputTarget = FocusedInputTarget.captureCurrent()
         VoceDiagnosticStore.shared.record(
@@ -1861,7 +2097,7 @@ final class DictationController: ObservableObject {
         activeAppContext = capturedContext
         activeInputTarget = capturedInputTarget
         overlayPersistenceBundleIdentifier = capturedContext.bundleIdentifier
-        pendingCompletionActionOverride = nil
+        pendingCompletionActionOverride = completionActionOverride
         activeStyleOverride = nil
         activeCloudUsageMetering = nil
         activeFreeUsageLimitSeconds = voceProEntitlementStatus.freeRecordingRemainingSeconds
@@ -1890,13 +2126,36 @@ final class DictationController: ObservableObject {
         let startTaskID = UUID()
         activeStartTaskID = startTaskID
         captureReadyOverlayStartTaskID = nil
-        activeStartTask = Task { @MainActor in
+        let startTask = Task { @MainActor in
+            defer {
+                if inFlightStartTask?.id == startTaskID {
+                    inFlightStartTask = nil
+                }
+            }
+            var startMediaToken: MediaInterruptionToken?
             do {
+                // A stop that lands before the capture session exists (a quick
+                // tap) makes this start stale. Bail at each suspension point
+                // instead of opening the microphone and socket for nothing; the
+                // stop finishes the dictation once this task returns.
                 try await ensureMicrophonePermission()
+                guard activeStartTaskID == startTaskID else {
+                    abandonStartBeforeCapture(dictationSequence: dictationSequence, mediaToken: nil)
+                    return
+                }
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
+                guard activeStartTaskID == startTaskID else {
+                    abandonStartBeforeCapture(dictationSequence: dictationSequence, mediaToken: nil)
+                    return
+                }
 
                 if shouldPauseMedia {
-                    activeMediaToken = await mediaInterruption.beginInterruption()
+                    startMediaToken = await mediaInterruption.beginInterruption()
+                    guard activeStartTaskID == startTaskID else {
+                        abandonStartBeforeCapture(dictationSequence: dictationSequence, mediaToken: startMediaToken)
+                        return
+                    }
+                    activeMediaToken = startMediaToken
                 }
 
                 status = "Arming microphone..."
@@ -1924,7 +2183,7 @@ final class DictationController: ObservableObject {
                         },
                         onTerminalError: { [weak self] error in
                             Task { @MainActor [weak self] in
-                                self?.handleStreamingFailure(error)
+                                self?.handleStreamingFailure(error, dictationSequence: dictationSequence)
                             }
                         },
                         onAudioLevel: { [weak self, weak overlay] level in
@@ -1940,6 +2199,10 @@ final class DictationController: ObservableObject {
                     )
                     activeRealtimeWhisperSession?.cancel()
                     activeRealtimeWhisperSession = session
+                    activeCaptureUsageMeter = CaptureUsageMeter(
+                        dictationSequence: dictationSequence,
+                        startedAt: .now
+                    )
                     try await session.start()
                 } else {
                     activeCloudUsageMetering = nil
@@ -1950,7 +2213,7 @@ final class DictationController: ObservableObject {
                         onPartialText: { _ in },
                         onTerminalError: { [weak self] error in
                             Task { @MainActor [weak self] in
-                                self?.handleStreamingFailure(error)
+                                self?.handleStreamingFailure(error, dictationSequence: dictationSequence)
                             }
                         },
                         onAudioLevel: { [weak self, weak overlay] level in
@@ -1966,12 +2229,16 @@ final class DictationController: ObservableObject {
                     )
                     activePreviewSession?.cancel()
                     activePreviewSession = session
+                    activeCaptureUsageMeter = CaptureUsageMeter(
+                        dictationSequence: dictationSequence,
+                        startedAt: .now
+                    )
                     try await session.start()
                 }
 
                 let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
-                currentSessionID = sessionID
+                currentSession = RegisteredStreamingSession(id: sessionID, coordinator: coordinator)
 
                 // A stop or streaming failure that lands while the microphone
                 // is still arming clears `activeStartTaskID` and finalises this
@@ -1994,45 +2261,60 @@ final class DictationController: ObservableObject {
                 updateActiveRecordingHotkeys()
                 recordingElapsed = 0
                 recordingTimer?.invalidate()
-                recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                // Common modes keep the elapsed display and usage-limit checks
+                // ticking while a menu or the status item is tracking.
+                let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.recordingElapsed += 1
                         self?.stopIfFreeUsageLimitReached()
                         self?.stopIfHostedCloudUsageLimitReached()
                     }
                 }
+                RunLoop.main.add(timer, forMode: .common)
+                recordingTimer = timer
                 if captureReadyOverlayStartTaskID != startTaskID {
                     overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
                     captureReadyOverlayStartTaskID = startTaskID
                 }
             } catch {
-                if let token = activeMediaToken {
-                    mediaInterruption.endInterruption(token: token)
-                    activeMediaToken = nil
+                // A stop that landed while arming is waiting for this task and
+                // leaves the shared state to it; a newer dictation owns that
+                // state outright, so only this start's own resources are released.
+                let ownsSharedState = activeStartTaskID == startTaskID
+                    || (activeStartTaskID == nil && latestDictationSequence == dictationSequence)
+                // A settings change deferred while this start was arming would
+                // otherwise wait for the next dictation. Apply it separately
+                // so stops awaiting this task are not held up by a rebuild.
+                Task { @MainActor in
+                    await applyDeferredRebuildIfNeeded()
                 }
-                self.recordingTimer?.invalidate()
-                self.recordingTimer = nil
-                self.recordingElapsed = 0
-                captureReadyOverlayStartTaskID = nil
-                isRecording = false
-                handsFreeOn = false
-                menuBar.updateIcon(isRecording: false, handsFreeOn: false)
-                activeRecordingMode = nil
+                guard ownsSharedState else {
+                    if let startMediaToken {
+                        mediaInterruption.endInterruption(token: startMediaToken)
+                        if activeMediaToken == startMediaToken {
+                            activeMediaToken = nil
+                        }
+                    }
+                    return
+                }
+                endActiveMediaInterruption()
+                resetRecordingIndicators()
                 if activeDictationSequence == dictationSequence {
                     activeDictationSequence = nil
                 }
                 activeAppContext = nil
                 activeInputTarget = nil
-                activeFreeUsageLimitSeconds = nil
-                activeHostedCloudUsageLimitSeconds = nil
                 overlayPersistenceBundleIdentifier = nil
                 pendingCompletionActionOverride = nil
                 activeStyleOverride = nil
-                updateActiveRecordingHotkeys()
                 activePreviewSession = nil
                 activeRealtimeWhisperSession = nil
                 activeCloudUsageMetering = nil
-                recordingStateMachine.markTranscriptionFailed()
+                // A capture that never started produced nothing to meter.
+                if activeCaptureUsageMeter?.dictationSequence == dictationSequence {
+                    activeCaptureUsageMeter = nil
+                }
+                markRecordingFinished(owner: dictationSequence)
                 status = "Failed to start"
                 lastError = error.localizedDescription
                 overlay.hide()
@@ -2044,6 +2326,31 @@ final class DictationController: ObservableObject {
                 activeStartTaskID = nil
             }
         }
+        activeStartTask = startTask
+        inFlightStartTask = (startTaskID, startTask)
+    }
+
+    /// Releases what a start acquired before it went stale, ahead of creating
+    /// its capture session. The stop that made it stale finishes the dictation
+    /// silently, so leave a neutral status rather than "Checking microphone...".
+    private func abandonStartBeforeCapture(
+        dictationSequence: UInt64,
+        mediaToken: MediaInterruptionToken?
+    ) {
+        if let mediaToken {
+            mediaInterruption.endInterruption(token: mediaToken)
+            if activeMediaToken == mediaToken {
+                activeMediaToken = nil
+            }
+        }
+        guard latestDictationSequence == dictationSequence, !isRecording else { return }
+        status = "Recording stopped"
+        // startSession cancelled any pending dismissal of the previous overlay;
+        // hide it unless an earlier dictation is still finishing behind it.
+        if backgroundProcessingSessionCount == 0 {
+            overlay.hide()
+        }
+        screenRecordingHaze.hide()
     }
 
     private func shouldDisplayStreamingCaptureFeedback(for mode: RecordingMode) -> Bool {
@@ -2067,29 +2374,23 @@ final class DictationController: ObservableObject {
         overlay.updateAudioLevel(level)
     }
 
-    private func handleStreamingFailure(_ error: Error) {
+    private func handleStreamingFailure(_ error: Error, dictationSequence failingSequence: UInt64) {
+        // The error comes from a capture session's callback; once a stop has
+        // claimed that dictation (or a newer one started) the session slots
+        // belong to someone else and must not be torn down here.
+        guard activeDictationSequence == failingSequence else { return }
         let previewSession = activePreviewSession
         let realtimeSession = activeRealtimeWhisperSession
         guard previewSession != nil || realtimeSession != nil else { return }
 
-        let pendingStart = activeStartTask
+        let pendingStart = inFlightStartTask?.task
+        let failingCloudUsageMetering = activeCloudUsageMetering
         activeStartTask = nil
         activeStartTaskID = nil
         activePreviewSession = nil
         activeRealtimeWhisperSession = nil
         activeCloudUsageMetering = nil
-
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        captureReadyOverlayStartTaskID = nil
-        recordingElapsed = 0
-        isRecording = false
-        handsFreeOn = false
-        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
-        activeRecordingMode = nil
-        activeFreeUsageLimitSeconds = nil
-        activeHostedCloudUsageLimitSeconds = nil
-        updateActiveRecordingHotkeys()
+        resetRecordingIndicators()
 
         Task {
             await pendingStart?.value
@@ -2097,38 +2398,51 @@ final class DictationController: ObservableObject {
             previewSession?.cancel()
             realtimeSession?.cancel()
 
-            if let sessionID = currentSessionID, let coordinator {
-                await coordinator.cancel(sessionID: sessionID)
+            // While setup settled, a stop may have claimed this dictation or a
+            // newer dictation may have started; only release state we still own.
+            var sessionToCancel: (id: SessionID, coordinator: SessionCoordinator)?
+            if activeDictationSequence == failingSequence {
+                // Minutes streamed before the failure were used (and may
+                // have been recovered to the clipboard), so they count.
+                finishCaptureUsageMetering(
+                    dictationSequence: failingSequence,
+                    cloudUsageMetering: failingCloudUsageMetering
+                )
+                if let currentSession {
+                    sessionToCancel = (currentSession.id, currentSession.coordinator)
+                }
+                currentSession = nil
+                activeDictationSequence = nil
+                endActiveMediaInterruption()
+
+                activeAppContext = nil
+                activeInputTarget = nil
+                overlayPersistenceBundleIdentifier = nil
+                pendingCompletionActionOverride = nil
+                activeStyleOverride = nil
+
+                markRecordingFinished(owner: failingSequence)
             }
-            currentSessionID = nil
-            activeDictationSequence = nil
-
-            if let token = activeMediaToken {
-                mediaInterruption.endInterruption(token: token)
-                activeMediaToken = nil
+            if let sessionToCancel {
+                await sessionToCancel.coordinator.cancel(sessionID: sessionToCancel.id)
             }
 
-            activeAppContext = nil
-            activeInputTarget = nil
-            overlayPersistenceBundleIdentifier = nil
-            pendingCompletionActionOverride = nil
-            activeStyleOverride = nil
-
-            recordingStateMachine.markTranscriptionFailed()
             clipboardRecoveryPrompt.hide()
-            if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
+            if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false,
+               latestDictationSequence == failingSequence {
                 status = streamingFailureStatusMessage(for: error)
                 lastError = error.localizedDescription
                 overlay.show(state: .failure(message: error.localizedDescription))
                 dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
             }
+            startPendingRecordingAfterAudioSecuredIfNeeded()
             await applyDeferredRebuildIfNeeded()
         }
     }
 
     private func stopSession(mode: RecordingMode) {
         recordStopForResidualStartSuppression(mode: mode)
-        let pendingStart = activeStartTask
+        let pendingStart = inFlightStartTask?.task
         activeStartTask = nil
         activeStartTaskID = nil
 
@@ -2139,39 +2453,31 @@ final class DictationController: ObservableObject {
         activeRealtimeWhisperSession = nil
         let cloudUsageMetering = activeCloudUsageMetering
         activeCloudUsageMetering = nil
-        let recordedSeconds = recordingElapsed
         // Shared cleanup — runs on every path including the guard-return.
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        captureReadyOverlayStartTaskID = nil
-        accumulateRecordingSeconds(recordedSeconds)
-        recordVoceUsageSeconds(recordedSeconds)
-        recordingElapsed = 0
-        isRecording = false
-        handsFreeOn = false
-        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
-        activeRecordingMode = nil
-        activeFreeUsageLimitSeconds = nil
-        activeHostedCloudUsageLimitSeconds = nil
-        updateActiveRecordingHotkeys()
+        resetRecordingIndicators()
 
-        let readyCoordinator = coordinator
-        let readySessionID = currentSessionID
+        let readySession = currentSession
         let readyDictationSequence = activeDictationSequence
         let readyPreferredCompletionAction = pendingCompletionActionOverride
         let readyStyleOverride = activeStyleOverride
         let readyMediaToken = activeMediaToken
         let readyInputTarget = activeInputTarget
 
-        if readySessionID != nil {
-            currentSessionID = nil
+        if readySession != nil {
+            if let readyDictationSequence {
+                finishCaptureUsageMetering(
+                    dictationSequence: readyDictationSequence,
+                    cloudUsageMetering: cloudUsageMetering
+                )
+            }
+            currentSession = nil
             activeDictationSequence = nil
             activeAppContext = nil
             activeInputTarget = nil
             pendingCompletionActionOverride = nil
             activeStyleOverride = nil
             activeMediaToken = nil
-            recordingStateMachine.markTranscriptionCompleted()
+            markRecordingFinished(owner: readyDictationSequence)
             startPendingRecordingAfterAudioSecuredIfNeeded()
         }
 
@@ -2198,9 +2504,9 @@ final class DictationController: ObservableObject {
             let mediaToken: MediaInterruptionToken?
             let inputTarget: FocusedInputTarget?
 
-            if let readyCoordinator, let readySessionID {
-                coordinator = readyCoordinator
-                sessionID = readySessionID
+            if let readySession {
+                coordinator = readySession.coordinator
+                sessionID = readySession.id
                 dictationSequence = readyDictationSequence
                 preferredCompletionAction = readyPreferredCompletionAction
                 styleOverride = readyStyleOverride
@@ -2210,6 +2516,19 @@ final class DictationController: ObservableObject {
                 // If stop happens while the microphone is still arming, wait
                 // only until setup either publishes a session ID or fails.
                 await pendingStart?.value
+                // A failed start, a streaming failure or teardown may have
+                // finished this dictation meanwhile, and a newer dictation may
+                // already own the shared state; claim it only if it is still ours.
+                guard let readyDictationSequence,
+                      activeDictationSequence == readyDictationSequence
+                else {
+                    previewSession?.cancel()
+                    realtimeSession?.cancel()
+                    markRecordingFinished(owner: readyDictationSequence)
+                    startPendingRecordingAfterAudioSecuredIfNeeded()
+                    await applyDeferredRebuildIfNeeded()
+                    return
+                }
                 // Setup may have created the capture session after this stop
                 // snapshotted the (then empty) session slots.
                 if previewSession == nil, realtimeSession == nil {
@@ -2220,14 +2539,18 @@ final class DictationController: ObservableObject {
                     activeRealtimeWhisperSession = nil
                     activeCloudUsageMetering = nil
                 }
-                coordinator = self.coordinator
-                sessionID = currentSessionID
-                dictationSequence = activeDictationSequence ?? readyDictationSequence
+                finishCaptureUsageMetering(
+                    dictationSequence: readyDictationSequence,
+                    cloudUsageMetering: cloudUsageMetering
+                )
+                coordinator = currentSession?.coordinator
+                sessionID = currentSession?.id
+                dictationSequence = readyDictationSequence
                 preferredCompletionAction = pendingCompletionActionOverride
                 styleOverride = activeStyleOverride
                 mediaToken = activeMediaToken
 
-                currentSessionID = nil
+                currentSession = nil
                 activeDictationSequence = nil
                 activeAppContext = nil
                 inputTarget = activeInputTarget
@@ -2235,22 +2558,37 @@ final class DictationController: ObservableObject {
                 pendingCompletionActionOverride = nil
                 activeStyleOverride = nil
                 activeMediaToken = nil
-                recordingStateMachine.markTranscriptionCompleted()
-                startPendingRecordingAfterAudioSecuredIfNeeded()
+                markRecordingFinished(owner: dictationSequence)
             }
 
-            guard let coordinator, let sessionID, let dictationSequence else {
+            guard let coordinator, let sessionID, let dictationSequence,
+                  previewSession != nil || realtimeSession != nil
+            else {
+                // Setup never produced a capture (a quick tap, or a start that
+                // failed and already reported why), or a streaming failure took
+                // the capture over and reports it. Release this dictation
+                // quietly instead of showing a misleading failure.
                 previewSession?.cancel()
                 realtimeSession?.cancel()
-                recordingStateMachine.markTranscriptionFailed()
-                let error = CloudDictationError.providerError("No active recording session.")
-                if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
-                    status = "No active recording session."
-                    lastError = status
-                    overlay.show(state: .failure(message: status))
-                    dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                if let mediaToken {
+                    mediaInterruption.endInterruption(token: mediaToken)
                 }
+                markRecordingFinished(owner: dictationSequence ?? readyDictationSequence)
+                if let coordinator, let sessionID {
+                    await coordinator.cancel(sessionID: sessionID)
+                }
+                if let realtimeSession {
+                    let error = CloudDictationError.providerError("Recording stopped before it finished starting.")
+                    await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error)
+                }
+                // Only start a queued dictation once this one has fully
+                // released the shared state, so cleanup cannot reset it.
+                startPendingRecordingAfterAudioSecuredIfNeeded()
+                await applyDeferredRebuildIfNeeded()
                 return
+            }
+            if readySession == nil {
+                startPendingRecordingAfterAudioSecuredIfNeeded()
             }
             beginBackgroundProcessingSession()
             isBackgroundProcessing = true
@@ -2282,10 +2620,6 @@ final class DictationController: ObservableObject {
                     let stopResult = try await realtimeSession.stop()
                     defer { try? FileManager.default.removeItem(at: stopResult.captureURL) }
                     captureDurationMS = stopResult.rawTranscript.durationMS
-                    recordDictationAuditUsage(
-                        mode: cloudUsageMetering,
-                        seconds: TimeInterval(captureDurationMS) / 1_000
-                    )
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
                         + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -2310,10 +2644,6 @@ final class DictationController: ObservableObject {
                 } else if let previewSession {
                     let stopResult = try previewSession.stop()
                     captureDurationMS = stopResult.captureDurationMS
-                    recordDictationAuditUsage(
-                        mode: nil,
-                        seconds: TimeInterval(captureDurationMS) / 1_000
-                    )
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
                         + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -2344,12 +2674,40 @@ final class DictationController: ObservableObject {
                 }
 
                 let routingBeganAt = clock.now
-                let routedCompletion = try completionRoutingService.route(
-                    finalizedTranscript: finalizedTranscript,
-                    preferredAction: preferredCompletionAction,
-                    leadingPhraseSelectionEnabled: aiRuntimeEnabled && preferences.ai.leadingPhraseSelectionEnabled,
-                    workflows: preferences.ai.workflows
-                )
+                let routedCompletion: RoutedCompletion
+                do {
+                    routedCompletion = try completionRoutingService.route(
+                        finalizedTranscript: finalizedTranscript,
+                        preferredAction: preferredCompletionAction,
+                        leadingPhraseSelectionEnabled: aiRuntimeEnabled && preferences.ai.leadingPhraseSelectionEnabled,
+                        workflows: preferences.ai.workflows
+                    )
+                } catch let routingError as CompletionRoutingError where routingError.isMissingSpokenContent {
+                    // Only a trigger phrase was spoken ("Summarize."). Ask for
+                    // the content instead of inserting the trigger word.
+                    presentRoutingError(routingError, finalizedTranscript: finalizedTranscript)
+                    realtimeSession?.discardRecoveryCheckpoint()
+                    await applyDeferredRebuildIfNeeded()
+                    return
+                } catch {
+                    // A missing or disabled workflow only changes what to do
+                    // with the transcript; it must never lose it. Fall back to
+                    // plain insertion (or the requested non-AI action).
+                    Self.logger.error(
+                        "Completion routing failed, inserting plain transcript: \(error.localizedDescription, privacy: .public)"
+                    )
+                    let fallbackAction: CompletionAction
+                    if case .aiWorkflow = preferredCompletionAction {
+                        fallbackAction = .insert
+                    } else {
+                        fallbackAction = preferredCompletionAction ?? .insert
+                    }
+                    routedCompletion = RoutedCompletion(
+                        action: fallbackAction,
+                        inputText: finalizedTranscript.cleanText,
+                        selectedBy: .defaultBehavior
+                    )
+                }
                 let routingElapsed = routingBeganAt.duration(to: clock.now)
                 let routingElapsedSeconds = Double(routingElapsed.components.seconds)
                     + Double(routingElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -2457,19 +2815,7 @@ final class DictationController: ObservableObject {
                         dismissOverlaySoon()
                     }
                 } catch let routingError as CompletionRoutingError {
-                    lastTranscript = finalizedTranscript.cleanText
-                    if isRecording {
-                        restoreActiveRecordingStatus()
-                    } else {
-                        status = routingErrorStatusMessage(for: routingError)
-                        lastError = ""
-                        overlay.hide()
-                        clipboardRecoveryPrompt.hide()
-                    }
-                    scheduleLearningUpdate(for: finalizedTranscript)
-                    if !isRecording {
-                        dismissOverlaySoon()
-                    }
+                    presentRoutingError(routingError, finalizedTranscript: finalizedTranscript)
                 }
                 await refreshHistory()
                 realtimeSession?.discardRecoveryCheckpoint()
@@ -2477,7 +2823,7 @@ final class DictationController: ObservableObject {
             } catch {
                 if shouldSuppressEmptyTranscriptError(error, captureDurationMS: captureDurationMS) {
                     realtimeSession?.discardRecoveryCheckpoint()
-                    handleShortSilentCapture()
+                    handleShortSilentCapture(dictationSequence: dictationSequence)
                     await applyDeferredRebuildIfNeeded()
                     return
                 }
@@ -2488,9 +2834,7 @@ final class DictationController: ObservableObject {
                     "Streaming transcription failed after \(captureDurationMS, privacy: .public)ms capture: \(error.localizedDescription, privacy: .public)"
                 )
                 clipboardRecoveryPrompt.hide()
-                if !isRecording {
-                    recordingStateMachine.markTranscriptionFailed()
-                }
+                markRecordingFinished(owner: dictationSequence)
                 if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
                     if isRecording {
                         restoreActiveRecordingStatus()
@@ -2594,7 +2938,10 @@ final class DictationController: ObservableObject {
         backgroundProcessingSessionCount = max(0, backgroundProcessingSessionCount - 1)
     }
 
-    private func queueStartAfterAudioSecuredIfNeeded(mode: RecordingMode) -> Bool {
+    private func queueStartAfterAudioSecuredIfNeeded(
+        mode: RecordingMode,
+        completionActionOverride: CompletionAction? = nil
+    ) -> Bool {
         guard recordingStateMachine.state == .transcribing else {
             return false
         }
@@ -2608,6 +2955,7 @@ final class DictationController: ObservableObject {
         }
 
         pendingStartAfterAudioSecured = mode
+        pendingStartCompletionActionOverride = completionActionOverride
         status = "Starting next dictation..."
         lastError = ""
         return true
@@ -2627,17 +2975,28 @@ final class DictationController: ObservableObject {
 
     private func startPendingRecordingAfterAudioSecuredIfNeeded() {
         guard let mode = pendingStartAfterAudioSecured else { return }
+        // Still finishing the dictation that queued this start; whichever
+        // path completes it calls back here once the state is idle.
+        guard recordingStateMachine.state != .transcribing else { return }
+        let completionActionOverride = pendingStartCompletionActionOverride
         pendingStartAfterAudioSecured = nil
+        pendingStartCompletionActionOverride = nil
 
         guard recordingStateMachine.state == .idle else { return }
         guard canStartRecordingNow() else { return }
 
+        let transition: RecordingTransition
         switch mode {
         case .pressToTalk:
             suppressNextPressToTalkStop = false
-            apply(transition: recordingStateMachine.handlePressToTalkKeyDown())
+            transition = recordingStateMachine.handlePressToTalkKeyDown()
         case .handsFree:
-            apply(transition: recordingStateMachine.handleHandsFreeToggle())
+            transition = recordingStateMachine.handleHandsFreeToggle()
+        }
+        if case .start(let mode) = transition {
+            startSession(mode: mode, completionActionOverride: completionActionOverride)
+        } else {
+            apply(transition: transition)
         }
     }
 
@@ -2707,6 +3066,27 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Reports a routing outcome that leaves nothing to insert, without the
+    /// failure overlay. Nothing is inserted or added to history.
+    private func presentRoutingError(
+        _ routingError: CompletionRoutingError,
+        finalizedTranscript: FinalizedTranscript
+    ) {
+        lastTranscript = finalizedTranscript.cleanText
+        if isRecording {
+            restoreActiveRecordingStatus()
+        } else {
+            status = routingErrorStatusMessage(for: routingError)
+            lastError = ""
+            overlay.hide()
+            clipboardRecoveryPrompt.hide()
+        }
+        scheduleLearningUpdate(for: finalizedTranscript)
+        if !isRecording {
+            dismissOverlaySoon()
+        }
+    }
+
     private func routingErrorStatusMessage(for error: CompletionRoutingError) -> String {
         switch error {
         case .workflowNotFound:
@@ -2745,13 +3125,28 @@ final class DictationController: ObservableObject {
 
     private func captureFrontmostSelection() async -> SelectionCapture? {
         let appContext = AppContextProvider.current()
+        let inputTarget = FocusedInputTarget.captureCurrent()
         var selectedText = accessibilitySelectedText()
         if selectedText == nil {
             selectedText = await copySelectedTextWithTemporaryPasteboard()
         }
         let trimmed = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return nil }
-        return SelectionCapture(text: trimmed, appContext: appContext)
+        return SelectionCapture(text: trimmed, appContext: appContext, inputTarget: inputTarget)
+    }
+
+    /// The live lexicon service (shared with the coordinator) was updated in
+    /// place, so the saved entries no longer require a runtime rebuild.
+    private func noteLexiconAppliedToRuntime() {
+        runtimeAppliedPreferences?.lexiconEntries = preferences.lexiconEntries
+        // Realtime transcription hints come from the lexicon; re-warm them.
+        prefetchRealtimeWhisperClientSecretIfNeeded()
+    }
+
+    /// The live snippet service (shared with the coordinator) was updated in
+    /// place, so the saved snippets no longer require a runtime rebuild.
+    private func noteSnippetsAppliedToRuntime() {
+        runtimeAppliedPreferences?.snippets = preferences.snippets
     }
 
     private func saveSelectionCorrection(capture: SelectionCapture, replacement: String) async {
@@ -2767,9 +3162,21 @@ final class DictationController: ObservableObject {
             preferences.lexiconEntries.append(entry)
         }
         await lexiconService.upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope)
+        noteLexiconAppliedToRuntime()
         savePreferences()
 
-        let result = await insertionService.insert(text: trimmedReplacement, target: capture.appContext)
+        // Paste over the word only while it is still selected: the popover
+        // took focus, and if the app moved the caret or dropped the selection
+        // the replacement would land beside the word. The paste helper also
+        // requires the captured field to still be focused. Otherwise (or when
+        // the selection cannot be read back) copy the replacement as before.
+        let selectionIsUnchanged = capture.inputTarget != nil
+            && accessibilitySelectedText()?.trimmingCharacters(in: .whitespacesAndNewlines) == capture.text
+        let result = await insertionService.insert(
+            text: trimmedReplacement,
+            target: capture.appContext,
+            inputTarget: selectionIsUnchanged ? capture.inputTarget : nil
+        )
         switch result.status {
         case .inserted:
             status = "Dictionary quick fix saved and replaced."
@@ -2787,15 +3194,23 @@ final class DictationController: ObservableObject {
         let trimmedTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTrigger.isEmpty else { return }
 
-        let snippet = Snippet(trigger: trimmedTrigger, expansion: capture.text, scope: .global)
-        if let existingIndex = preferences.snippets.firstIndex(where: {
-            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
-        }) {
+        let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(trimmedTrigger) == .orderedSame && $0.scope == .global
+        })
+        // Reuse the replaced snippet's ID: SnippetService upserts by ID.
+        let snippet = Snippet(
+            id: existingIndex.map { preferences.snippets[$0].id } ?? UUID(),
+            trigger: trimmedTrigger,
+            expansion: capture.text,
+            scope: .global
+        )
+        if let existingIndex {
             preferences.snippets[existingIndex] = snippet
         } else {
             preferences.snippets.append(snippet)
         }
         await snippetService.upsert(snippet)
+        noteSnippetsAppliedToRuntime()
         savePreferences()
         status = "Shortcut saved for \"\(capture.text)\"."
         lastError = ""
@@ -2815,6 +3230,7 @@ final class DictationController: ObservableObject {
             preferences.lexiconEntries.append(entry)
         }
         await lexiconService.upsert(term: entry.term, preferred: entry.preferred, scope: entry.scope)
+        noteLexiconAppliedToRuntime()
         savePreferences()
         status = "Dictionary item saved for \"\(trimmedTerm)\"."
         lastError = ""
@@ -2825,15 +3241,23 @@ final class DictationController: ObservableObject {
         let trimmedTrigger = trigger.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedExpansion.isEmpty, !trimmedTrigger.isEmpty else { return }
 
-        let snippet = Snippet(trigger: trimmedTrigger, expansion: trimmedExpansion, scope: .global)
-        if let existingIndex = preferences.snippets.firstIndex(where: {
-            $0.trigger.caseInsensitiveCompare(snippet.trigger) == .orderedSame && $0.scope == snippet.scope
-        }) {
+        let existingIndex = preferences.snippets.firstIndex(where: {
+            $0.trigger.caseInsensitiveCompare(trimmedTrigger) == .orderedSame && $0.scope == .global
+        })
+        // Reuse the replaced snippet's ID: SnippetService upserts by ID.
+        let snippet = Snippet(
+            id: existingIndex.map { preferences.snippets[$0].id } ?? UUID(),
+            trigger: trimmedTrigger,
+            expansion: trimmedExpansion,
+            scope: .global
+        )
+        if let existingIndex {
             preferences.snippets[existingIndex] = snippet
         } else {
             preferences.snippets.append(snippet)
         }
         await snippetService.upsert(snippet)
+        noteSnippetsAppliedToRuntime()
         savePreferences()
         status = "Shortcut saved for \"\(trimmedExpansion)\"."
         lastError = ""
@@ -2912,14 +3336,33 @@ final class DictationController: ObservableObject {
         let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
 
         pasteboard.clearContents()
+        let clearedChangeCount = pasteboard.changeCount
         guard simulateCommandC() else {
             snapshot.restore(to: pasteboard)
             return nil
         }
 
-        try? await Task.sleep(nanoseconds: 160_000_000)
-        let copied = pasteboard.string(forType: .string)
-        snapshot.restore(to: pasteboard)
+        // Apps answer Cmd+C at different speeds. Poll until the pasteboard
+        // changes and holds text (up to ~500 ms) instead of guessing a delay.
+        var copied: String?
+        var expectedChangeCount = clearedChangeCount
+        for _ in 0..<25 {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let changeCount = pasteboard.changeCount
+            guard changeCount != clearedChangeCount else { continue }
+            expectedChangeCount = changeCount
+            if let text = pasteboard.string(forType: .string) {
+                copied = text
+                break
+            }
+        }
+
+        // Restore the user's clipboard only if it still holds the generation
+        // we cleared or read. Anything newer was written by someone else (the
+        // user copying, or the app writing again) and must not be clobbered.
+        if pasteboard.changeCount == expectedChangeCount {
+            snapshot.restore(to: pasteboard)
+        }
         return copied
     }
 
@@ -3040,12 +3483,21 @@ final class DictationController: ObservableObject {
             voiceCommandService: voiceCommandService,
             learningEngine: learningEngine
         )
+        runtimeAppliedPreferences = snapshot
+        runtimeCloudRoutingSignature = cloudRoutingSignature(for: voceProEntitlementStatus)
 
-        do {
-            try launchAtLoginService.setEnabled(snapshot.general.launchAtLoginEnabled)
-            launchAtLoginWarning = ""
-        } catch {
-            launchAtLoginWarning = error.localizedDescription
+        // SMAppService register/unregister is synchronous on the main thread;
+        // only call it when the setting changed (or the last attempt failed).
+        let launchAtLoginEnabled = snapshot.general.launchAtLoginEnabled
+        if appliedLaunchAtLoginEnabled != launchAtLoginEnabled {
+            do {
+                try launchAtLoginService.setEnabled(launchAtLoginEnabled)
+                launchAtLoginWarning = ""
+                appliedLaunchAtLoginEnabled = launchAtLoginEnabled
+            } catch {
+                launchAtLoginWarning = error.localizedDescription
+                appliedLaunchAtLoginEnabled = nil
+            }
         }
 
         status = runtimeFactory.runtimeStatusText()
@@ -3127,10 +3579,30 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Whether the active capture has used `limitSeconds`, measured the way
+    /// it is billed: wall clock from capture start, rounded up to a whole
+    /// second. Checking at the 1 Hz tick then stops at or just before the
+    /// allowance instead of up to a few seconds past it.
+    private func usageLimitReached(_ limitSeconds: TimeInterval) -> Bool {
+        let elapsed: TimeInterval
+        if let meter = activeCaptureUsageMeter,
+           meter.dictationSequence == activeDictationSequence {
+            elapsed = Self.seconds(meter.startedAt.duration(to: .now))
+        } else {
+            elapsed = recordingElapsed
+        }
+        return elapsed.rounded(.up) >= limitSeconds
+    }
+
+    private static func seconds(_ duration: Duration) -> TimeInterval {
+        Double(duration.components.seconds)
+            + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
     private func stopIfFreeUsageLimitReached() {
         guard let activeFreeUsageLimitSeconds,
               activeFreeUsageLimitSeconds > 0,
-              recordingElapsed >= activeFreeUsageLimitSeconds,
+              usageLimitReached(activeFreeUsageLimitSeconds),
               isRecording
         else {
             return
@@ -3143,7 +3615,7 @@ final class DictationController: ObservableObject {
     private func stopIfHostedCloudUsageLimitReached() {
         guard let activeHostedCloudUsageLimitSeconds,
               activeHostedCloudUsageLimitSeconds > 0,
-              recordingElapsed >= activeHostedCloudUsageLimitSeconds,
+              usageLimitReached(activeHostedCloudUsageLimitSeconds),
               isRecording
         else {
             return
@@ -3179,6 +3651,9 @@ final class DictationController: ObservableObject {
             do {
                 let entitlement = try await entitlementService.check(email: email)
                 await MainActor.run {
+                    // The backend is reachable again: send usage that an
+                    // earlier report could not deliver.
+                    self?.flushPendingUsageReports()
                     guard self?.normalizedSubscriberEmail == email else { return }
                     self?.voceProEntitlementStatus = entitlement.entitled
                         ? .entitled(entitlement)
@@ -3199,36 +3674,29 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func recordVoceUsageSeconds(_ seconds: TimeInterval) {
-        let email = normalizedSubscriberEmail
-        guard !email.isEmpty, seconds > 0 else { return }
+    /// Meters a dictation's capture exactly once, from capture start until the
+    /// path that ends the recording (stop, streaming failure, teardown) takes
+    /// the capture over. Wall-clock time is used so usage is counted even when
+    /// the capture fails to finalize, and fractions of a second are kept.
+    private func finishCaptureUsageMetering(
+        dictationSequence: UInt64,
+        cloudUsageMetering: ActiveCloudUsageMetering?
+    ) {
+        guard let meter = activeCaptureUsageMeter,
+              meter.dictationSequence == dictationSequence
+        else { return }
+        activeCaptureUsageMeter = nil
 
-        let wholeSeconds = max(1, Int(ceil(seconds)))
-        Task { [weak self, entitlementService] in
-            do {
-                let entitlement = try await entitlementService.recordUsage(
-                    email: email,
-                    seconds: wholeSeconds
-                )
-                await MainActor.run {
-                    guard self?.normalizedSubscriberEmail == email else { return }
-                    self?.voceProEntitlementStatus = entitlement.entitled
-                        ? .entitled(entitlement)
-                        : .notEntitled(email: email)
-                }
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription
-                    ?? "Could not update Voce usage."
-                await MainActor.run {
-                    guard self?.normalizedSubscriberEmail == email else { return }
-                    if case VoceProEntitlementError.authenticationRequired = error {
-                        self?.voceProEntitlementStatus = .needsVerification(email: email)
-                    } else {
-                        self?.voceProEntitlementStatus = .failed(email: email, message: message)
-                    }
-                }
-            }
-        }
+        let seconds = Self.seconds(meter.startedAt.duration(to: .now))
+        guard seconds > 0 else { return }
+
+        accumulateRecordingSeconds(seconds)
+        recordVoceUsageSeconds(seconds)
+        recordDictationAuditUsage(mode: cloudUsageMetering, seconds: seconds)
+    }
+
+    private func recordVoceUsageSeconds(_ seconds: TimeInterval) {
+        enqueueUsageReport(feature: .appAccess, seconds: seconds)
     }
 
     private func recordDictationAuditUsage(mode: ActiveCloudUsageMetering?, seconds: TimeInterval) {
@@ -3246,49 +3714,169 @@ final class DictationController: ObservableObject {
     }
 
     private func recordAuditUsageSeconds(feature: VoceEntitlementFeature, seconds: TimeInterval) {
-        let email = normalizedSubscriberEmail
-        guard !email.isEmpty, seconds > 0 else { return }
-
-        let wholeSeconds = max(1, Int(ceil(seconds)))
-        Task { [entitlementService] in
-            do {
-                _ = try await entitlementService.recordUsage(
-                    email: email,
-                    feature: feature,
-                    seconds: wholeSeconds
-                )
-            } catch {
-                Self.logger.error(
-                    "Could not update dictation audit usage \(feature.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)"
-                )
-            }
-        }
+        enqueueUsageReport(feature: feature, seconds: seconds)
     }
 
     private func recordHostedCloudUsageSeconds(_ seconds: TimeInterval) {
+        enqueueUsageReport(feature: .cloudDictation, seconds: seconds)
+    }
+
+    // MARK: - Usage report delivery
+
+    private static let pendingUsageReportsDefaultsKey = "voce.pendingUsageReports"
+
+    private static func loadPendingUsageReports() -> PendingUsageReportQueue {
+        guard let data = UserDefaults.standard.data(forKey: pendingUsageReportsDefaultsKey),
+              let queue = try? JSONDecoder().decode(PendingUsageReportQueue.self, from: data)
+        else { return PendingUsageReportQueue() }
+        return queue
+    }
+
+    private func persistPendingUsageReports() {
+        if pendingUsageReports.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.pendingUsageReportsDefaultsKey)
+        } else if let data = try? JSONEncoder().encode(pendingUsageReports) {
+            UserDefaults.standard.set(data, forKey: Self.pendingUsageReportsDefaultsKey)
+        }
+    }
+
+    /// Queues usage for delivery (persisted first, so a failed request, a
+    /// quit or a crash does not lose it) and tries to send it right away.
+    private func enqueueUsageReport(feature: VoceEntitlementFeature, seconds: TimeInterval) {
         let email = normalizedSubscriberEmail
         guard !email.isEmpty, seconds > 0 else { return }
 
-        let wholeSeconds = max(1, Int(ceil(seconds)))
-        Task { [weak self, entitlementService] in
-            do {
-                let entitlement = try await entitlementService.recordUsage(
-                    email: email,
-                    feature: .cloudDictation,
-                    seconds: wholeSeconds
-                )
-                await MainActor.run {
-                    guard self?.normalizedSubscriberEmail == email else { return }
-                    self?.voceProEntitlementStatus = entitlement.hasFeature(.appAccess)
-                        ? .entitled(entitlement)
-                        : .notEntitled(email: email)
+        pendingUsageReports.enqueue(
+            email: email,
+            feature: feature.rawValue,
+            seconds: max(1, Int(ceil(seconds))),
+            now: Date()
+        )
+        persistPendingUsageReports()
+        flushPendingUsageReports()
+    }
+
+    private func flushPendingUsageReports() {
+        guard usageReportFlushTask == nil else {
+            usageReportFlushRequested = true
+            return
+        }
+        guard !pendingUsageReports.isEmpty else { return }
+        usageReportFlushTask = Task { [weak self] in
+            await self?.deliverPendingUsageReports()
+        }
+    }
+
+    /// Sends queued reports one at a time. A failed delivery never changes
+    /// the entitlement to `.failed`: that would block dictation over a
+    /// metering hiccup. Transient failures stay queued for the next
+    /// successful entitlement check, report, or launch.
+    private func deliverPendingUsageReports() async {
+        defer { usageReportFlushTask = nil }
+        // A failure only holds back reports that would fail the same way
+        // (that email's session, or that email/feature); others still go.
+        var skippedEmails = Set<String>()
+        var skippedFeatures = Set<String>()
+        func isSkipped(_ report: PendingUsageReportQueue.Report) -> Bool {
+            skippedEmails.contains(report.email)
+                || skippedFeatures.contains("\(report.email)|\(report.feature)")
+        }
+        repeat {
+            usageReportFlushRequested = false
+            pendingUsageReports.pruneExpired(now: Date())
+            persistPendingUsageReports()
+
+            for queuedReport in pendingUsageReports.reports where !isSkipped(queuedReport) {
+                // Earlier sends in this pass may have let more seconds
+                // coalesce into a report that had not started; send what is
+                // queued now, and freeze it so a resend is identical.
+                guard let report = pendingUsageReports.reports.first(where: { $0.id == queuedReport.id }) else {
+                    continue
                 }
-            } catch {
-                // Hosted usage metering should not make a completed dictation
-                // look failed. The next entitlement refresh will retry the read
-                // side and recover the visible usage state.
-                Self.logger.error("Could not update hosted cloud usage: \(error.localizedDescription, privacy: .public)")
+                guard let feature = VoceEntitlementFeature(rawValue: report.feature) else {
+                    pendingUsageReports.discard(reportID: report.id)
+                    persistPendingUsageReports()
+                    continue
+                }
+                pendingUsageReports.markSendStarted(reportID: report.id)
+                persistPendingUsageReports()
+
+                do {
+                    let entitlement = try await entitlementService.recordUsage(
+                        email: report.email,
+                        feature: feature,
+                        seconds: report.seconds,
+                        reportID: report.id
+                    )
+                    pendingUsageReports.acknowledge(reportID: report.id, seconds: report.seconds, now: Date())
+                    persistPendingUsageReports()
+                    applyUsageReportResponse(entitlement, email: report.email, feature: feature)
+                } catch is DecodingError {
+                    // The backend answered 2xx, so it recorded the usage;
+                    // resending would charge it twice.
+                    pendingUsageReports.acknowledge(reportID: report.id, seconds: report.seconds, now: Date())
+                    persistPendingUsageReports()
+                } catch {
+                    let httpStatus: Int?
+                    switch error {
+                    case VoceProEntitlementError.authenticationRequired:
+                        httpStatus = 401
+                        if normalizedSubscriberEmail == report.email {
+                            voceProEntitlementStatus = .needsVerification(email: report.email)
+                        }
+                    case VoceProEntitlementError.server(let status):
+                        httpStatus = status
+                    default:
+                        httpStatus = nil
+                    }
+                    let disposition = PendingUsageReportQueue.failureDisposition(
+                        httpStatus: httpStatus,
+                        isCurrentSubscriber: normalizedSubscriberEmail == report.email
+                    )
+                    switch disposition {
+                    case .discard:
+                        Self.logger.error(
+                            "Dropping \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage the backend will not accept: \(error.localizedDescription, privacy: .public)"
+                        )
+                        pendingUsageReports.discard(reportID: report.id)
+                        persistPendingUsageReports()
+                    case .retryLaterSkippingEmail:
+                        Self.logger.error(
+                            "Could not report \(report.feature, privacy: .public) usage until the account is verified again: \(error.localizedDescription, privacy: .public)"
+                        )
+                        skippedEmails.insert(report.email)
+                    case .retryLaterSkippingFeature:
+                        // Likely offline or the backend is down; keep it
+                        // queued until the next trigger.
+                        Self.logger.error(
+                            "Could not report \(report.seconds, privacy: .public)s of \(report.feature, privacy: .public) usage: \(error.localizedDescription, privacy: .public)"
+                        )
+                        skippedFeatures.insert("\(report.email)|\(report.feature)")
+                    }
+                }
             }
+        } while usageReportFlushRequested
+            && pendingUsageReports.reports.contains(where: { !isSkipped($0) })
+    }
+
+    private func applyUsageReportResponse(
+        _ entitlement: VoceProEntitlement,
+        email: String,
+        feature: VoceEntitlementFeature
+    ) {
+        guard normalizedSubscriberEmail == email else { return }
+        switch feature {
+        case .appAccess:
+            voceProEntitlementStatus = entitlement.entitled
+                ? .entitled(entitlement)
+                : .notEntitled(email: email)
+        case .cloudDictation:
+            voceProEntitlementStatus = entitlement.hasFeature(.appAccess)
+                ? .entitled(entitlement)
+                : .notEntitled(email: email)
+        default:
+            // Audit counters do not affect access.
+            break
         }
     }
 
@@ -3402,13 +3990,15 @@ final class DictationController: ObservableObject {
         return false
     }
 
-    private func handleShortSilentCapture() {
+    private func handleShortSilentCapture(dictationSequence: UInt64) {
+        markRecordingFinished(owner: dictationSequence)
+        // A newer dictation owns the overlay and status once it has started.
+        guard latestDictationSequence == dictationSequence else { return }
         status = "Recording stopped"
         lastError = ""
         overlay.hide()
         clipboardRecoveryPrompt.hide()
         overlayPersistenceBundleIdentifier = nil
-        recordingStateMachine.markTranscriptionCompleted()
     }
 
     private func scheduleLearningUpdate(for finalizedTranscript: FinalizedTranscript) {
@@ -3503,6 +4093,32 @@ final class DictationController: ObservableObject {
             messages.append("Polish skipped.")
         }
         status = messages.joined(separator: " ")
+        publishCompletionOutcome(for: result, text: execution.finalText)
+    }
+
+    private func publishCompletionOutcome(for result: InsertResult, text: String) {
+        let delivery: DictationCompletionOutcome.Delivery
+        switch result.status {
+        case .inserted:
+            delivery = .inserted
+        case .copiedOnly:
+            switch result.recoveryAction {
+            case .refocusToPaste:
+                delivery = .needsRefocus
+            case .checkBeforePasting:
+                delivery = .pasteUnverified
+            default:
+                delivery = .copiedToClipboard
+            }
+        case .failed:
+            delivery = .failed
+        }
+        nextCompletionOutcomeID += 1
+        lastCompletionOutcome = DictationCompletionOutcome(
+            id: nextCompletionOutcomeID,
+            delivery: delivery,
+            text: text
+        )
     }
 
     private func presentClipboardRecoveryPromptIfNeeded(
