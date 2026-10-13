@@ -125,10 +125,17 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         ("com.brave.browser", .brave),
         ("company.thebrowser", .arc),
         ("com.apple.safari", .safari),
-        // Safari renders media in WebKit's out-of-process GPU helper.
-        ("com.apple.webkit", .safari),
+        // Safari renders media in WebKit's out-of-process GPU helper. Every
+        // WKWebView app shares that same system helper bundle id, so this prefix
+        // only identifies Safari when Safari is actually running (see
+        // `sharedWebKitHelperPrefix` in `resolveAudibleOwner`).
+        (sharedWebKitHelperPrefix, .safari),
         ("org.mozilla.firefox", .firefox),
     ]
+    /// Bundle-id prefix of the system WebKit helper processes (com.apple.WebKit.GPU,
+    /// com.apple.WebKit.WebContent), shared by Safari and every WKWebView app. The
+    /// hosting app is not determinable through public API.
+    private static let sharedWebKitHelperPrefix = "com.apple.webkit"
 
     private static func isBlockedAudibleBundleID(_ bundleID: String) -> Bool {
         let lowered = bundleID.lowercased()
@@ -163,6 +170,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
     /// owner-identification signal: MediaRemote's display id is entitlement-gated on
     /// macOS 15.4+ and permanently nil for non-entitled processes like Voce.
     private let audibleProcessBundleIDs: () -> [String]?
+    /// Whether an application with the given bundle id is running. Used to avoid
+    /// attributing shared WebKit helper audio to Safari when Safari is not running.
+    private let isApplicationRunning: (String) -> Bool
     /// When true, an unverified pause/resume (detector still reports the old state after
     /// `sendMediaCommand`) escalates to a synthetic media-key press. MediaRemote commands
     /// are fire-and-forget and silently no-op on macOS 15.4+ for non-entitled processes,
@@ -197,6 +207,9 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         self.sendMediaCommand = SystemMediaCommandSender.send
         self.sendPlayPauseKey = SystemMediaKeySender.sendPlayPause
         self.audibleProcessBundleIDs = AudioProcessAudibilityProbe.audibleOutputBundleIDs
+        self.isApplicationRunning = { bundleID in
+            !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+        }
         self.escalatesToMediaKeyOnUnverifiedCommand = true
         self.minimumResumeDelayNanoseconds = 300_000_000
         self.pauseConfirmationDelayNanoseconds = 120_000_000
@@ -286,6 +299,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         sendPlayPauseKey: @escaping () -> Bool,
         sendMediaCommand: ((MediaInterruptionCommand) -> Bool)? = nil,
         audibleProcessBundleIDs: @escaping () -> [String]? = { nil },
+        isApplicationRunning: @escaping (String) -> Bool = { _ in true },
         minimumResumeDelayNanoseconds: UInt64 = 300_000_000,
         pauseConfirmationDelayNanoseconds: UInt64 = 120_000_000,
         unknownResumeRetryDelayNanoseconds: UInt64 = 150_000_000,
@@ -296,6 +310,7 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         let commandSender = sendMediaCommand ?? { _ in sendPlayPauseKey() }
         self.sendPlayPauseKey = sendPlayPauseKey
         self.audibleProcessBundleIDs = audibleProcessBundleIDs
+        self.isApplicationRunning = isApplicationRunning
         // Escalation only makes sense when the media command sender is distinct from the
         // media-key sender; otherwise escalation would just repeat the same key press.
         self.escalatesToMediaKeyOnUnverifiedCommand = sendMediaCommand != nil
@@ -453,6 +468,13 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             if pauseOutcome == .failed,
                postPauseDetection == .playing || postPauseDetection == .likelyPlaying,
                escalatesToMediaKeyOnUnverifiedCommand {
+                // The media key is a toggle; confirm with a second detection so a
+                // detector lagging behind a successful pause does not un-pause it.
+                postPauseDetection = await confirmingDetection()
+            }
+            if pauseOutcome == .failed,
+               postPauseDetection == .playing || postPauseDetection == .likelyPlaying,
+               escalatesToMediaKeyOnUnverifiedCommand {
                 // The media command reported success but playback is verifiably still
                 // active. MediaRemote silently no-ops on macOS 15.4+ for non-entitled
                 // processes, so escalate to the synthetic play/pause media key.
@@ -551,6 +573,15 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
                     owner: interruptedPlaybackOwner,
                     audibleBundleIDs: audibleProcessBundleIDs()
                 )
+                if !pauseVerified, escalatesToMediaKeyOnUnverifiedCommand {
+                    // Confirm before toggling; see `confirmingDetection()`.
+                    postPauseDetection = await confirmingDetection()
+                    pauseVerified = Self.weakPauseVerified(
+                        detection: postPauseDetection,
+                        owner: interruptedPlaybackOwner,
+                        audibleBundleIDs: audibleProcessBundleIDs()
+                    )
+                }
                 if !pauseVerified, escalatesToMediaKeyOnUnverifiedCommand {
                     let didSendKey = sendPlayPauseKey()
                     Self.logger.notice(
@@ -831,10 +862,23 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             )
             return
         }
-        let postResumeDetection = await playbackDetector.detect()
+        var postResumeDetection = await playbackDetector.detect()
         // Re-check after the detect suspension: a new interruption may have begun
         // and paused media; pressing the key now would un-pause it.
         guard !Task.isCancelled, activeTokens.isEmpty else { return }
+        if postResumeDetection == .notPlaying {
+            // Confirm before toggling; see `confirmingDetection()`.
+            postResumeDetection = await confirmingDetection()
+            guard !Task.isCancelled, activeTokens.isEmpty else { return }
+            if let owner = interruptedPlaybackOwnerForResume,
+               let audibleNow = audibleProcessBundleIDs(),
+               Self.ownerIsAudible(owner, in: audibleNow) {
+                Self.logger.notice(
+                    "Media interruption resume verified because \(owner.logValue, privacy: .public) is audible again."
+                )
+                return
+            }
+        }
         if postResumeDetection == .notPlaying {
             // Same MediaRemote caveat as the pause path: the command sender cannot
             // report real success, so verify and escalate to the media key.
@@ -939,6 +983,15 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             guard audibleBundleIDs.contains(where: { $0.lowercased().hasPrefix(prefix) }) else {
                 continue
             }
+            if prefix == Self.sharedWebKitHelperPrefix,
+               !isApplicationRunning(Self.safariDisplayID) {
+                // Audible WebKit helper while Safari is not running: the audio belongs
+                // to some other WKWebView app, so do not attribute it to Safari.
+                Self.logger.notice(
+                    "Media interruption ignoring audible WebKit helper because Safari is not running."
+                )
+                continue
+            }
             if owner.isBrowser {
                 // The browser is emitting audio right now — ground truth that beats any
                 // scriptable state probe (unavailable for Arc, disabled by default for
@@ -997,6 +1050,17 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
             return owner
         }
         return nil
+    }
+
+    /// The play/pause media key is a toggle. Escalating to it on a single detection
+    /// taken shortly after a command means a detector that merely lags behind a
+    /// successful command would undo it (resume paused media, or re-pause resumed
+    /// media). Escalation therefore requires this second, later detection to agree.
+    private func confirmingDetection() async -> PlaybackDetectionResult {
+        if pauseConfirmationDelayNanoseconds > 0 {
+            try? await Task.sleep(nanoseconds: pauseConfirmationDelayNanoseconds)
+        }
+        return await playbackDetector.detect()
     }
 
     private func stabilizedResumeDetection() async -> PlaybackDetectionResult {

@@ -1765,7 +1765,7 @@ func unverifiedPauseCommandEscalatesToMediaKeyForBrowsers() async {
     let chrome = FakeChromePlaybackController([.playing], pauseSucceeds: false)
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector(
-            [.playing, .playing, .notPlaying],
+            [.playing, .playing, .playing, .notPlaying],
             displayIDs: [MediaDisplayID.chrome],
             fallbackDisplayID: MediaDisplayID.chrome
         ),
@@ -1785,6 +1785,66 @@ func unverifiedPauseCommandEscalatesToMediaKeyForBrowsers() async {
         keyRecorder.sendCalls == 1,
         "A pause command that claims success while playback verifiably continues must escalate to the media key."
     )
+}
+
+@MainActor
+@Test("Pause escalation requires a second confirming detection before toggling the media key")
+func pauseEscalationRequiresConfirmingDetection() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.playing], pauseSucceeds: false)
+    // begin: playing; first post-command detection lags (still playing);
+    // confirming detection: not playing. The command worked; a key press would
+    // have toggled playback back on.
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .playing, .notPlaying],
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0, "A lagging detection must not trigger a toggling media key press.")
+}
+
+@MainActor
+@Test("Resume escalation requires a second confirming detection before toggling the media key")
+func resumeEscalationRequiresConfirmingDetection() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    // begin: playing, post-pause: not playing; resume detection: not playing;
+    // post-resume detection lags (not playing); confirming detection: playing.
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying, .notPlaying, .notPlaying, .playing],
+            fallback: .playing
+        ),
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for confirmed generic playback.")
+        return
+    }
+    service.endInterruption(token: token)
+    let didResume = await waitUntil {
+        commandRecorder.commands == [.pause, .play]
+    }
+    #expect(didResume)
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    #expect(keyRecorder.sendCalls == 0, "A lagging detection must not re-pause resumed media.")
 }
 
 @MainActor
@@ -1891,7 +1951,7 @@ func weakBrowserDetectionEscalatesToMediaKeyWhenCommandUnverified() async {
     let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector(
-            [.likelyPlaying, .likelyPlaying, .notPlaying],
+            [.likelyPlaying, .likelyPlaying, .likelyPlaying, .notPlaying],
             displayIDs: [MediaDisplayID.chrome],
             fallbackDisplayID: MediaDisplayID.chrome
         ),
@@ -2285,10 +2345,11 @@ func pauseVerifiesViaOwnerSilenceWhenDetectorStaysAmbiguous() async {
     let keyRecorder = MediaKeySendRecorder()
     let commandRecorder = MediaCommandRecorder()
     let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
-    // begin: Chrome audible; post-command verify: still audible (escalate to key);
-    // post-key verify: silent (pause verified through CoreAudio ground truth).
+    // begin: Chrome audible; post-command verify and its confirmation: still audible
+    // (escalate to key); post-key verify: silent (pause verified through CoreAudio
+    // ground truth).
     let audible = AudibleProcessSequence(
-        [["com.google.Chrome.helper"], ["com.google.Chrome.helper"], []],
+        [["com.google.Chrome.helper"], ["com.google.Chrome.helper"], ["com.google.Chrome.helper"], []],
         fallback: []
     )
     let service = MacMediaInterruptionService(
@@ -2676,5 +2737,53 @@ func cancelledBeginDoesNotCancelPendingResume() async {
         await spotify.playCalls == 1
     }
     #expect(didResume, "A cancelled begin must leave the pending resume intact.")
+}
+@MainActor
+@Test("Audible shared WebKit helper is not attributed to Safari when Safari is not running")
+func audibleWebKitHelperNotAttributedToSafariWhenSafariIsNotRunning() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let safari = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([], fallback: .likelyPlaying),
+        playbackControllerOverrides: [.safari: safari],
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.apple.WebKit.GPU"] },
+        isApplicationRunning: { $0 != "com.apple.Safari" },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "WKWebView audio in another app is not evidence of Safari playback.")
+    #expect(await safari.pauseCalls == 0)
+    #expect(commandRecorder.commands.isEmpty)
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("Audible shared WebKit helper is attributed to Safari while Safari is running")
+func audibleWebKitHelperAttributedToSafariWhileSafariIsRunning() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let safari = FakeChromePlaybackController([.unknown], pauseSucceeds: true)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([], fallback: .likelyPlaying),
+        playbackControllerOverrides: [.safari: safari],
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.apple.WebKit.GPU"] },
+        isApplicationRunning: { $0 == "com.apple.Safari" },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(await safari.pauseCalls == 1)
+    #expect(keyRecorder.sendCalls == 0)
 }
 #endif
