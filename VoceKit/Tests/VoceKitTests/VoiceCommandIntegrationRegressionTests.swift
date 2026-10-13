@@ -8,10 +8,17 @@ private func service() -> VoiceCommandService {
 }
 
 @Test(
-    "Period and colon fire before attached recognizer punctuation and uncased scripts",
+    "Period and colon fire at the end, before uncased scripts and after salutations",
     arguments: [
-        ("Call me period. Thanks period.", "Call me. Thanks."),
-        ("I'm done period, see you", "I'm done, see you"),
+        // Attached punctuation is not evidence of a command; only the final
+        // "period." (end of text) converts.
+        ("Call me period. Thanks period.", "Call me period. Thanks."),
+        ("I'm done period, see you", "I'm done period, see you"),
+        // When the trigger fires, attached ?/! replace the period.
+        ("Done period?", "Done?"),
+        ("Call me period!", "Call me!"),
+        ("Done period? Really", "Done period? Really"),
+        ("Call me period! Now", "Call me period! Now"),
         ("我们明天见 period 谢谢", "我们明天见. 谢谢"),
         ("שלום period מה שלומך", "שלום. מה שלומך"),
         ("Dear team colon please review", "Dear team: please review"),
@@ -30,6 +37,14 @@ func periodColonFireWithRecognizerContext(input: String, expected: String) {
         "He had a colon procedure.",
         "Check his colon, then call me.",
         "The grace period ended yesterday.",
+        "Each period, the teacher takes attendance.",
+        "The Jurassic period, which lasted millions of years, ended.",
+        "During the Edo period, Japan was isolated.",
+        "In fifth period, I have math.",
+        "My favorite period, honestly, is lunch.",
+        "That was a great period. We grew.",
+        "During the Edo period Japan was isolated.",
+        "The Jurassic period Dinosaurs ruled.",
     ]
 )
 func proseWithPunctuationUnchanged(sentence: String) {
