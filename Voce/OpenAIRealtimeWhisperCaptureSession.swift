@@ -185,6 +185,18 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// 50 minutes leaves enough time to fetch a new credential and retry the
     /// handshake without approaching the provider-enforced disconnect.
     static let connectionRolloverIntervalSeconds: TimeInterval = 50 * 60
+    /// OpenAI's hard limit for one Realtime session.
+    static let providerSessionLimitSeconds: TimeInterval = 60 * 60
+    /// The swap to a replacement must happen at least this long before the
+    /// active session hits the provider limit, leaving room to finalize the
+    /// retired segment.
+    static let rolloverCapMarginSeconds: TimeInterval = 2 * 60
+    /// Worst-case time from starting to open a replacement to the swap:
+    /// credential fetch (20 s request timeout), the 10 s handshake deadline,
+    /// and slack. No attempt starts with less time than this left.
+    static let rolloverAttemptReserveSeconds: TimeInterval = 45
+    static let rolloverRetryDelaySeconds: TimeInterval = 15
+    static let rolloverMaximumAttempts = 12
     /// Mic buffers arrive roughly every 21 ms. Coalescing them into ~100 ms
     /// appends (24 kHz mono Int16) cuts websocket messages, JSON encoding and
     /// base64 work about fivefold while adding at most ~100 ms of latency.
@@ -869,6 +881,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let writer: RealtimeWebSocketWriter
         let accumulator: RealtimeTranscriptAccumulator
         let receiveTask: Task<Void, Never>
+        /// When the provider session began; it is closed 60 minutes later.
+        let openedAt: ContinuousClock.Instant
 
         /// The accumulator fails as soon as the receive loop errors, so an
         /// open accumulator plus a running socket means the server has not
@@ -949,6 +963,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let accumulator = RealtimeTranscriptAccumulator()
         let sessionReadiness = RealtimeSessionReadiness()
 
+        let openedAt = ContinuousClock().now
         socket.resume()
         let receiveTask = Task { [weak self, socket, accumulator, sessionReadiness] in
             do {
@@ -992,7 +1007,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 socket: socket,
                 writer: writer,
                 accumulator: accumulator,
-                receiveTask: receiveTask
+                receiveTask: receiveTask,
+                openedAt: openedAt
             )
         } catch {
             receiveTask.cancel()
@@ -1027,11 +1043,26 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 
     private func rolloverConnectionWithRetry() async {
+        guard let activeOpenedAt = stateLock.withLock({ connection?.openedAt }) else { return }
+        // Every attempt must swap before the active session hits the provider
+        // limit, so attempts are bounded by that deadline, not just a count.
+        let swapDeadline = activeOpenedAt.advanced(
+            by: .seconds(Self.providerSessionLimitSeconds - Self.rolloverCapMarginSeconds)
+        )
         var lastError: Error?
-        for attempt in 1...12 {
+        for attempt in 1...Self.rolloverMaximumAttempts {
             guard !Task.isCancelled, !isStopped else { return }
+            guard Self.rolloverPreOpenWaitLimit(
+                secondsUntilDeadline: Self.seconds(until: swapDeadline)
+            ) != nil else {
+                Self.logger.error(
+                    "Realtime connection rollover stopped before attempt \(attempt, privacy: .public): not enough time left before the provider session limit"
+                )
+                lastError = lastError ?? CloudDictationError.timedOut
+                break
+            }
             do {
-                try await rolloverConnection()
+                try await rolloverConnection(swapDeadline: swapDeadline)
                 return
             } catch is CancellationError {
                 return
@@ -1043,11 +1074,17 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 if Self.isNonRetryableConnectionError(error) {
                     break
                 }
-                if attempt < 12 {
-                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                // Skip the pause when no attempt could start after it anyway;
+                // the deadline check above then ends the loop.
+                let remainingAfterDelay = Self.seconds(until: swapDeadline) - Self.rolloverRetryDelaySeconds
+                if attempt < Self.rolloverMaximumAttempts,
+                   Self.rolloverPreOpenWaitLimit(secondsUntilDeadline: remainingAfterDelay) != nil {
+                    try? await Task.sleep(nanoseconds: UInt64(Self.rolloverRetryDelaySeconds * 1_000_000_000))
                 }
             }
         }
+        // End the dictation before the provider would close it mid-speech;
+        // the controller recovers the transcript from the checkpoint.
         if let lastError,
            !Task.isCancelled,
            !isStopped {
@@ -1055,7 +1092,28 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
     }
 
-    private func rolloverConnection() async throws {
+    /// The longest pause-wait an attempt may spend before opening its
+    /// replacement, or `nil` if an attempt can no longer finish before the
+    /// swap deadline.
+    static func rolloverPreOpenWaitLimit(secondsUntilDeadline: TimeInterval) -> TimeInterval? {
+        let available = secondsUntilDeadline - rolloverAttemptReserveSeconds
+        guard available > 0 else { return nil }
+        return min(3 * 60, available)
+    }
+
+    /// The longest pause-wait after the replacement handshake that still
+    /// leaves a few seconds to swap before the deadline.
+    static func rolloverPostOpenWaitLimit(secondsUntilDeadline: TimeInterval) -> TimeInterval {
+        max(0, min(45, secondsUntilDeadline - 5))
+    }
+
+    private static func seconds(until deadline: ContinuousClock.Instant) -> TimeInterval {
+        let remaining = ContinuousClock().now.duration(to: deadline)
+        return Double(remaining.components.seconds)
+            + Double(remaining.components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func rolloverConnection(swapDeadline: ContinuousClock.Instant) async throws {
         guard let audioRouter = stateLock.withLock({ connection == nil ? nil : self.audioRouter }) else {
             throw CloudDictationError.invalidResponse
         }
@@ -1066,7 +1124,12 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // cap. Wait before opening the replacement: an idle replacement socket
         // can be closed while it waits, and its errors are not reported until
         // it becomes the active connection.
-        try await waitForQuietRolloverBoundary(maximumWaitSeconds: 3 * 60)
+        guard let preOpenWaitLimit = Self.rolloverPreOpenWaitLimit(
+            secondsUntilDeadline: Self.seconds(until: swapDeadline)
+        ) else {
+            throw CloudDictationError.timedOut
+        }
+        try await waitForQuietRolloverBoundary(maximumWaitSeconds: preOpenWaitLimit)
 
         let newConnection = try await openConnection(forceCredentialRefresh: true)
         do {
@@ -1074,11 +1137,15 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 throw CancellationError()
             }
             // Speech may have resumed during the handshake, so wait for the
-            // next pause again (bounded well inside the 60-minute cap), then
-            // make sure the replacement is still open before routing audio to
-            // it. An unhealthy replacement is discarded and retried while the
-            // old connection keeps recording.
-            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 45)
+            // next pause again (bounded by the swap deadline), then make sure
+            // the replacement is still open before routing audio to it. An
+            // unhealthy replacement is discarded and retried while the old
+            // connection keeps recording.
+            try await waitForQuietRolloverBoundary(
+                maximumWaitSeconds: Self.rolloverPostOpenWaitLimit(
+                    secondsUntilDeadline: Self.seconds(until: swapDeadline)
+                )
+            )
             guard await newConnection.isHealthy() else {
                 throw CloudDictationError.networkUnavailable
             }

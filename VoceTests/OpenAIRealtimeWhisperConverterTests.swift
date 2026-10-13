@@ -471,6 +471,23 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         }
     }
 
+    func testRolloverAttemptsFitBeforeProviderSessionLimit() {
+        typealias Session = OpenAIRealtimeWhisperCaptureSession
+        let budget = Session.providerSessionLimitSeconds
+            - Session.rolloverCapMarginSeconds
+            - Session.connectionRolloverIntervalSeconds
+
+        // The first attempt at the 50-minute mark gets the full pause wait.
+        XCTAssertEqual(Session.rolloverPreOpenWaitLimit(secondsUntilDeadline: budget), 3 * 60)
+        // Later attempts shrink their waits to what is left...
+        XCTAssertEqual(Session.rolloverPreOpenWaitLimit(secondsUntilDeadline: 100), 100 - Session.rolloverAttemptReserveSeconds)
+        XCTAssertEqual(Session.rolloverPostOpenWaitLimit(secondsUntilDeadline: 20), 15)
+        XCTAssertEqual(Session.rolloverPostOpenWaitLimit(secondsUntilDeadline: 2), 0)
+        // ...and none starts once it could not swap before the deadline.
+        XCTAssertNil(Session.rolloverPreOpenWaitLimit(secondsUntilDeadline: Session.rolloverAttemptReserveSeconds))
+        XCTAssertNil(Session.rolloverPreOpenWaitLimit(secondsUntilDeadline: -10))
+    }
+
     func testRealtimeConnectionRollsBeforeProviderMaximum() {
         XCTAssertLessThan(
             OpenAIRealtimeWhisperCaptureSession.connectionRolloverIntervalSeconds,
