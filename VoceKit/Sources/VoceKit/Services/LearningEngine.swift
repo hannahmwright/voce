@@ -479,6 +479,11 @@ public actor LearningEngine {
             if report.skippedValueCount > 0 {
                 // Keep the original before the next save drops the bad parts.
                 let preserved = CorruptFilePreserver.preserve(fileAt: url, moving: false) != nil
+                if preserved {
+                    // Write the repaired data now so the next launch does not
+                    // find the same damage (and back it up) again.
+                    persist(decoded, to: url)
+                }
                 return (decoded, !preserved)
             }
             return (decoded, false)

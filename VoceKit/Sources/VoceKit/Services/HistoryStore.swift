@@ -45,6 +45,11 @@ public actor HistoryStore: HistoryStoreProtocol {
                 // Some entries/fields were unreadable; keep the original file
                 // before the next persist rewrites it without them.
                 isPersistenceBlocked = CorruptFilePreserver.preserve(fileAt: storageURL, moving: false) == nil
+                if !isPersistenceBlocked {
+                    // Write the repaired history now so the next launch does not
+                    // find the same damage (and back it up) again.
+                    try? persist()
+                }
             }
         } catch {
             // Never let the next append overwrite an unreadable history file.

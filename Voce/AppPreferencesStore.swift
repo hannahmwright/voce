@@ -40,6 +40,11 @@ actor AppPreferencesStore {
                 )
             }
             prefs.normalize()
+            if report.skippedValueCount > 0, !isPersistenceBlocked {
+                // Write the repaired preferences now so the next launch does
+                // not find the same damage (and back it up) again.
+                writeToDisk(prefs)
+            }
             return prefs
         } catch {
             // Move the unreadable file aside so saving defaults can never
@@ -77,6 +82,10 @@ actor AppPreferencesStore {
             Self.logger.error("Preferences save skipped: unreadable preferences file could not be preserved.")
             return
         }
+        writeToDisk(preferences)
+    }
+
+    private func writeToDisk(_ preferences: AppPreferences) {
         var normalized = preferences
         normalized.normalize()
 

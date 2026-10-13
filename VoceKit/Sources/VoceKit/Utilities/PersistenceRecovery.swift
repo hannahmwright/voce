@@ -169,6 +169,12 @@ public enum CorruptFilePreserver {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: url.path) else { return nil }
 
+        // Don't pile up identical copies (e.g. one per launch) of the same file.
+        if !moving, let original = try? Data(contentsOf: url),
+           let identical = preservedCopies(of: url).first(where: { (try? Data(contentsOf: $0)) == original }) {
+            return identical
+        }
+
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")

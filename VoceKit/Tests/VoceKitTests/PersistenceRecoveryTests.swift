@@ -63,6 +63,52 @@ func historyStoreSkipsOneBadEntry() async throws {
     #expect(try Data(contentsOf: backups[0]) == original)
 }
 
+@Test("Lossy history load writes repaired data so later launches add no more backups")
+func historyStoreRepairsAfterLossyLoad() async throws {
+    let url = try temporaryFileURL("transcript-history.json")
+    let badEntry = #"{"id":"not-a-uuid","createdAt":12,"rawText":5}"#
+    try Data("[\(validEntryJSON),\(badEntry)]".utf8).write(to: url)
+
+    for _ in 0..<3 {
+        let store = HistoryStore(storageURL: url, clipboardService: MemoryClipboardService())
+        #expect(await store.recent(limit: 10).map(\.cleanText) == ["Clean one"])
+    }
+
+    #expect(CorruptFilePreserver.preservedCopies(of: url).count == 1)
+    let rewritten = try String(contentsOf: url, encoding: .utf8)
+    #expect(rewritten.contains("not-a-uuid") == false)
+}
+
+@Test("Lossy learning data load writes repaired data so later launches add no more backups")
+func learningEngineRepairsAfterLossyLoad() async throws {
+    let url = try temporaryFileURL("learning-data.json")
+    let json = #"{"wordFrequencies":{"hello":4},"corrections":[{"rawWord":7}]}"#
+    try Data(json.utf8).write(to: url)
+
+    for _ in 0..<3 {
+        let engine = LearningEngine(storageURL: url)
+        #expect(await engine.frequency(of: "hello") == 4)
+    }
+
+    #expect(CorruptFilePreserver.preservedCopies(of: url).count == 1)
+}
+
+@Test("Preserving the same unchanged file twice keeps a single copy")
+func corruptFilePreserverSkipsIdenticalCopies() throws {
+    let url = try temporaryFileURL("preferences.json")
+    try Data("{\"partial\":true}".utf8).write(to: url)
+
+    let first = CorruptFilePreserver.preserve(fileAt: url, moving: false, now: Date(timeIntervalSince1970: 0))
+    let second = CorruptFilePreserver.preserve(fileAt: url, moving: false, now: Date(timeIntervalSince1970: 60))
+    try Data("{\"partial\":false}".utf8).write(to: url)
+    let third = CorruptFilePreserver.preserve(fileAt: url, moving: false, now: Date(timeIntervalSince1970: 120))
+
+    #expect(first != nil)
+    #expect(second?.lastPathComponent == first?.lastPathComponent)
+    #expect(third?.lastPathComponent != first?.lastPathComponent)
+    #expect(CorruptFilePreserver.preservedCopies(of: url).count == 2)
+}
+
 @Test("Unknown enum raw values in history entries are tolerated")
 func historyStoreToleratesUnknownEnumValues() async throws {
     let url = try temporaryFileURL("transcript-history.json")
