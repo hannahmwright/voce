@@ -112,7 +112,9 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         insertedText: text,
                         errorMessage: errorMessage,
                         recoveryAction: recoveryAction,
-                        notice: noticeCollector.notice
+                        // Notices describe a successful insertion only; a
+                        // copied-only result already explains the clipboard.
+                        notice: status == .inserted ? noticeCollector.notice : nil
                     )
                 } catch {
                     failures.append(
