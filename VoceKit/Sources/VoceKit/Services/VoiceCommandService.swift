@@ -165,13 +165,16 @@ public final class VoiceCommandService: Sendable {
             // sentence after them: "the note period I will send it",
             // "Dear team colon Please review". "The trial period ended" does not.
             if firesAtEnd, Self.sentenceBreakTriggers.contains(trigger) {
+                // A capitalized word right before the trigger is a proper-noun
+                // modifier ("the Edo period Japan…", "Jurassic period").
                 let isLowerConfidenceNoun = isCompoundNoun(trigger, context: context)
                     || (context.previousWord.map { Self.ambiguousGuardWords.contains($0) } ?? false)
+                    || context.previousWordIsCapitalized
                 // The recognizer started a new sentence after the trigger (a
-                // capitalized or uncased-script word, or a snippet), or appended
-                // its own punctuation to it: "Call me period. Thanks",
-                // "I'm done period, see you".
-                if context.nextWordStartsSentence || context.punctuationDirectlyAfter != nil {
+                // capitalized or uncased-script word, or a snippet). Punctuation
+                // attached to the trigger ("Each period, the teacher…") is not
+                // evidence of a command; it only merges when the trigger fires.
+                if context.nextWordStartsSentence {
                     return !isLowerConfidenceNoun
                 }
                 // "Dear team colon please review": a colon closing a short
@@ -357,9 +360,13 @@ public final class VoiceCommandService: Sendable {
             // after a spoken "period", keep that softer mark rather than
             // doubling up: "I'm done period, see you" → "I'm done, see you".
             if replacement == ".", end < nextLimit,
-               let scalar = Unicode.Scalar(text.character(at: end)),
-               CharacterSet(charactersIn: ",;:").contains(scalar) {
-                effectiveReplacement = String(Character(scalar))
+               let scalar = Unicode.Scalar(text.character(at: end)) {
+                if CharacterSet(charactersIn: ",;:").contains(scalar) {
+                    effectiveReplacement = String(Character(scalar))
+                } else if scalar == "?" || scalar == "!" {
+                    // "Done period?" → "Done?", never "Done.?".
+                    effectiveReplacement = ""
+                }
             }
             absorbAfter(Self.softPunctuation)
         case .closingBracket:
@@ -541,6 +548,13 @@ public final class VoiceCommandService: Sendable {
             "busy", "quiet", "set", "fixed", "limited", "previous", "prior", "following",
             "current", "recent", "similar", "specific", "same", "whole", "entire", "extra",
             "little", "her", "his", "my", "your", "their", "our", "its", "whose",
+            // Ordinals, quantifiers and evaluative adjectives ("fifth period",
+            // "each period", "a great period").
+            "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+            "ninth", "tenth", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "next",
+            "last", "each", "every", "per", "great", "good", "bad", "favorite", "favourite",
+            "wonderful", "amazing", "strange", "weird", "happy", "sad", "awkward", "rough",
+            "golden", "productive", "slow", "calm", "formative", "creative",
         ],
         "space": [
             "disk", "storage", "memory", "office", "parking", "living", "work", "working",
@@ -606,8 +620,9 @@ private struct MatchContext {
     /// ("…the note period I will…"), in a script without case (CJK, Hebrew,
     /// Arabic…), or is a snippet placeholder.
     var nextWordStartsSentence: Bool
-    /// Punctuation attached directly to the trigger ("period." / "period,").
-    var punctuationDirectlyAfter: Character?
+    /// The word directly before the trigger is capitalized mid-sentence
+    /// (a proper noun such as "Jurassic" or "Edo").
+    var previousWordIsCapitalized: Bool
     /// The current sentence is a short salutation/heading before the trigger
     /// ("Dear team", "Hi all").
     var isAfterShortSalutation: Bool
@@ -639,7 +654,15 @@ private struct MatchContext {
             }
             return character.isLetter && (character.isUppercase || !character.isCased)
         } ?? false
-        punctuationDirectlyAfter = after.first.flatMap { ".,;:!?".contains($0) ? $0 : nil }
+        let previousToken = beforeTrimmed.split(whereSeparator: { $0.isWhitespace }).last
+        let tokenBeforePrevious = beforeTrimmed.split(whereSeparator: { $0.isWhitespace }).dropLast().last
+        let previousIsSentenceInitial = tokenBeforePrevious.map { token in
+            token.last.map { ".!?".contains($0) } ?? false
+        } ?? true
+        previousWordIsCapitalized = previousWord != nil
+            && previousWord != "i"
+            && !previousIsSentenceInitial
+            && (previousToken?.first.map { $0.isUppercase } ?? false)
 
         let sentenceStart = beforeTrimmed.lastIndex(where: { ".!?\n".contains($0) })
             .map { beforeTrimmed.index(after: $0) } ?? beforeTrimmed.startIndex

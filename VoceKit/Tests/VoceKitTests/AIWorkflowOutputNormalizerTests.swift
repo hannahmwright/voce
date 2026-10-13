@@ -105,6 +105,34 @@ func directiveOutputNormalizerKeepsGenericNounContent(kind: AIWorkflowKind, outp
     #expect(AIWorkflowOutputNormalizer.normalize(output, kind: kind) == output)
 }
 
+@Test(
+    "Rewrite and summarize strip bare version/text and rewrite strips \"Here's the email:\"",
+    arguments: [
+        (AIWorkflowKind.rewrite, "Here's a more professional version:"),
+        (AIWorkflowKind.rewrite, "Here's a friendlier version:"),
+        (AIWorkflowKind.rewrite, "Here's the email:"),
+        (AIWorkflowKind.rewrite, "Here's the message:"),
+        (AIWorkflowKind.summarize, "Here's a shorter version:"),
+        (AIWorkflowKind.summarize, "Here is the condensed text:"),
+    ]
+)
+func rewriteSummarizeStripBareNounPreambles(kind: AIWorkflowKind, preamble: String) {
+    #expect(AIWorkflowOutputNormalizer.normalize("\(preamble)\nWe ship Monday.", kind: kind, input: "we ship monday") == "We ship Monday.")
+}
+
+@Test("Bare-noun preambles stay conservative")
+func bareNounPreamblesStayConservative() {
+    // Dictation polish never strips generic nouns.
+    #expect(AIWorkflowOutputNormalizer.normalize("Here's my email: hannah@example.com", kind: .dictationPolish) == "Here's my email: hannah@example.com")
+    #expect(AIWorkflowOutputNormalizer.normalize("Here's the email:\nPlease review.", kind: .dictationPolish) == "Here's the email:\nPlease review.")
+    // "my" text/email is the user's own content.
+    #expect(AIWorkflowOutputNormalizer.normalize("Here's my text: call me later.", kind: .rewrite) == "Here's my text: call me later.")
+    // "Here's the email" without a colon is a sentence, not a preamble.
+    #expect(AIWorkflowOutputNormalizer.normalize("Here's the email\nfrom Bob.", kind: .rewrite) == "Here's the email\nfrom Bob.")
+    // The input started with the same words.
+    #expect(AIWorkflowOutputNormalizer.normalize("Here's the email: we ship Monday.", kind: .rewrite, input: "here's the email we ship monday") == "Here's the email: we ship Monday.")
+}
+
 @Test("Directive output normalizer never strips a prefix the input itself starts with")
 func directiveOutputNormalizerRespectsInputPrefix() {
     let input = "Here's the polished text: my notes from today"

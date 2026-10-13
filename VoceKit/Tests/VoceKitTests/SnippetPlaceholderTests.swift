@@ -173,16 +173,43 @@ func duplicatedPlaceholderFallsBackToLocalCleanup() async throws {
     #expect(result.cleanupOutcome?.warning == nil)
 }
 
-@Test("Refined text that drops a placeholder (self-correction) is accepted")
+/// Simulates a refiner resolving a self-correction: drops the first placeholder only.
+private struct FirstPlaceholderDroppingCleanupEngine: CleanupEngine {
+    func cleanup(raw: RawTranscript, profile: StyleProfile, lexicon: PersonalLexicon) async throws -> CleanTranscript {
+        var scalars = Array(raw.text.unicodeScalars)
+        if let start = scalars.firstIndex(of: "\u{E000}"),
+           let end = scalars[start...].firstIndex(of: "\u{E001}") {
+            scalars.removeSubrange(start...end)
+        }
+        var text = ""
+        text.unicodeScalars.append(contentsOf: scalars)
+        return CleanTranscript(text: "REFINED " + text)
+    }
+}
+
+@Test("Refined text that drops some placeholders (self-correction) is accepted")
 func droppedPlaceholderIsAccepted() async throws {
+    let result = try await finalize(
+        transcript: "send it to my address, no actually my email, thanks sig",
+        snippets: [Snippet(trigger: "my address", expansion: "1 Main St"), signature],
+        cleanupEngine: FirstPlaceholderDroppingCleanupEngine()
+    )
+
+    #expect(result.cleanText == "REFINED send it to , no actually my email, thanks Best,\nHannah")
+    #expect(result.cleanupOutcome?.source == .localSuccess)
+}
+
+@Test("Refined text that drops every placeholder falls back to local cleanup without a warning")
+func allPlaceholdersDroppedFallsBack() async throws {
     let result = try await finalize(
         transcript: "send it to my address, no actually my email",
         snippets: [Snippet(trigger: "my address", expansion: "1 Main St")],
         cleanupEngine: PlaceholderDroppingCleanupEngine()
     )
 
-    #expect(result.cleanText == "REFINED send it to , no actually my email")
-    #expect(result.cleanupOutcome?.source == .localSuccess)
+    #expect(result.cleanText == "send it to 1 Main St, no actually my email")
+    #expect(result.cleanupOutcome?.source == .localFallback)
+    #expect(result.cleanupOutcome?.warning == nil)
 }
 
 @Test("Refined text that keeps placeholders is used and receives the expansion")
@@ -208,8 +235,10 @@ func placeholderIntegrityCheck() async {
     #expect(protected.placeholdersAreIntact(in: protected.text))
     #expect(protected.placeholdersAreIntact(in: "Rewritten: " + protected.text.uppercased()))
     #expect(protected.placeholdersAreIntact(in: protected.text + placeholders[0]) == false)
-    // Dropping a placeholder is fine; it simply isn't restored.
+    // Dropping a placeholder is fine while another survives; it simply isn't restored.
     #expect(protected.placeholdersAreIntact(in: protected.text.replacingOccurrences(of: placeholders[1], with: "")))
+    // Losing every placeholder is a failure.
+    #expect(protected.placeholdersAreIntact(in: "and") == false)
     // Unknown or altered placeholders are rejected.
     #expect(protected.placeholdersAreIntact(in: protected.text + SnippetProtectedText.placeholder(index: 7)) == false)
     #expect(protected.placeholdersAreIntact(in: protected.text + "\u{E000}x") == false)
