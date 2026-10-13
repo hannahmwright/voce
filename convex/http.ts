@@ -451,12 +451,14 @@ async function verifiedFeatureEmail(
 }
 
 function cloudErrorResponse(error: unknown) {
+  // Provider errors carry messages written for users (quota, timeouts, rate
+  // limits). Anything else is an internal failure whose details stay in logs.
   if (error instanceof CloudDictationProviderError) {
     return jsonResponse({ error: error.message }, error.status);
   }
 
-  const message = error instanceof Error ? error.message : "Cloud dictation is unavailable.";
-  return jsonResponse({ error: message }, 500);
+  console.error("cloud dictation internal error", error);
+  return jsonResponse({ error: "Cloud dictation is unavailable." }, 500);
 }
 
 function productIdFromPrice(price: Stripe.Price | string | null | undefined) {
