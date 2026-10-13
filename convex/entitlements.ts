@@ -42,6 +42,21 @@ const STRIPE_BASE_PRODUCT_IDS = configuredSetFromEnv("STRIPE_BASE_PRODUCT_IDS", 
 const STRIPE_PRO_PRODUCT_IDS = configuredSetFromEnv("STRIPE_PRO_PRODUCT_IDS", "STRIPE_PRO_PRODUCT_ID");
 const STRIPE_BASE_PRICE_IDS = configuredSetFromEnv("STRIPE_BASE_PRICE_IDS", "STRIPE_BASE_PRICE_ID");
 const STRIPE_PRO_PRICE_IDS = configuredSetFromEnv("STRIPE_PRO_PRICE_IDS", "STRIPE_PRO_PRICE_ID");
+// The prices /stripe/checkout sells also identify the plan, so deployments that
+// only configure checkout still map those subscriptions correctly.
+const STRIPE_BASE_CHECKOUT_PRICE_IDS = configuredSetFromEnv(
+  "STRIPE_BASE_MONTHLY_PRICE_ID",
+  "STRIPE_BASE_ANNUAL_PRICE_ID",
+);
+const STRIPE_PRO_CHECKOUT_PRICE_IDS = configuredSetFromEnv(
+  "STRIPE_PRO_MONTHLY_PRICE_ID",
+  "STRIPE_PRO_ANNUAL_PRICE_ID",
+);
+const EXPLICIT_STRIPE_PLAN_MAPPING_CONFIGURED =
+  STRIPE_BASE_PRODUCT_IDS.size > 0 ||
+  STRIPE_PRO_PRODUCT_IDS.size > 0 ||
+  STRIPE_BASE_PRICE_IDS.size > 0 ||
+  STRIPE_PRO_PRICE_IDS.size > 0;
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -145,26 +160,26 @@ function planTierForStripeSubscription(subscription: {
 }): PlanTier | null {
   if (
     (subscription.productId && STRIPE_PRO_PRODUCT_IDS.has(subscription.productId)) ||
-    (subscription.priceId && STRIPE_PRO_PRICE_IDS.has(subscription.priceId))
+    (subscription.priceId &&
+      (STRIPE_PRO_PRICE_IDS.has(subscription.priceId) ||
+        STRIPE_PRO_CHECKOUT_PRICE_IDS.has(subscription.priceId)))
   ) {
     return "pro";
   }
 
   if (
     (subscription.productId && STRIPE_BASE_PRODUCT_IDS.has(subscription.productId)) ||
-    (subscription.priceId && STRIPE_BASE_PRICE_IDS.has(subscription.priceId))
+    (subscription.priceId &&
+      (STRIPE_BASE_PRICE_IDS.has(subscription.priceId) ||
+        STRIPE_BASE_CHECKOUT_PRICE_IDS.has(subscription.priceId)))
   ) {
     return "base";
   }
 
-  // Without any plan mapping configured, keep paying subscribers on the app but
-  // do not hand out hosted cloud dictation (which costs money per minute).
-  if (
-    STRIPE_BASE_PRODUCT_IDS.size === 0 &&
-    STRIPE_PRO_PRODUCT_IDS.size === 0 &&
-    STRIPE_BASE_PRICE_IDS.size === 0 &&
-    STRIPE_PRO_PRICE_IDS.size === 0
-  ) {
+  // Without an explicit plan mapping, an unrecognized subscription (for example
+  // a legacy price) keeps app access but does not get hosted cloud dictation,
+  // which costs money per minute.
+  if (!EXPLICIT_STRIPE_PLAN_MAPPING_CONFIGURED) {
     warnMissingStripePlanMappingOnce();
     return "base";
   }
@@ -180,7 +195,7 @@ function warnMissingStripePlanMappingOnce() {
   }
   didWarnMissingStripePlanMapping = true;
   console.warn(
-    "Stripe plan mapping is not configured; treating active subscriptions as Base. " +
+    "Stripe plan mapping is not configured; treating unrecognized active subscriptions as Base. " +
       "Set STRIPE_PRO_PRODUCT_IDS / STRIPE_PRO_PRICE_IDS (and the Base equivalents).",
   );
 }
