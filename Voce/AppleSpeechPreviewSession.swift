@@ -85,11 +85,14 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         do {
             audioFile = try AVAudioFile(forWriting: outputURL, settings: inputFormat.settings)
         } catch {
+            cleanupOutputFile(at: outputURL)
             throw AppleSpeechPreviewError.failedToCreateOutputFile
         }
 
-        self.outputURL = outputURL
-        self.audioFile = audioFile
+        stateLock.withLock {
+            self.outputURL = outputURL
+            self.audioFile = audioFile
+        }
 
         let speechRecognitionAvailable: Bool
         if previewTranscriptionEnabled {
@@ -126,7 +129,9 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
                 }
 
                 speechRecognizer = recognizer
-                recognitionRequest = request
+                stateLock.withLock {
+                    recognitionRequest = request
+                }
             }
         }
 
@@ -143,7 +148,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
                 self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
             }
 
-            self.recognitionRequest?.append(buffer)
+            // `stop()` clears the request on another thread.
+            self.stateLock.withLock { self.recognitionRequest }?.append(buffer)
             self.onAudioLevel(Self.normalizedAudioLevel(from: buffer))
         }
 
@@ -151,11 +157,18 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             try engine.start()
         } catch {
             inputNode.removeTap(onBus: 0)
-            self.audioFile = nil
-            self.outputURL = nil
+            let staleOutputURL = stateLock.withLock { () -> URL? in
+                defer {
+                    self.audioFile = nil
+                    self.outputURL = nil
+                    recognitionRequest = nil
+                }
+                return self.outputURL
+            }
             recognitionTask?.cancel()
             recognitionTask = nil
-            recognitionRequest = nil
+            speechRecognizer = nil
+            cleanupOutputFile(at: staleOutputURL)
             throw AppleSpeechPreviewError.failedToStartAudioEngine
         }
 
@@ -176,15 +189,19 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         audioEngine?.stop()
         audioEngine = nil
 
+        let recognitionRequest = stateLock.withLock { () -> SFSpeechAudioBufferRecognitionRequest? in
+            defer { self.recognitionRequest = nil }
+            return self.recognitionRequest
+        }
         recognitionRequest?.endAudio()
         recognitionTask?.finish()
         recognitionTask?.cancel()
         recognitionTask = nil
-        recognitionRequest = nil
         speechRecognizer = nil
 
         let stoppedAt = ContinuousClock().now
-        (outputURL, capturedFrameCount, wallDurationSeconds) = stateLock.withLock {
+        let latestWriteError: Error?
+        (outputURL, capturedFrameCount, wallDurationSeconds, latestWriteError) = stateLock.withLock {
             hasStopped = true
             let wallDurationSeconds = captureStartedAt.map { start in
                 let duration = start.duration(to: stoppedAt)
@@ -195,7 +212,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             let capturedFrameCount = self.capturedFrameCount
             audioFile = nil
             captureStartedAt = nil
-            return (outputURL, capturedFrameCount, wallDurationSeconds)
+            self.outputURL = nil
+            return (outputURL, capturedFrameCount, wallDurationSeconds, self.latestWriteError)
         }
 
         if let latestWriteError {
@@ -213,7 +231,6 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         Self.logger.notice(
             "Preview capture stopped; wall=\(wallDurationDescription, privacy: .public) file=\(fileDurationSeconds, format: .fixed(precision: 2))s frames=\(capturedFrameCount, privacy: .public)"
         )
-        self.outputURL = nil
         return AppleSpeechPreviewStopResult(
             captureURL: outputURL,
             captureDurationMS: captureDurationMS
@@ -230,10 +247,13 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         audioEngine?.stop()
         audioEngine = nil
 
+        let recognitionRequest = stateLock.withLock { () -> SFSpeechAudioBufferRecognitionRequest? in
+            defer { self.recognitionRequest = nil }
+            return self.recognitionRequest
+        }
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
         recognitionTask = nil
-        recognitionRequest = nil
         speechRecognizer = nil
 
         stateLock.withLock {
