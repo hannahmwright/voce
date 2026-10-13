@@ -165,16 +165,24 @@ public final class VoiceCommandService: Sendable {
             // sentence after them: "the note period I will send it",
             // "Dear team colon Please review". "The trial period ended" does not.
             if firesAtEnd, Self.sentenceBreakTriggers.contains(trigger) {
-                // A capitalized word right before the trigger is a proper-noun
-                // modifier ("the Edo period Japan…", "Jurassic period").
-                let isLowerConfidenceNoun = isCompoundNoun(trigger, context: context)
-                    || (context.previousWord.map { Self.ambiguousGuardWords.contains($0) } ?? false)
-                    || context.previousWordIsCapitalized
                 // The recognizer started a new sentence after the trigger (a
-                // capitalized or uncased-script word, or a snippet). Punctuation
-                // attached to the trigger ("Each period, the teacher…") is not
-                // evidence of a command; it only merges when the trigger fires.
+                // capitalized or uncased-script word, or a snippet): only an
+                // article or compound noun blocks it ("Sounds good period Talk
+                // soon", "I met Sarah period She was nice" convert).
                 if context.nextWordStartsSentence {
+                    return !isCompoundNoun(trigger, context: context)
+                }
+                // Punctuation the recognizer attached to the trigger ("Call me
+                // period. Thanks") is a weaker signal, so it also yields to
+                // plausible modifiers: adjectives, ordinals, quantifiers and
+                // capitalized proper nouns ("Each period, the teacher…",
+                // "That was a great period. We grew.", "the Edo period, Japan").
+                let isLowerConfidenceNoun = isCompoundNoun(trigger, context: context)
+                    || (context.previousWord.map {
+                        Self.ambiguousGuardWords.contains($0) || Self.lowerConfidenceModifierWords.contains($0)
+                    } ?? false)
+                    || context.previousWordIsCapitalized
+                if let attached = context.punctuationDirectlyAfter, ",;:.".contains(attached) {
                     return !isLowerConfidenceNoun
                 }
                 // "Dear team colon please review": a colon closing a short
@@ -356,9 +364,10 @@ public final class VoiceCommandService: Sendable {
         case .closingPunctuation:
             // "how are you, period." → "how are you."
             absorbBefore(spaceAndSoftPunctuation)
-            // When the recognizer already put a comma/semicolon/colon right
-            // after a spoken "period", keep that softer mark rather than
-            // doubling up: "I'm done period, see you" → "I'm done, see you".
+            // Whenever a spoken "period" fires (for any reason) with recognizer
+            // punctuation attached, merge instead of doubling: a comma,
+            // semicolon or colon wins ("I'm done period, see you" → "I'm done,
+            // see you"), a trailing "." is absorbed below, and ?/! replace it.
             if replacement == ".", end < nextLimit,
                let scalar = Unicode.Scalar(text.character(at: end)) {
                 if CharacterSet(charactersIn: ",;:").contains(scalar) {
@@ -515,6 +524,18 @@ public final class VoiceCommandService: Sendable {
         "a", "an", "the", "our", "their", "every", "each", "another",
     ]
 
+    /// Ordinals, quantifiers and evaluative adjectives that often modify
+    /// "period" ("fifth period", "each period", "a great period"). They only
+    /// gate the weak attached-punctuation signal: at the end of the text or
+    /// before a new sentence they are ordinary endings ("I feel great period").
+    private static let lowerConfidenceModifierWords: Set<String> = [
+        "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
+        "ninth", "tenth", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "next",
+        "last", "each", "every", "per", "great", "good", "bad", "favorite", "favourite",
+        "wonderful", "amazing", "strange", "weird", "happy", "sad", "awkward", "rough",
+        "golden", "productive", "slow", "calm", "formative", "creative",
+    ]
+
     /// Triggers that may fire mid-utterance when the next word starts a sentence.
     private static let sentenceBreakTriggers: Set<String> = ["period", "colon"]
 
@@ -548,13 +569,6 @@ public final class VoiceCommandService: Sendable {
             "busy", "quiet", "set", "fixed", "limited", "previous", "prior", "following",
             "current", "recent", "similar", "specific", "same", "whole", "entire", "extra",
             "little", "her", "his", "my", "your", "their", "our", "its", "whose",
-            // Ordinals, quantifiers and evaluative adjectives ("fifth period",
-            // "each period", "a great period").
-            "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth",
-            "ninth", "tenth", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "next",
-            "last", "each", "every", "per", "great", "good", "bad", "favorite", "favourite",
-            "wonderful", "amazing", "strange", "weird", "happy", "sad", "awkward", "rough",
-            "golden", "productive", "slow", "calm", "formative", "creative",
         ],
         "space": [
             "disk", "storage", "memory", "office", "parking", "living", "work", "working",
@@ -623,6 +637,8 @@ private struct MatchContext {
     /// The word directly before the trigger is capitalized mid-sentence
     /// (a proper noun such as "Jurassic" or "Edo").
     var previousWordIsCapitalized: Bool
+    /// Punctuation attached directly to the trigger ("period." / "period,").
+    var punctuationDirectlyAfter: Character?
     /// The current sentence is a short salutation/heading before the trigger
     /// ("Dear team", "Hi all").
     var isAfterShortSalutation: Bool
@@ -654,6 +670,7 @@ private struct MatchContext {
             }
             return character.isLetter && (character.isUppercase || !character.isCased)
         } ?? false
+        punctuationDirectlyAfter = after.first.flatMap { ".,;:!?".contains($0) ? $0 : nil }
         let previousToken = beforeTrimmed.split(whereSeparator: { $0.isWhitespace }).last
         let tokenBeforePrevious = beforeTrimmed.split(whereSeparator: { $0.isWhitespace }).dropLast().last
         let previousIsSentenceInitial = tokenBeforePrevious.map { token in
