@@ -251,8 +251,8 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let checkpoint = try RealtimeDictationRecoveryCheckpoint(directoryURL: directory)
-        checkpoint.append(delta: "This is ")
-        checkpoint.append(delta: "still recoverable.")
+        checkpoint.replace(with: "This is", revision: 1, synchronize: false)
+        checkpoint.replace(with: "This is still recoverable.", revision: 2, synchronize: false)
         XCTAssertEqual(checkpoint.snapshot(), "This is still recoverable.")
         checkpoint.preserveForNextLaunch()
 
@@ -270,7 +270,7 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let checkpoint = try RealtimeDictationRecoveryCheckpoint(directoryURL: directory)
-        checkpoint.append(delta: "streaming draft")
+        checkpoint.replace(with: "streaming draft", revision: 1, synchronize: false)
         checkpoint.replace(with: "Final transcript.")
         checkpoint.preserveForNextLaunch()
 
@@ -311,8 +311,8 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
 
         await transcript.registerSegment(first)
         await transcript.registerSegment(second)
-        _ = await transcript.updatePartial(first, transcript: "The first session")
-        _ = await transcript.updatePartial(second, transcript: "continues seamlessly")
+        await transcript.appendPartial(first, delta: "The first session")
+        await transcript.appendPartial(second, delta: "continues seamlessly")
         _ = await transcript.completeSegment(first, transcript: "The first session")
         let combined = await transcript.completeSegment(
             second,
@@ -337,6 +337,8 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
 
         let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
         XCTAssertEqual(recoveries.first?.text, "Final text.")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(leftovers.count, 1, "Atomic replace must not leave temporary files: \(leftovers)")
     }
 
     // A delta from the new connection that lands while the retired segment is

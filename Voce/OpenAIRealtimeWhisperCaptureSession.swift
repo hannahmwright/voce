@@ -37,7 +37,8 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
 
     private let lock = NSLock()
     private let url: URL
-    private var handle: FileHandle?
+    /// Cleared once the checkpoint is discarded or handed to the next launch.
+    private var isWritable = true
     private var text = ""
     private var lastSynchronizationAt = Date.distantPast
     private var lastRevision: UInt64 = 0
@@ -57,7 +58,6 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
                 throw RealtimeDictationRecoveryError.unableToCreateCheckpoint
             }
             self.url = url
-            self.handle = try FileHandle(forWritingTo: url)
         } catch let error as RealtimeDictationRecoveryError {
             throw error
         } catch {
@@ -65,32 +65,12 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
         }
     }
 
-    func append(delta: String) {
-        guard !delta.isEmpty else { return }
-        lock.withLock {
-            text += delta
-            guard let data = delta.data(using: .utf8), let handle else { return }
-            do {
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
-                let now = Date()
-                if now.timeIntervalSince(lastSynchronizationAt) >= 1 {
-                    try handle.synchronize()
-                    lastSynchronizationAt = now
-                }
-            } catch {
-                // The in-memory snapshot remains available to the immediate
-                // failure handler even if the durable flush fails.
-            }
-        }
-    }
-
     /// Replaces the checkpoint with a full transcript. When `revision` is
     /// given, an older render never overwrites a newer one, so concurrent
     /// writers (throttled partials, segment completion) cannot regress it.
-    /// The new text is written before the file is truncated so an
-    /// interrupted write never leaves an empty checkpoint. Without
-    /// `synchronize`, the flush to disk is throttled to once a second.
+    /// The file is replaced atomically, so a crash leaves either the old or
+    /// the new transcript, never a mix. Without `synchronize`, the flush to
+    /// disk is throttled to once a second.
     func replace(with transcript: String, revision: UInt64? = nil, synchronize: Bool = true) {
         lock.withLock {
             if let revision {
@@ -98,18 +78,10 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
                 lastRevision = revision
             }
             text = transcript
-            guard let data = transcript.data(using: .utf8), let handle else { return }
-            do {
-                try handle.seek(toOffset: 0)
-                try handle.write(contentsOf: data)
-                try handle.truncate(atOffset: UInt64(data.count))
-                let now = Date()
-                if synchronize || now.timeIntervalSince(lastSynchronizationAt) >= 1 {
-                    try handle.synchronize()
-                    lastSynchronizationAt = now
-                }
-            } catch {
-                // Keep the in-memory transcript available for recovery.
+            let now = Date()
+            let shouldSynchronize = synchronize || now.timeIntervalSince(lastSynchronizationAt) >= 1
+            if writeLocked(synchronize: shouldSynchronize), shouldSynchronize {
+                lastSynchronizationAt = now
             }
         }
     }
@@ -119,20 +91,45 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     }
 
     func discard() {
-        let checkpointURL = lock.withLock { () -> URL in
-            try? handle?.close()
-            handle = nil
-            return url
-        }
-        try? FileManager.default.removeItem(at: checkpointURL)
+        lock.withLock { isWritable = false }
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: Self.temporaryURL(for: url))
     }
 
     func preserveForNextLaunch() {
         lock.withLock {
-            try? handle?.synchronize()
-            try? handle?.close()
-            handle = nil
+            // The last throttled write may not have been flushed yet.
+            writeLocked(synchronize: true)
+            isWritable = false
         }
+    }
+
+    /// Writes `text` to a sibling temporary file, optionally flushes it, and
+    /// renames it over the checkpoint. Must be called with `lock` held.
+    @discardableResult
+    private func writeLocked(synchronize: Bool) -> Bool {
+        guard isWritable, let data = text.data(using: .utf8) else { return false }
+        let temporaryURL = Self.temporaryURL(for: url)
+        do {
+            guard FileManager.default.createFile(atPath: temporaryURL.path, contents: data) else {
+                return false
+            }
+            if synchronize {
+                let handle = try FileHandle(forWritingTo: temporaryURL)
+                defer { try? handle.close() }
+                try handle.synchronize()
+            }
+            return rename(temporaryURL.path, url.path) == 0
+        } catch {
+            // Keep the in-memory transcript available for recovery.
+            return false
+        }
+    }
+
+    /// Not a `.txt` file, so an orphan left by a crash mid-write is never
+    /// offered as a recovery.
+    private static func temporaryURL(for url: URL) -> URL {
+        url.appendingPathExtension("partial")
     }
 
     static func pendingRecoveries(
@@ -165,6 +162,7 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     static func discardPending(_ recoveries: [PendingRecovery]) {
         for recovery in recoveries {
             try? FileManager.default.removeItem(at: recovery.url)
+            try? FileManager.default.removeItem(at: temporaryURL(for: recovery.url))
         }
     }
 
@@ -179,9 +177,6 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             .appendingPathComponent("Dictation Recovery", isDirectory: true)
     }
 
-    deinit {
-        try? handle?.close()
-    }
 }
 
 final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
@@ -1796,16 +1791,6 @@ actor RealtimeLongFormTranscript {
         order.removeAll { $0 == id }
         segments[id] = nil
         revision &+= 1
-    }
-
-    func updatePartial(_ id: UUID, transcript: String) -> String {
-        guard var segment = segments[id], segment.completed == nil else {
-            return renderedTranscript()
-        }
-        segment.partial = transcript
-        segments[id] = segment
-        revision &+= 1
-        return renderedTranscript()
     }
 
     /// Appends a streamed delta in place (no copy of the running text).
