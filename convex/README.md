@@ -83,6 +83,14 @@ Recommended Stripe price mapping:
 - `STRIPE_PRO_MONTHLY_PRICE_ID`: Pro `$10/month`
 - `STRIPE_PRO_ANNUAL_PRICE_ID`: Pro `$108/year`
 
+Stripe subscriptions are mapped to plans with `STRIPE_PRO_PRODUCT_ID(S)`,
+`STRIPE_PRO_PRICE_ID(S)`, `STRIPE_BASE_PRODUCT_ID(S)` and
+`STRIPE_BASE_PRICE_ID(S)` (comma-separated lists are accepted). These are
+separate from the checkout `*_MONTHLY_PRICE_ID` / `*_ANNUAL_PRICE_ID` variables.
+If none of the mapping variables are set, every active subscription is treated
+as Base (no hosted cloud dictation) and a warning is logged. Once any mapping is
+set, subscriptions that match none of the configured IDs grant no plan.
+
 `VOCE_AUTH_SECRET` is required for hashing one-time email codes and app session tokens.
 `RESEND_API_KEY` and `VOCE_AUTH_EMAIL_FROM` are required for sending access codes.
 `VOCE_SUPPORT_EMAIL_FROM` and `VOCE_SUPPORT_EMAIL_TO` configure where in-app support requests are sent.

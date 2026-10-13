@@ -157,17 +157,32 @@ function planTierForStripeSubscription(subscription: {
     return "base";
   }
 
-  // Backward-compatible default for legacy subscriptions that predate explicit plan mapping.
+  // Without any plan mapping configured, keep paying subscribers on the app but
+  // do not hand out hosted cloud dictation (which costs money per minute).
   if (
     STRIPE_BASE_PRODUCT_IDS.size === 0 &&
     STRIPE_PRO_PRODUCT_IDS.size === 0 &&
     STRIPE_BASE_PRICE_IDS.size === 0 &&
     STRIPE_PRO_PRICE_IDS.size === 0
   ) {
-    return "pro";
+    warnMissingStripePlanMappingOnce();
+    return "base";
   }
 
   return null;
+}
+
+let didWarnMissingStripePlanMapping = false;
+
+function warnMissingStripePlanMappingOnce() {
+  if (didWarnMissingStripePlanMapping) {
+    return;
+  }
+  didWarnMissingStripePlanMapping = true;
+  console.warn(
+    "Stripe plan mapping is not configured; treating active subscriptions as Base. " +
+      "Set STRIPE_PRO_PRODUCT_IDS / STRIPE_PRO_PRICE_IDS (and the Base equivalents).",
+  );
 }
 
 function activeStripeStatus(status: string) {
