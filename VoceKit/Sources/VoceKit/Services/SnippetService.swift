@@ -244,8 +244,9 @@ public struct SnippetProtectedText: Sendable, Equatable {
 
     /// Whether processed text (e.g. cloud refinement output) can safely receive
     /// the expansions: no placeholder is duplicated, altered or unknown.
-    /// Dropping a placeholder is allowed (a self-correction may legitimately
-    /// remove a snippet); dropped placeholders are simply not restored.
+    /// Dropping some placeholders is allowed (a self-correction may legitimately
+    /// remove a snippet) as long as at least one survives; dropped
+    /// placeholders are simply not restored.
     public func placeholdersAreIntact(in processed: String) -> Bool {
         var seen = Set<Int>()
         for piece in Self.pieces(of: processed) {
@@ -258,7 +259,9 @@ public struct SnippetProtectedText: Sendable, Equatable {
                 guard expansions.indices.contains(index), seen.insert(index).inserted else { return false }
             }
         }
-        return true
+        // Losing every placeholder suggests the engine stripped them rather
+        // than resolving a self-correction, so it is treated as a failure.
+        return !hasPlaceholders || !seen.isEmpty
     }
 
     /// Replaces placeholders in `processed` with their expansions, verbatim
