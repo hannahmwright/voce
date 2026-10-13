@@ -54,6 +54,9 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             let url = directoryURL
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("txt")
+            // Pin the reference date before the file exists, so launch
+            // recovery never treats this live checkpoint as left over.
+            _ = Self.processReferenceDate
             guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
                 throw RealtimeDictationRecoveryError.unableToCreateCheckpoint
             }
@@ -68,9 +71,10 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     /// Replaces the checkpoint with a full transcript. When `revision` is
     /// given, an older render never overwrites a newer one, so concurrent
     /// writers (throttled partials, segment completion) cannot regress it.
-    /// The file is replaced atomically, so a crash leaves either the old or
-    /// the new transcript, never a mix. Without `synchronize`, the flush to
-    /// disk is throttled to once a second.
+    /// Every version goes to the `.partial` sibling; only a flushed version
+    /// is renamed over the `.txt`, at most once a second unless
+    /// `synchronize` forces it. After a crash the `.txt` therefore holds the
+    /// last durable version and the `.partial` anything newer.
     func replace(with transcript: String, revision: UInt64? = nil, synchronize: Bool = true) {
         lock.withLock {
             if let revision {
@@ -104,8 +108,10 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
         }
     }
 
-    /// Writes `text` to a sibling temporary file, optionally flushes it, and
-    /// renames it over the checkpoint. Must be called with `lock` held.
+    /// Writes `text` to the `.partial` sibling. When `synchronize` is set,
+    /// flushes it to disk and only then renames it over the checkpoint, so
+    /// an unflushed (possibly zero-filled after power loss) version never
+    /// replaces a durable one. Must be called with `lock` held.
     @discardableResult
     private func writeLocked(synchronize: Bool) -> Bool {
         guard isWritable, let data = text.data(using: .utf8) else { return false }
@@ -114,11 +120,10 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             guard FileManager.default.createFile(atPath: temporaryURL.path, contents: data) else {
                 return false
             }
-            if synchronize {
-                let handle = try FileHandle(forWritingTo: temporaryURL)
-                defer { try? handle.close() }
-                try handle.synchronize()
-            }
+            guard synchronize else { return true }
+            let handle = try FileHandle(forWritingTo: temporaryURL)
+            defer { try? handle.close() }
+            try handle.synchronize()
             return rename(temporaryURL.path, url.path) == 0
         } catch {
             // Keep the in-memory transcript available for recovery.
@@ -126,14 +131,42 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
         }
     }
 
-    /// Not a `.txt` file, so an orphan left by a crash mid-write is never
-    /// offered as a recovery.
     private static func temporaryURL(for url: URL) -> URL {
         url.appendingPathExtension("partial")
     }
 
+    /// Set when this process first touches checkpoints. Files modified after
+    /// it belong to a dictation in this process, not a previous launch.
+    static let processReferenceDate = Date()
+
+    private struct RecoveryCandidate {
+        let text: String
+        let modifiedAt: Date
+
+        var isBlank: Bool {
+            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// Reads a checkpoint file leniently. Blocks that were never flushed
+    /// before a power loss read back as NULs, which are dropped.
+    private static func recoveryCandidate(at url: URL) -> RecoveryCandidate? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\u{0}", with: "")
+        let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? .distantPast
+        return RecoveryCandidate(text: text, modifiedAt: modifiedAt)
+    }
+
+    /// Checkpoints left by earlier launches. Each checkpoint is read from its
+    /// `.txt` (last durable version) or its newer `.partial` (written but
+    /// maybe not flushed), whichever is newest and not blank. Blank leftovers
+    /// are deleted. Files modified at or after `cutoff` are skipped because
+    /// they belong to a dictation running in this process.
     static func pendingRecoveries(
-        directoryURL: URL = defaultDirectoryURL()
+        directoryURL: URL = defaultDirectoryURL(),
+        modifiedBefore cutoff: Date = processReferenceDate
     ) -> [PendingRecovery] {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directoryURL,
@@ -143,20 +176,47 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             return []
         }
 
-        return urls.compactMap { url in
-            guard url.pathExtension == "txt",
-                  let text = try? String(contentsOf: url, encoding: .utf8),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else {
-                return nil
+        var checkpointURLs: [String: URL] = [:]
+        for url in urls {
+            let checkpointURL: URL
+            if url.pathExtension == "txt" {
+                checkpointURL = url
+            } else if url.pathExtension == "partial", url.deletingPathExtension().pathExtension == "txt" {
+                checkpointURL = url.deletingPathExtension()
+            } else {
+                continue
             }
-            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-            return PendingRecovery(
-                url: url,
-                text: text,
-                modifiedAt: values?.contentModificationDate ?? .distantPast
-            )
-        }.sorted { $0.modifiedAt < $1.modifiedAt }
+            checkpointURLs[checkpointURL.standardizedFileURL.path] = checkpointURL
+        }
+
+        var recoveries: [PendingRecovery] = []
+        for checkpointURL in checkpointURLs.values {
+            let durable = recoveryCandidate(at: checkpointURL)
+            let unflushed = recoveryCandidate(at: temporaryURL(for: checkpointURL))
+            let newest = [durable?.modifiedAt, unflushed?.modifiedAt].compactMap { $0 }.max() ?? .distantPast
+            guard newest < cutoff else { continue }
+
+            let chosen: RecoveryCandidate?
+            if let unflushed, !unflushed.isBlank,
+               durable.map({ $0.isBlank || unflushed.modifiedAt >= $0.modifiedAt }) ?? true {
+                chosen = unflushed
+            } else if let durable, !durable.isBlank {
+                chosen = durable
+            } else {
+                chosen = nil
+            }
+            guard let chosen else {
+                try? FileManager.default.removeItem(at: checkpointURL)
+                try? FileManager.default.removeItem(at: temporaryURL(for: checkpointURL))
+                continue
+            }
+            recoveries.append(PendingRecovery(
+                url: checkpointURL,
+                text: chosen.text,
+                modifiedAt: newest
+            ))
+        }
+        return recoveries.sorted { $0.modifiedAt < $1.modifiedAt }
     }
 
     static func discardPending(_ recoveries: [PendingRecovery]) {

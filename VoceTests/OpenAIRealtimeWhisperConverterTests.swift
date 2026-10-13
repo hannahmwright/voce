@@ -275,12 +275,12 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertEqual(checkpoint.snapshot(), "This is still recoverable.")
         checkpoint.preserveForNextLaunch()
 
-        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory, modifiedBefore: .distantFuture)
         XCTAssertEqual(recoveries.count, 1)
         XCTAssertEqual(recoveries.first?.text, "This is still recoverable.")
 
         RealtimeDictationRecoveryCheckpoint.discardPending(recoveries)
-        XCTAssertTrue(RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory).isEmpty)
+        XCTAssertTrue(RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory, modifiedBefore: .distantFuture).isEmpty)
     }
 
     func testRecoveryCheckpointReplacesDeltasWithCredibleFinalTranscript() throws {
@@ -293,7 +293,7 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         checkpoint.replace(with: "Final transcript.")
         checkpoint.preserveForNextLaunch()
 
-        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory, modifiedBefore: .distantFuture)
         XCTAssertEqual(recoveries.first?.text, "Final transcript.")
     }
 
@@ -354,10 +354,61 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         checkpoint.replace(with: "Final text.", revision: 3)
         checkpoint.preserveForNextLaunch()
 
-        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory, modifiedBefore: .distantFuture)
         XCTAssertEqual(recoveries.first?.text, "Final text.")
         let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         XCTAssertEqual(leftovers.count, 1, "Atomic replace must not leave temporary files: \(leftovers)")
+    }
+
+    func testThrottledCheckpointWritesStayInPartialUntilFlushed() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voce-recovery-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let checkpoint = try RealtimeDictationRecoveryCheckpoint(directoryURL: directory)
+        checkpoint.replace(with: "Durable text.", revision: 1)
+        checkpoint.replace(with: "Durable text. Unflushed tail", revision: 2, synchronize: false)
+
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let durable = try XCTUnwrap(files.first { $0.pathExtension == "txt" })
+        XCTAssertEqual(try String(contentsOf: durable, encoding: .utf8), "Durable text.")
+        // Recovery after an app crash prefers the newer unflushed version.
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(
+            directoryURL: directory,
+            modifiedBefore: .distantFuture
+        )
+        XCTAssertEqual(recoveries.first?.text, "Durable text. Unflushed tail")
+    }
+
+    // After a power loss an unflushed file can read back as NULs.
+    func testRecoveryIgnoresZeroFilledCheckpointsAndSweepsBlankOnes() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voce-recovery-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let zeroFilled = directory.appendingPathComponent("a.txt")
+        try Data(repeating: 0, count: 64).write(to: zeroFilled)
+        try Data("Recovered from partial.".utf8).write(to: zeroFilled.appendingPathExtension("partial"))
+        let blank = directory.appendingPathComponent("b.txt")
+        try Data(repeating: 0, count: 32).write(to: blank)
+
+        // Files from this process are left alone.
+        XCTAssertTrue(RealtimeDictationRecoveryCheckpoint.pendingRecoveries(
+            directoryURL: directory,
+            modifiedBefore: .distantPast
+        ).isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blank.path))
+
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(
+            directoryURL: directory,
+            modifiedBefore: .distantFuture
+        )
+        XCTAssertEqual(recoveries.map(\.text), ["Recovered from partial."])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: blank.path))
+
+        RealtimeDictationRecoveryCheckpoint.discardPending(recoveries)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
     }
 
     // A delta from the new connection that lands while the retired segment is
