@@ -1127,8 +1127,6 @@ final class HotkeyCaptureInterruptionObserver {
             queue: .main,
             using: handler
         ))
-        // With no key window, `object: nil` would match every window's
-        // resign-key; rely on the app-resign check alone in that case.
         if let keyWindow = NSApp.keyWindow {
             tokens.append(center.addObserver(
                 forName: NSWindow.didResignKeyNotification,
@@ -1136,6 +1134,23 @@ final class HotkeyCaptureInterruptionObserver {
                 queue: .main,
                 using: handler
             ))
+        } else {
+            // No key window to watch (`object: nil` would match every
+            // window's resign-key). Stop instead when some other window
+            // becomes key, treating the main window as the capture's own.
+            let captureWindowID = NSApp.mainWindow.map(ObjectIdentifier.init)
+            tokens.append(center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                let becameKeyID = (notification.object as? NSWindow).map(ObjectIdentifier.init)
+                guard captureWindowID == nil || becameKeyID != captureWindowID else { return }
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == installedGeneration else { return }
+                    onInterrupt()
+                }
+            })
         }
     }
 
