@@ -53,7 +53,9 @@ struct CleanupStyleSettingsSection: View {
     }
 
     private var appOverridesSection: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.md) {
+        let hasAvailableApps = !availableAppBundleIDs.isEmpty
+
+        return VStack(alignment: .leading, spacing: VoceDesign.md) {
             HStack(spacing: VoceDesign.xs) {
                 Text("App overrides")
                     .font(VoceDesign.heading3())
@@ -77,8 +79,8 @@ struct CleanupStyleSettingsSection: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(availableAppBundleIDs.isEmpty)
-                .opacity(availableAppBundleIDs.isEmpty ? 0.45 : 1)
+                .disabled(!hasAvailableApps)
+                .opacity(hasAvailableApps ? 1 : 0.45)
                 .popover(isPresented: $showAddOverrideSheet, arrowEdge: .top) {
                     addOverrideSheet
                 }
@@ -209,10 +211,10 @@ struct CleanupStyleSettingsSection: View {
 
     private func overrideRow(bundleID: String, profile: StyleProfile?) -> some View {
         HStack(spacing: VoceDesign.sm) {
-            appIconView(for: bundleID, size: 18)
+            settingsAppIconView(for: bundleID, size: 18)
 
             VStack(alignment: .leading, spacing: VoceDesign.xxs) {
-                Text(appDisplayName(for: bundleID))
+                Text(AppMetadataCache.bundleName(for: bundleID))
                     .font(VoceDesign.callout())
                     .foregroundStyle(VoceDesign.textPrimary)
                     .lineLimit(1)
@@ -299,45 +301,12 @@ struct CleanupStyleSettingsSection: View {
                 .filter { !$0.isEmpty && $0 != "unknown" }
         )
 
-        return seen.sorted { lhs, rhs in
-            appDisplayName(for: lhs).localizedCaseInsensitiveCompare(appDisplayName(for: rhs)) == .orderedAscending
-        }
+        return seen
+            .map { (bundleID: $0, name: AppMetadataCache.bundleName(for: $0)) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(\.bundleID)
     }
 
-    private func appDisplayName(for bundleID: String) -> String {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
-           let bundle = Bundle(url: url),
-           let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
-            return name
-        }
-        return bundleID.components(separatedBy: ".").last?.capitalized ?? bundleID
-    }
-
-    private func appIcon(for bundleID: String) -> NSImage? {
-        guard !bundleID.isEmpty,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return nil
-        }
-
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
-        icon.size = NSSize(width: 18, height: 18)
-        return icon
-    }
-
-    @ViewBuilder
-    private func appIconView(for bundleID: String, size: CGFloat = 16) -> some View {
-        if let icon = appIcon(for: bundleID) {
-            Image(nsImage: icon)
-                .resizable()
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: max(4, size * 0.22), style: .continuous))
-        } else {
-            Image(systemName: "app")
-                .font(.system(size: max(11, size * 0.72), weight: .medium))
-                .foregroundStyle(VoceDesign.textSecondary.opacity(0.75))
-                .frame(width: size, height: size)
-        }
-    }
 
     private func primeOverrideDraft() {
         newStyleBundleID = currentFrontmostBundleID ?? availableAppBundleIDs.first ?? ""
@@ -391,15 +360,15 @@ struct CleanupStyleSettingsSection: View {
                                 newStyleBundleID = bundleID
                             } label: {
                                 HStack(spacing: VoceDesign.sm) {
-                                    appIconView(for: bundleID)
-                                    Text(appDisplayName(for: bundleID))
+                                    settingsAppIconView(for: bundleID)
+                                    Text(AppMetadataCache.bundleName(for: bundleID))
                                 }
                             }
                         }
                     } label: {
                         HStack(spacing: VoceDesign.sm) {
                             if !newStyleBundleID.isEmpty {
-                                appIconView(for: newStyleBundleID)
+                                settingsAppIconView(for: newStyleBundleID)
                             }
 
                             VStack(alignment: .leading, spacing: 2) {
@@ -408,7 +377,7 @@ struct CleanupStyleSettingsSection: View {
                                         .font(VoceDesign.callout())
                                         .foregroundStyle(VoceDesign.textPrimary)
                                 } else {
-                                    Text(appDisplayName(for: newStyleBundleID))
+                                    Text(AppMetadataCache.bundleName(for: newStyleBundleID))
                                         .font(VoceDesign.callout())
                                         .foregroundStyle(VoceDesign.textPrimary)
                                         .lineLimit(1)

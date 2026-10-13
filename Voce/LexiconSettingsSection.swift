@@ -36,9 +36,10 @@ struct LexiconSettingsSection: View {
                 .filter { !$0.isEmpty && $0 != "unknown" }
         )
 
-        return seen.sorted { lhs, rhs in
-            lexiconAppDisplayName(for: lhs).localizedCaseInsensitiveCompare(lexiconAppDisplayName(for: rhs)) == .orderedAscending
-        }
+        return seen
+            .map { (bundleID: $0, name: AppMetadataCache.bundleName(for: $0)) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(\.bundleID)
     }
 
     var body: some View {
@@ -199,9 +200,9 @@ struct LexiconSettingsSection: View {
                 .foregroundStyle(VoceDesign.textSecondary)
         case .app(let bundleID):
             HStack(spacing: VoceDesign.xs) {
-                lexiconAppIconView(for: bundleID, size: 14)
+                settingsAppIconView(for: bundleID, size: 14)
 
-                Text(lexiconAppDisplayName(for: bundleID))
+                Text(AppMetadataCache.bundleName(for: bundleID))
                     .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
                     .lineLimit(1)
@@ -359,7 +360,7 @@ private struct LexiconEditSheet: View {
         guard !query.isEmpty else { return availableAppBundleIDs }
 
         return availableAppBundleIDs.filter { bundleID in
-            lexiconAppDisplayName(for: bundleID).localizedCaseInsensitiveContains(query) ||
+            AppMetadataCache.bundleName(for: bundleID).localizedCaseInsensitiveContains(query) ||
             bundleID.localizedCaseInsensitiveContains(query)
         }
     }
@@ -563,10 +564,10 @@ private struct LexiconEditSheet: View {
                                     .font(.system(size: 14, weight: .semibold))
                                     .foregroundStyle(draft.selectedBundleIDs.contains(bundleID) ? VoceDesign.warmAccentText : VoceDesign.textSecondary)
 
-                                lexiconAppIconView(for: bundleID)
+                                settingsAppIconView(for: bundleID)
 
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(lexiconAppDisplayName(for: bundleID))
+                                    Text(AppMetadataCache.bundleName(for: bundleID))
                                         .font(VoceDesign.callout())
                                         .foregroundStyle(VoceDesign.textPrimary)
                                         .lineLimit(1)
@@ -612,10 +613,16 @@ private struct LexiconEditSheet: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: VoceDesign.xs) {
-                        ForEach(Array(draft.selectedBundleIDs).sorted { lexiconAppDisplayName(for: $0) < lexiconAppDisplayName(for: $1) }, id: \.self) { bundleID in
+                        ForEach(
+                            draft.selectedBundleIDs
+                                .map { (bundleID: $0, name: AppMetadataCache.bundleName(for: $0)) }
+                                .sorted { $0.name < $1.name }
+                                .map(\.bundleID),
+                            id: \.self
+                        ) { bundleID in
                             HStack(spacing: 6) {
-                                lexiconAppIconView(for: bundleID, size: 14)
-                                Text(lexiconAppDisplayName(for: bundleID))
+                                settingsAppIconView(for: bundleID, size: 14)
+                                Text(AppMetadataCache.bundleName(for: bundleID))
                                     .font(VoceDesign.caption())
                                     .foregroundStyle(VoceDesign.textPrimary)
 
@@ -674,37 +681,3 @@ private func normalizedLexiconTerms(from rawValues: [String]) -> [String] {
         }
 }
 
-private func lexiconAppDisplayName(for bundleID: String) -> String {
-    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
-       let bundle = Bundle(url: url),
-       let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
-        return name
-    }
-    return bundleID.components(separatedBy: ".").last?.capitalized ?? bundleID
-}
-
-private func lexiconAppIcon(for bundleID: String) -> NSImage? {
-    guard !bundleID.isEmpty,
-          let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-        return nil
-    }
-
-    let icon = NSWorkspace.shared.icon(forFile: url.path)
-    icon.size = NSSize(width: 18, height: 18)
-    return icon
-}
-
-@ViewBuilder
-private func lexiconAppIconView(for bundleID: String, size: CGFloat = 16) -> some View {
-    if let icon = lexiconAppIcon(for: bundleID) {
-        Image(nsImage: icon)
-            .resizable()
-            .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: max(4, size * 0.22), style: .continuous))
-    } else {
-        Image(systemName: "app")
-            .font(.system(size: max(11, size * 0.72), weight: .medium))
-            .foregroundStyle(VoceDesign.textSecondary.opacity(0.75))
-            .frame(width: size, height: size)
-    }
-}

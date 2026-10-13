@@ -1088,7 +1088,7 @@ struct HomeTab: View {
 
             // App icon on hover, pinned to the row trailing edge
             Group {
-                if let icon = appIcon(for: entry.appBundleID) {
+                if let icon = AppMetadataCache.icon(for: entry.appBundleID, size: 18) {
                     Image(nsImage: icon)
                         .resizable()
                         .frame(width: 18, height: 18)
@@ -1570,27 +1570,15 @@ struct HomeTab: View {
         return finalText.count > 140
     }
 
+    // Cached: these used to hit NSWorkspace and the disk for every row on
+    // every render, even for the hover-only row icon.
     private func appName(for bundleID: String) -> String {
-        guard !bundleID.isEmpty else { return "Unknown" }
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            return url.deletingPathExtension().lastPathComponent
-        }
-        return bundleID.components(separatedBy: ".").last ?? bundleID
-    }
-
-    private func appIcon(for bundleID: String) -> NSImage? {
-        guard !bundleID.isEmpty,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return nil
-        }
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
-        icon.size = NSSize(width: 18, height: 18)
-        return icon
+        AppMetadataCache.fileName(for: bundleID)
     }
 
     private func appIconView(bundleID: String, size: CGFloat) -> some View {
         Group {
-            if let icon = appIcon(for: bundleID, size: size) {
+            if let icon = AppMetadataCache.icon(for: bundleID, size: size) {
                 Image(nsImage: icon)
                     .resizable()
                     .frame(width: size, height: size)
@@ -1605,16 +1593,6 @@ struct HomeTab: View {
             }
         }
         .help(appName(for: bundleID))
-    }
-
-    private func appIcon(for bundleID: String, size: CGFloat) -> NSImage? {
-        guard !bundleID.isEmpty,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return nil
-        }
-        let icon = NSWorkspace.shared.icon(forFile: url.path)
-        icon.size = NSSize(width: size, height: size)
-        return icon
     }
 
     private func formatElapsedTime(_ interval: TimeInterval) -> String {

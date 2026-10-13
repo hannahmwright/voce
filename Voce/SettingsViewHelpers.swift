@@ -1738,3 +1738,99 @@ private extension PressToTalkHotkey.Modifier {
         }
     }
 }
+
+// MARK: - App metadata
+
+/// Bundle ID → app URL, name and icon, resolved once per bundle ID.
+///
+/// Home and the Settings app pickers used to call
+/// `NSWorkspace.urlForApplication`, read the app bundle and load its icon from
+/// disk for every row on every render — including inside sort comparators and
+/// for icons that were hidden until hover. Results (including "not installed")
+/// are cached for the life of the process.
+@MainActor
+enum AppMetadataCache {
+    private static var urlsByBundleID: [String: URL?] = [:]
+    private static var bundleNamesByBundleID: [String: String] = [:]
+    private static var fileNamesByBundleID: [String: String] = [:]
+    private static var iconsByKey: [String: NSImage?] = [:]
+
+    static func applicationURL(for bundleID: String) -> URL? {
+        guard !bundleID.isEmpty else { return nil }
+        if let cached = urlsByBundleID[bundleID] {
+            return cached
+        }
+        let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        urlsByBundleID[bundleID] = url
+        return url
+    }
+
+    /// The app's CFBundleName (e.g. "Code"), falling back to the capitalized
+    /// last bundle-ID component. Used by the Settings app lists.
+    static func bundleName(for bundleID: String) -> String {
+        if let cached = bundleNamesByBundleID[bundleID] {
+            return cached
+        }
+        let name: String
+        if let url = applicationURL(for: bundleID),
+           let bundle = Bundle(url: url),
+           let bundleName = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
+            name = bundleName
+        } else {
+            name = bundleID.components(separatedBy: ".").last?.capitalized ?? bundleID
+        }
+        bundleNamesByBundleID[bundleID] = name
+        return name
+    }
+
+    /// The app's file name without extension (e.g. "Visual Studio Code"),
+    /// falling back to the last bundle-ID component. Used by Home.
+    static func fileName(for bundleID: String) -> String {
+        guard !bundleID.isEmpty else { return "Unknown" }
+        if let cached = fileNamesByBundleID[bundleID] {
+            return cached
+        }
+        let name: String
+        if let url = applicationURL(for: bundleID) {
+            name = url.deletingPathExtension().lastPathComponent
+        } else {
+            name = bundleID.components(separatedBy: ".").last ?? bundleID
+        }
+        fileNamesByBundleID[bundleID] = name
+        return name
+    }
+
+    static func icon(for bundleID: String, size: CGFloat) -> NSImage? {
+        let key = "\(bundleID)#\(size)"
+        if let cached = iconsByKey[key] {
+            return cached
+        }
+        var icon: NSImage?
+        if let url = applicationURL(for: bundleID) {
+            let image = NSWorkspace.shared.icon(forFile: url.path)
+            image.size = NSSize(width: size, height: size)
+            icon = image
+        }
+        iconsByKey[key] = icon
+        return icon
+    }
+}
+
+/// App icon as shown in the Settings app lists (Speech overrides, Style
+/// overrides, Dictionary scopes), with a symbol fallback for apps that aren't
+/// installed.
+@MainActor
+@ViewBuilder
+func settingsAppIconView(for bundleID: String, size: CGFloat = 16) -> some View {
+    if let icon = AppMetadataCache.icon(for: bundleID, size: 18) {
+        Image(nsImage: icon)
+            .resizable()
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: max(4, size * 0.22), style: .continuous))
+    } else {
+        Image(systemName: "app")
+            .font(.system(size: max(11, size * 0.72), weight: .medium))
+            .foregroundStyle(VoceDesign.textSecondary.opacity(0.75))
+            .frame(width: size, height: size)
+    }
+}
