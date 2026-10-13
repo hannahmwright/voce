@@ -491,10 +491,30 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 let remainingSeconds = Self.connectionHandshakeTimeoutSeconds - elapsedSeconds
                 guard remainingSeconds >= 2, !isStopped else { throw error }
                 Self.logger.notice("Realtime credential rejected while arming; retrying once with a refreshed credential")
-                connection = try await openConnection(
-                    forceCredentialRefresh: true,
-                    handshakeTimeoutSeconds: remainingSeconds
-                )
+                // Bound the whole retry, including the forced token fetch that
+                // runs before the handshake deadline starts. Cancelling the
+                // attempt cancels that fetch; a connection that still opens
+                // after the deadline is closed.
+                let retry = Task { [self] in
+                    try await openConnection(
+                        forceCredentialRefresh: true,
+                        handshakeTimeoutSeconds: remainingSeconds
+                    )
+                }
+                do {
+                    connection = try await OpenAIRealtimeWhisperSpeechProviderClient.value(
+                        of: retry,
+                        timeoutSeconds: remainingSeconds
+                    )
+                } catch {
+                    retry.cancel()
+                    Task { [self] in
+                        if let lateConnection = try? await retry.value {
+                            await discard(lateConnection)
+                        }
+                    }
+                    throw error
+                }
             }
         } catch {
             cleanupAfterStartFailure()
@@ -982,7 +1002,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         discardRecoveryCheckpoint()
     }
 
-    private struct RealtimeConnection {
+    private struct RealtimeConnection: Sendable {
         let segmentID: UUID
         let socket: URLSessionWebSocketTask
         let writer: RealtimeWebSocketWriter
