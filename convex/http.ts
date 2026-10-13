@@ -23,6 +23,11 @@ const AUTH_START_LIMIT_PER_IP = 30;
 const SUPPORT_LIMIT_PER_EMAIL = 5;
 const SUPPORT_LIMIT_PER_IP = 20;
 const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+// Refuse to mint a realtime client secret when less hosted time than this is left.
+const MIN_HOSTED_SECONDS_FOR_REALTIME_SESSION = 30;
+// The app maps a 403 containing "monthly minutes" to its hosted-minutes-exhausted state.
+const HOSTED_MINUTES_EXHAUSTED_MESSAGE =
+  "Voce Cloud monthly minutes are used. Use your OpenAI key or local dictation until next month.";
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -352,7 +357,7 @@ async function verifiedFeatureEmail(
   ctx: any,
   request: Request,
   feature: string,
-): Promise<{ email: string } | { response: Response }> {
+): Promise<{ email: string; entitlement: any } | { response: Response }> {
   const requestedEmail = cloudEmailHeader(request);
   if (!requestedEmail || !isValidEmail(requestedEmail)) {
     return { response: jsonResponse({ error: "Missing verified email" }, 400) };
@@ -374,19 +379,13 @@ async function verifiedFeatureEmail(
       entitlement.cloudRemainingSeconds === 0
     ) {
       return {
-        response: jsonResponse(
-          {
-            error:
-              "Voce Cloud monthly minutes are used. Use your OpenAI key or local dictation until next month.",
-          },
-          403,
-        ),
+        response: jsonResponse({ error: HOSTED_MINUTES_EXHAUSTED_MESSAGE }, 403),
       };
     }
     return { response: jsonResponse({ error: "Voce Pro cloud dictation is required." }, 403) };
   }
 
-  return { email };
+  return { email, entitlement };
 }
 
 function cloudErrorResponse(error: unknown) {
@@ -884,6 +883,16 @@ http.route({
     const verification = await verifiedFeatureEmail(ctx, request, CLOUD_DICTATION_FEATURE);
     if ("response" in verification) {
       return verification.response;
+    }
+
+    // A client secret lets the app open a realtime session, so do not mint one
+    // when only a few hosted seconds remain.
+    const cloudRemainingSeconds = verification.entitlement.cloudRemainingSeconds;
+    if (
+      typeof cloudRemainingSeconds === "number" &&
+      cloudRemainingSeconds < MIN_HOSTED_SECONDS_FOR_REALTIME_SESSION
+    ) {
+      return jsonResponse({ error: HOSTED_MINUTES_EXHAUSTED_MESSAGE }, 403);
     }
 
     try {

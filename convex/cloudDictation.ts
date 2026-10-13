@@ -75,6 +75,11 @@ export class CloudDictationProviderError extends Error {
 }
 
 const OPENAI_BASE_URL = "https://api.openai.com";
+// A realtime client secret is only needed to open a WebSocket; established
+// sessions keep running after it expires and long dictations mint a fresh
+// secret for each rollover connection. Keep this comfortably above the app's
+// 5-minute cache refresh lead time so warm-up refreshes do not spin.
+const REALTIME_CLIENT_SECRET_TTL_SECONDS = 10 * 60;
 
 function openAIAPIKey() {
   const key = process.env.VOCE_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
@@ -469,7 +474,7 @@ export async function createRealtimeTranscriptionSession(args: {
   const response = await openAIRealtimeTranscriptionSessionRequest({
     expires_after: {
       anchor: "created_at",
-      seconds: 7200,
+      seconds: REALTIME_CLIENT_SECRET_TTL_SECONDS,
     },
     session: {
       type: "transcription",
@@ -501,9 +506,17 @@ export async function createRealtimeTranscriptionSession(args: {
     );
   }
 
+  // Relative lifetime lets the app compute expiry on its own clock, so a skewed
+  // Mac clock cannot make a short-lived secret look already expired.
+  const expiresInSeconds =
+    typeof response.expires_at === "number"
+      ? Math.max(0, response.expires_at - Math.floor(Date.now() / 1000))
+      : REALTIME_CLIENT_SECRET_TTL_SECONDS;
+
   return {
     clientSecret: value,
     expiresAt: response.expires_at,
+    expiresInSeconds,
   };
 }
 
