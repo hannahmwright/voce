@@ -223,6 +223,7 @@ enum VoceProEntitlementError: LocalizedError {
     case verificationFailed
     case tooManyCodeRequests
     case tooManyIncorrectCodes
+    case tooManyIncorrectCodesHourly
 
     var errorDescription: String? {
         switch self {
@@ -245,7 +246,9 @@ enum VoceProEntitlementError: LocalizedError {
         case .tooManyCodeRequests:
             return "Too many code requests. Try again later."
         case .tooManyIncorrectCodes:
-            return "Too many incorrect codes. Request a new code or try again later."
+            return "Too many incorrect codes. Request a new code."
+        case .tooManyIncorrectCodesHourly:
+            return "Too many incorrect codes. Try again in about an hour."
         }
     }
 }
@@ -331,6 +334,10 @@ actor VoceProEntitlementService {
             throw VoceProEntitlementError.invalidResponse
         }
         if httpResponse.statusCode == 429 {
+            let errorCode = try? JSONDecoder().decode(AuthErrorResponse.self, from: data).code
+            if errorCode == "too_many_incorrect_codes_hourly" {
+                throw VoceProEntitlementError.tooManyIncorrectCodesHourly
+            }
             throw VoceProEntitlementError.tooManyIncorrectCodes
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
@@ -720,6 +727,10 @@ enum VoceAccessSessionStoreError: LocalizedError {
 
 private struct AuthStartRequest: Encodable {
     var email: String
+}
+
+private struct AuthErrorResponse: Decodable {
+    var code: String?
 }
 
 private struct AuthVerifyRequest: Encodable {

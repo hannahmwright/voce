@@ -169,27 +169,35 @@ export const createEmailCode = internalMutation({
   },
 });
 
+// "code": the active codes used up their attempts; requesting a new code helps.
+// "hourly": the per-email hourly failure cap; only waiting helps.
+type ConsumeEmailCodeResult = {
+  ok: boolean;
+  locked: boolean;
+  lockReason: "code" | "hourly" | null;
+};
+
 export const consumeEmailCode = internalMutation({
   args: {
     email: v.string(),
     codeHash: v.string(),
   },
-  handler: async (ctx, args): Promise<{ ok: boolean; locked: boolean }> => {
+  handler: async (ctx, args): Promise<ConsumeEmailCodeResult> => {
     const email = normalizeEmail(args.email);
     const now = Date.now();
     if (await verifyFailuresExhausted(ctx, email, now)) {
-      return { ok: false, locked: true };
+      return { ok: false, locked: true, lockReason: "hourly" };
     }
     const candidates = (await usableCodesNewestFirst(ctx, email, now)).slice(0, MAX_ACTIVE_CODES);
     if (candidates.length === 0) {
-      return { ok: false, locked: false };
+      return { ok: false, locked: false, lockReason: null };
     }
 
     // Failed attempts are shared across the active codes so issuing extra
     // codes does not multiply the guesses an attacker gets.
     const failures = Math.max(...candidates.map((code) => code.attempts));
     if (failures >= MAX_CODE_ATTEMPTS) {
-      return { ok: false, locked: true };
+      return { ok: false, locked: true, lockReason: "code" };
     }
 
     // Compare against every candidate so timing does not reveal which matched.
@@ -207,10 +215,14 @@ export const consumeEmailCode = internalMutation({
         await ctx.db.patch(code._id, { attempts });
       }
       const hourlyFailures = await recordVerifyFailure(ctx, email, now);
-      return {
-        ok: false,
-        locked: attempts >= MAX_CODE_ATTEMPTS || hourlyFailures >= MAX_VERIFY_FAILURES_PER_HOUR,
-      };
+      // The hourly cap wins: a new code does not help until the window passes.
+      if (hourlyFailures >= MAX_VERIFY_FAILURES_PER_HOUR) {
+        return { ok: false, locked: true, lockReason: "hourly" };
+      }
+      if (attempts >= MAX_CODE_ATTEMPTS) {
+        return { ok: false, locked: true, lockReason: "code" };
+      }
+      return { ok: false, locked: false, lockReason: null };
     }
 
     await ctx.db.patch(match._id, {
@@ -222,7 +234,7 @@ export const consumeEmailCode = internalMutation({
         await ctx.db.patch(code._id, { invalidatedAt: now });
       }
     }
-    return { ok: true, locked: false };
+    return { ok: true, locked: false, lockReason: null };
   },
 });
 
