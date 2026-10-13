@@ -170,6 +170,16 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var removed: [String] = []
         var edits: [TranscriptEdit] = []
 
+        // Sentence-initial "um"/"uh" after a sentence end: remove and recapitalize.
+        let sentenceInitial = removeSentenceInitialFillers(from: updated)
+        updated = sentenceInitial.text
+        for filler in unconditionalFillers {
+            let count = sentenceInitial.removed.filter { $0 == filler }.count
+            guard count > 0 else { continue }
+            removed.append(contentsOf: Array(repeating: filler, count: count))
+            edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
+        }
+
         // Remove unconditional fillers.
         for filler in unconditionalFillers {
             guard let regex = Self.unconditionalFillerRegexes[filler] else { continue }
@@ -210,32 +220,87 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     /// Repairs punctuation left orphaned by filler removal:
     /// "So, um, I think" → "So, , I think" → "So, I think".
-    private static let orphanPunctuationRules: [(regex: NSRegularExpression, template: String)] = {
-        let specs: [(String, String)] = [
-            // Space before punctuation: "So , I" → "So, I" (not ".net", ":)")
-            (#"[ \t]+([,.!?;:])(?=\s|[,.!?;:]|$)"#, "$1"),
-            // Repeated commas: "So,, I" → "So, I"
-            (#",(?:[ \t]*,)+"#, ","),
-            // Comma before terminal punctuation: "think,." → "think."
-            (#",[ \t]*([.!?;:])"#, "$1"),
-            // Comma at the start of the text: ", I think" → "I think"
-            (#"^[ \t]*[,;:][ \t]*"#, ""),
-            // Comma right after a sentence end: "Yes., okay" → "Yes. okay"
-            (#"([.!?])[ \t]*,[ \t]*"#, "$1 "),
-        ]
-        return specs.compactMap { pattern, template in
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) else { return nil }
-            return (regex, template)
+    private static let orphanPunctuationRules: (
+        spaceBeforePunctuation: NSRegularExpression?,
+        repeatedCommas: NSRegularExpression?,
+        commaBeforeTerminal: NSRegularExpression?,
+        leadingComma: NSRegularExpression?,
+        commaAfterSentenceEnd: NSRegularExpression?
+    ) = {
+        func compile(_ pattern: String) -> NSRegularExpression? {
+            try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
         }
+        return (
+            // Space before punctuation: "So , I" → "So, I" (not ".net", ":)")
+            compile(#"[ \t]+([,.!?;:])(?=\s|[,.!?;:]|$)"#),
+            // Repeated commas left by a comma-wrapped filler: "So,, I"
+            compile(#",(?:[ \t]*,)+"#),
+            // Comma before terminal punctuation: "think,." → "think."
+            compile(#",[ \t]*([.!?;:])"#),
+            // Comma at the start of the text: ", I think" → "I think"
+            compile(#"^[ \t]*[,;:][ \t]*"#),
+            // Comma right after a sentence end: "Yes., okay" → "Yes. okay",
+            // but not after abbreviations: "e.g., apples, etc., and so on".
+            compile(#"((?:(?<!\b\p{L}{1,2})(?<!\b(?:etc|vs|al|approx|incl|misc|cf))\.)|[!?])[ \t]*,[ \t]*"#)
+        )
     }()
 
     private func tidyPunctuationAfterRemoval(_ text: String) -> String {
-        var updated = text
-        for rule in Self.orphanPunctuationRules {
-            let range = NSRange(updated.startIndex..., in: updated)
-            updated = rule.regex.stringByReplacingMatches(in: updated, range: range, withTemplate: rule.template)
-        }
+        let rules = Self.orphanPunctuationRules
+        var updated = replace(rules.spaceBeforePunctuation, in: text, with: "$1")
+        updated = collapseRepeatedCommas(in: updated, using: rules.repeatedCommas)
+        updated = replace(rules.commaBeforeTerminal, in: updated, with: "$1")
+        updated = replace(rules.leadingComma, in: updated, with: "")
+        updated = replace(rules.commaAfterSentenceEnd, in: updated, with: "$1 ")
         return updated
+    }
+
+    private func replace(_ regex: NSRegularExpression?, in text: String, with template: String) -> String {
+        guard let regex else { return text }
+        return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
+    }
+
+    /// "So, um, I think" → "So, I think" keeps the discourse comma after a
+    /// single sentence-initial word; "we should, uh, go" → "we should go"
+    /// drops both commas, which only existed to set off the filler.
+    private func collapseRepeatedCommas(in text: String, using regex: NSRegularExpression?) -> String {
+        guard let regex else { return text }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return text }
+
+        var result = text as NSString
+        for match in matches.reversed() {
+            let before = nsText.substring(to: match.range.location)
+            let sentenceStart = before.lastIndex(where: { ".!?\n".contains($0) }).map { before.index(after: $0) } ?? before.startIndex
+            let wordsSinceSentenceStart = WordTokenizer.words(in: String(before[sentenceStart...])).count
+            result = result.replacingCharacters(in: match.range, with: wordsSinceSentenceStart <= 1 ? "," : "") as NSString
+        }
+        return result as String
+    }
+
+    /// "out. Um, check it" → "out. Check it": a filler that starts a sentence
+    /// is removed together with its comma and the next word is capitalized.
+    private static let sentenceInitialFillerRegex = try? NSRegularExpression(
+        pattern: #"([.!?][ \t]+)([Uu][MmHh])\b,?[ \t]*(\p{L})"#
+    )
+
+    private func removeSentenceInitialFillers(from text: String) -> (text: String, removed: [String]) {
+        guard let regex = Self.sentenceInitialFillerRegex else { return (text, []) }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+        guard !matches.isEmpty else { return (text, []) }
+
+        var result = text as NSString
+        var removed: [String] = []
+        for match in matches.reversed() {
+            let boundary = nsText.substring(with: match.range(at: 1))
+            let filler = nsText.substring(with: match.range(at: 2)).lowercased()
+            let letter = nsText.substring(with: match.range(at: 3)).uppercased()
+            result = result.replacingCharacters(in: match.range, with: boundary + letter) as NSString
+            removed.insert(filler, at: 0)
+        }
+        return (result as String, removed)
     }
 
     private func removeInterjectionalLike(from text: String) -> (text: String, count: Int) {
