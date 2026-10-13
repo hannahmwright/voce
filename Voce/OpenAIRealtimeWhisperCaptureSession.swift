@@ -520,7 +520,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         )
         stateLock.withLock { recoveryCheckpoint }?.replace(with: transcript)
         Self.logger.notice(
-            "RealtimeDiag: final transcript received +\(self.diagElapsedMS(), privacy: .public)ms chars=\(transcript.count, privacy: .public) preview=\"\(Self.diagPreview(transcript), privacy: .public)\""
+            "RealtimeDiag: final transcript received +\(self.diagElapsedMS(), privacy: .public)ms chars=\(transcript.count, privacy: .public)"
         )
         socket?.cancel(with: .normalClosure, reason: nil)
         receiveTask?.cancel()
@@ -975,7 +975,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 )
                 if deltaCount <= 12 || deltaCount.isMultiple(of: 50) {
                     Self.logger.notice(
-                        "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partial.count, privacy: .public) delta=\"\(Self.diagPreview(delta), privacy: .public)\""
+                        "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partial.count, privacy: .public)"
                     )
                 }
                 if !combinedPartial.isEmpty {
@@ -986,7 +986,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                let transcript = payload["transcript"] as? String {
                 completedCount += 1
                 Self.logger.notice(
-                    "RealtimeDiag: completed event #\(completedCount, privacy: .public) item=\(itemID, privacy: .public) chars=\(transcript.count, privacy: .public) +\(self.diagElapsedMS(), privacy: .public)ms preview=\"\(Self.diagPreview(transcript), privacy: .public)\""
+                    "RealtimeDiag: completed event #\(completedCount, privacy: .public) item=\(itemID, privacy: .public) chars=\(transcript.count, privacy: .public) +\(self.diagElapsedMS(), privacy: .public)ms"
                 )
                 if !firstCompletedDelivered {
                     firstCompletedDelivered = true
@@ -1105,16 +1105,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             return itemID
         }
         return "-"
-    }
-
-    private static func diagPreview(_ text: String, limit: Int = 96) -> String {
-        let collapsed = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        if collapsed.count <= limit {
-            return collapsed
-        }
-        return String(collapsed.prefix(limit)) + "..."
     }
 
     static var realtimeTargetFormat: AVAudioFormat {

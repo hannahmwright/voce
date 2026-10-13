@@ -143,7 +143,7 @@ struct AppleSpeechTranscriptionEngine: TranscriptionEngine, Sendable {
 
         if text.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?")) == nil {
             logger.notice(
-                "Apple Speech final transcript arrived without sentence punctuation: \(text, privacy: .public)"
+                "Apple Speech final transcript arrived without sentence punctuation (\(text.count, privacy: .public) characters)"
             )
         }
 
