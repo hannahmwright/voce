@@ -1,4 +1,4 @@
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 
 export const APP_ACCESS_FEATURE = "voce_app_access";
@@ -409,7 +409,7 @@ async function entitlementFor(ctx: ReadCtx, email: string, feature: string) {
   };
 }
 
-export const check = query({
+export const check = internalQuery({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
@@ -421,7 +421,7 @@ export const check = query({
   },
 });
 
-export const recordUsage = mutation({
+export const recordUsage = internalMutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
@@ -516,7 +516,7 @@ function usageBucketForFeature(feature: string): UsageBucket | null {
   }
 }
 
-export const usageAudit = query({
+export const usageAudit = internalQuery({
   args: {
     months: v.optional(v.number()),
     costPerHostedMinuteUSD: v.optional(v.number()),
@@ -706,7 +706,7 @@ async function deleteManualEntitlement(
   return true;
 }
 
-export const grantManual = mutation({
+export const grantManual = internalMutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
@@ -744,7 +744,7 @@ export const grantManual = mutation({
   },
 });
 
-export const revokeManual = mutation({
+export const revokeManual = internalMutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),

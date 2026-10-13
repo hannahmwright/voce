@@ -1,6 +1,6 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import Stripe from "stripe";
 import { APP_ACCESS_FEATURE, CLOUD_DICTATION_FEATURE } from "./entitlements";
 import {
@@ -307,7 +307,7 @@ async function verifiedFeatureEmail(
     return { response: jsonResponse({ error: "Email verification required" }, 401) };
   }
 
-  const entitlement = await ctx.runQuery(api.entitlements.check, {
+  const entitlement = await ctx.runQuery(internal.entitlements.check, {
     email,
     feature,
   });
@@ -625,7 +625,7 @@ http.route({
     });
 
     if (session.isFirstSession) {
-      const entitlement = await ctx.runQuery(api.entitlements.check, { email });
+      const entitlement = await ctx.runQuery(internal.entitlements.check, { email });
       try {
         await sendSignupEmail({
           email,
@@ -662,7 +662,7 @@ http.route({
       return jsonResponse({ error: "Email verification required" }, 401);
     }
 
-    const entitlement = await ctx.runQuery(api.entitlements.check, {
+    const entitlement = await ctx.runQuery(internal.entitlements.check, {
       email,
       feature: body.feature ?? DEFAULT_FEATURE,
     });
@@ -691,7 +691,7 @@ http.route({
       return jsonResponse({ error: "Missing usage seconds" }, 400);
     }
 
-    const entitlement = await ctx.runMutation(api.entitlements.recordUsage, {
+    const entitlement = await ctx.runMutation(internal.entitlements.recordUsage, {
       email,
       feature: body.feature ?? DEFAULT_FEATURE,
       seconds: body.seconds,
@@ -729,7 +729,7 @@ http.route({
       }
     }
 
-    const report = await ctx.runQuery(api.entitlements.usageAudit, {
+    const report = await ctx.runQuery(internal.entitlements.usageAudit, {
       months: typeof body.months === "number" && Number.isFinite(body.months)
         ? body.months
         : undefined,

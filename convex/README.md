@@ -15,6 +15,12 @@ Feature flags:
 - `voce_dictation_local`: audit-only local dictation seconds.
 - `voce_dictation_byok`: audit-only BYOK cloud dictation seconds.
 
+All Convex query and mutation functions in this project are internal. They are
+not callable from public Convex clients; the app reaches them only through the
+authenticated HTTP routes in `convex/http.ts`. Admins can still run them from the
+Convex dashboard (Functions tab) or with `npx convex run` (add `--prod` for the
+production deployment).
+
 Manual grant examples:
 
 Prefer the `planTier` shorthand so a Pro grant always includes both features:
