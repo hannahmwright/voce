@@ -86,27 +86,38 @@ public enum AIWorkflowOutputNormalizer {
         return suffix
     }
 
+    /// Whether `text` (a first line, or the text before the first colon) is
+    /// entirely an assistant preamble. Only tight patterns qualify, so real
+    /// content that merely starts with "Okay", "Here's", or mentions a label
+    /// word ("The summary deadline") is never stripped:
+    /// - a bare label: "Summary", "Rewritten text"
+    /// - "[Sure, ]here's [the|a] [up to three words] <label|version|text> [of the text]"
+    /// - an acknowledgement: "Sure, I can do that.", "Certainly!"
     private static func isPreambleCandidate(_ text: String, labels: [String]) -> Bool {
-        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ":.!"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else {
             return false
         }
 
-        let conversationalPrefixes = [
-            "sure",
-            "certainly",
-            "absolutely",
-            "of course",
-            "okay",
-            "ok",
-            "here is",
-            "here's"
-        ]
+        let labelAlternatives = labels
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        let opener = #"(?:sure|certainly|absolutely|of course|okay|ok)\b"#
+        let here = #"(?:here(?:'|\x{2019})s|here is|below is)"#
+        let ofTheText = #"(?:\s+of\s+(?:the|your)\s+(?:text|input|transcript|message|note))?"#
+        let labelPattern = "^(?:\(opener)[\\s,!.]*)?"
+            + "(?:\(here)\\s+(?:(?:the|a|an|your|my)\\s+)?(?:[\\p{L}-]+\\s+){0,3}?(?:\(labelAlternatives)|version|text)"
+            + "|(?:\(labelAlternatives)))\(ofTheText)$"
+        let acknowledgementPattern = "^\(opener)(?:[\\s,!.]+(?:i can do that|i can help with that|here you go|here it is|no problem|happy to help))?$"
 
-        if conversationalPrefixes.contains(where: { normalized.hasPrefix($0) }) {
-            return true
+        return [labelPattern, acknowledgementPattern].contains { pattern in
+            guard let regex = regexCache.regex(pattern: pattern, options: [.caseInsensitive]) else { return false }
+            return regex.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)) != nil
         }
-
-        return labels.contains(where: { normalized.contains($0) })
     }
+
+    private static let regexCache = RegexCache(capacity: 32)
 }
