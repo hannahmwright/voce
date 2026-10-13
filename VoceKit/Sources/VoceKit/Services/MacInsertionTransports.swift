@@ -47,30 +47,69 @@ enum PasteboardConventionType {
     static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 }
 
-private struct TemporaryPasteboardSnapshot: Sendable {
-    let items: [TemporaryPasteboardItemSnapshot]
+enum TemporaryPasteboardSnapshotLimit {
+    /// Byte budget for holding the user's clipboard while a paste is in flight.
+    /// Sized so typical rich content (formatted text, a full-screen screenshot
+    /// with its PNG and TIFF representations) still round-trips, while a
+    /// pathological clipboard (a video, a huge promised file) cannot make
+    /// every dictation copy hundreds of megabytes.
+    static let defaultMaximumByteCount = 100 * 1024 * 1024
+}
+
+/// What Voce captured from the user's clipboard before staging a transcript.
+private enum TemporaryPasteboardSnapshot: Sendable {
+    case restorable([TemporaryPasteboardItemSnapshot])
+    /// The clipboard holds concealed content (a password manager's copy).
+    /// Voce does not keep a copy and does not put it back.
+    case concealed
+    /// The clipboard is larger than the snapshot budget. Restoring only part
+    /// of it would silently leave a different clipboard than the user had, so
+    /// nothing is restored; the transcript is kept on the clipboard instead.
+    case tooLarge
 
     @MainActor
-    init(pasteboard: NSPasteboard) {
-        items = pasteboard.pasteboardItems?.map { item in
-            TemporaryPasteboardItemSnapshot(
-                values: item.types.compactMap { type in
-                    if let data = item.data(forType: type) {
-                        return TemporaryPasteboardValue(type: type.rawValue, data: data, string: nil)
-                    }
-                    if let string = item.string(forType: type) {
-                        return TemporaryPasteboardValue(type: type.rawValue, data: nil, string: string)
-                    }
-                    return nil
+    init(pasteboard: NSPasteboard, maximumByteCount: Int) {
+        let pasteboardItems = pasteboard.pasteboardItems ?? []
+        if pasteboardItems.contains(where: { $0.types.contains(PasteboardConventionType.concealed) }) {
+            self = .concealed
+            return
+        }
+
+        var totalByteCount = 0
+        var items: [TemporaryPasteboardItemSnapshot] = []
+        for item in pasteboardItems {
+            var values: [TemporaryPasteboardValue] = []
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    totalByteCount += data.count
+                    values.append(TemporaryPasteboardValue(type: type.rawValue, data: data, string: nil))
+                } else if let string = item.string(forType: type) {
+                    totalByteCount += string.utf8.count
+                    values.append(TemporaryPasteboardValue(type: type.rawValue, data: nil, string: string))
                 }
-            )
-        } ?? []
+                // Stop reading as soon as the budget is exceeded.
+                if totalByteCount > maximumByteCount {
+                    self = .tooLarge
+                    return
+                }
+            }
+            items.append(TemporaryPasteboardItemSnapshot(values: values))
+        }
+        self = .restorable(items)
+    }
+
+    var diagnosticsValue: String {
+        switch self {
+        case .restorable: return "restorable"
+        case .concealed: return "concealed"
+        case .tooLarge: return "too_large"
+        }
     }
 
     @MainActor
     func restore(to pasteboard: NSPasteboard) {
         pasteboard.clearContents()
-        guard !items.isEmpty else { return }
+        guard case .restorable(let items) = self, !items.isEmpty else { return }
 
         let restoredItems = items.map { snapshot in
             let item = NSPasteboardItem()
@@ -101,9 +140,17 @@ struct TemporaryPasteboardTransaction: Sendable {
     static func begin(
         text: String,
         provider: TemporaryPasteboardDataProvider,
-        pasteboard: NSPasteboard = .general
+        pasteboard: NSPasteboard = .general,
+        snapshotByteLimit: Int = TemporaryPasteboardSnapshotLimit.defaultMaximumByteCount
     ) -> TemporaryPasteboardTransaction {
-        let snapshot = TemporaryPasteboardSnapshot(pasteboard: pasteboard)
+        let snapshot = TemporaryPasteboardSnapshot(pasteboard: pasteboard, maximumByteCount: snapshotByteLimit)
+        if case .restorable = snapshot {} else {
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "clipboard_snapshot_not_restorable",
+                details: ["reason": snapshot.diagnosticsValue]
+            )
+        }
         pasteboard.clearContents()
 
         let item = NSPasteboardItem()
@@ -148,7 +195,14 @@ struct TemporaryPasteboardTransaction: Sendable {
 
         switch disposition {
         case .restoreSnapshot:
-            snapshot.restore(to: pasteboard)
+            if case .tooLarge = snapshot {
+                // Nothing faithful to restore; keep the transcript as a normal
+                // (non-transient) clipboard entry rather than an empty clipboard.
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
+            } else {
+                snapshot.restore(to: pasteboard)
+            }
         case .preserveTranscript:
             guard pasteboard.changeCount == stagedChangeCount else {
                 return .keepCurrentClipboard
@@ -160,6 +214,46 @@ struct TemporaryPasteboardTransaction: Sendable {
         }
         return disposition
     }
+}
+
+/// Defers snapshotting the user's clipboard and staging the transcript until
+/// the paste helper has passed its cheap preconditions (Accessibility trust,
+/// target present, target app frontmost, field focused). A paste that is
+/// skipped before Cmd+V therefore never reads the user's clipboard at all.
+///
+/// `MacClipboardService.performTemporaryPaste` installs an instance as
+/// `TemporaryPasteStagingContext.current` for the duration of the paste
+/// closure; `MacPasteHelper.activateAndPaste` stages through it right before
+/// sending Cmd+V.
+@MainActor
+final class TemporaryPasteStaging {
+    let text: String
+    let provider: TemporaryPasteboardDataProvider
+    let pasteboard: NSPasteboard
+    private(set) var transaction: TemporaryPasteboardTransaction?
+
+    init(
+        text: String,
+        provider: TemporaryPasteboardDataProvider,
+        pasteboard: NSPasteboard = .general
+    ) {
+        self.text = text
+        self.provider = provider
+        self.pasteboard = pasteboard
+    }
+
+    func stageIfNeeded() {
+        guard transaction == nil else { return }
+        transaction = TemporaryPasteboardTransaction.begin(
+            text: text,
+            provider: provider,
+            pasteboard: pasteboard
+        )
+    }
+}
+
+enum TemporaryPasteStagingContext {
+    @TaskLocal static var current: TemporaryPasteStaging?
 }
 
 final class TemporaryPasteboardDataProvider: NSObject, NSPasteboardItemDataProvider, @unchecked Sendable {
@@ -507,6 +601,14 @@ public enum MacPasteHelper {
                 message: "The editable field selected for dictation is no longer focused.",
                 target: target
             )
+        }
+
+        // Cheap preconditions passed: only now snapshot the user's clipboard
+        // and stage the transcript (when running inside a temporary paste).
+        if let staging = TemporaryPasteStagingContext.current {
+            await staging.stageIfNeeded()
+            // Give the pasteboard a moment to publish the staged item.
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
 
         guard let valueBeforePaste = await inputTarget.valueSnapshot() else {

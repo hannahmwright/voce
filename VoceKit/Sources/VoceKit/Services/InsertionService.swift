@@ -270,9 +270,11 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         }
 
         if let temporaryClipboard = clipboard as? any TemporaryClipboardPasteService {
+            // The temporary paste service owns staging (and the settle delay
+            // after it), so the transcript is only staged once the paste
+            // helper's preconditions have passed.
             return try await temporaryClipboard.performTemporaryPaste(text: text) {
-                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
-                return await paste(text: text, target: target, inputTarget: inputTarget)
+                await paste(text: text, target: target, inputTarget: inputTarget)
             }
         }
 
@@ -314,11 +316,27 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         paste: @escaping @Sendable () async -> AutoPasteOutcome
     ) async throws -> AutoPasteOutcome {
         let provider = TemporaryPasteboardDataProvider(text: text)
-        let transaction = await MainActor.run {
-            TemporaryPasteboardTransaction.begin(text: text, provider: provider)
+        let (staging, changeCountBeforePaste) = await MainActor.run {
+            (TemporaryPasteStaging(text: text, provider: provider), NSPasteboard.general.changeCount)
         }
 
-        let pasteOutcome = await paste()
+        // `MacPasteHelper.activateAndPaste` snapshots the clipboard and stages
+        // the transcript through `staging` only after its cheap preconditions
+        // pass, right before Cmd+V.
+        let pasteOutcome = await TemporaryPasteStagingContext.$current.withValue(staging) {
+            await paste()
+        }
+
+        guard let transaction = await MainActor.run(body: { staging.transaction }) else {
+            return await MainActor.run {
+                Self.finishUnstagedPaste(
+                    text: text,
+                    pasteOutcome: pasteOutcome,
+                    changeCountBeforePaste: changeCountBeforePaste
+                )
+            }
+        }
+
         let didConsumeStagedText: Bool
         switch pasteOutcome {
         case .attempted:
@@ -352,6 +370,48 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         return .unverified(
             reason: "Voce could not confirm that the target accepted the paste. The transcript was kept on your clipboard."
         )
+    }
+
+    /// The paste ended without staging: the helper's preconditions failed
+    /// before Cmd+V, so the user's clipboard was never snapshotted. Leave the
+    /// transcript on the clipboard for manual pasting (the same end state as a
+    /// staged paste that was skipped), unless the user copied something newer.
+    @MainActor
+    private static func finishUnstagedPaste(
+        text: String,
+        pasteOutcome: AutoPasteOutcome,
+        changeCountBeforePaste: Int
+    ) -> AutoPasteOutcome {
+        let pasteboard = NSPasteboard.general
+        if case .attempted = pasteOutcome {
+            // Only a paste closure that does not stage through
+            // `TemporaryPasteStagingContext` can get here; the paste cannot be
+            // trusted to have used the transcript.
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "temporary_paste_not_staged"
+            )
+        }
+
+        guard pasteboard.changeCount == changeCountBeforePaste else {
+            let baseReason = pasteOutcome.skippedReason
+                ?? "Voce could not confirm that the target accepted the paste."
+            let reason = "\(baseReason) The clipboard changed during insertion, so Voce did not overwrite the newer clipboard contents."
+            if case .skipped = pasteOutcome {
+                return .skipped(reason: reason)
+            }
+            return .unverified(reason: reason)
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        if case .attempted = pasteOutcome {
+            return .unverified(
+                reason: "Voce could not confirm that the target accepted the paste. The transcript was kept on your clipboard."
+            )
+        }
+        return pasteOutcome
     }
 }
 #endif
