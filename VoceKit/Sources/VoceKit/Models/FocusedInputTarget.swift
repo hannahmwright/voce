@@ -58,8 +58,11 @@ enum FocusedInputTargetPolicy {
             }
 
             // Some applications expose text but not a usable selection range.
-            // Require the exact transcript to appear, not merely any value change.
-            if afterText.contains(insertedText) {
+            // Require one more occurrence of the exact transcript than before,
+            // not merely any value change: a short transcript such as "OK."
+            // may already be in the field while something unrelated changed.
+            if occurrenceCount(of: insertedText, in: afterText)
+                > occurrenceCount(of: insertedText, in: beforeText) {
                 return .textValue
             }
         }
@@ -91,6 +94,18 @@ enum FocusedInputTargetPolicy {
         }
 
         return nil
+    }
+
+    /// Number of non-overlapping occurrences of `needle` in `haystack`.
+    static func occurrenceCount(of needle: String, in haystack: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        var searchRange = haystack.startIndex..<haystack.endIndex
+        while let found = haystack.range(of: needle, options: [], range: searchRange) {
+            count += 1
+            searchRange = found.upperBound..<haystack.endIndex
+        }
+        return count
     }
 
     private static func valueByReplacingSelection(

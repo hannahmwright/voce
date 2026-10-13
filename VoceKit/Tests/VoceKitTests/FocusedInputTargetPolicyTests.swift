@@ -145,4 +145,41 @@ func unrelatedAccessibilityChangesDoNotVerifyInsertion() {
 
     #expect(evidence == nil)
 }
+@Test("A short transcript already present plus an unrelated change is not verified")
+func preexistingShortTranscriptWithUnrelatedChangeIsNotVerified() {
+    let evidence = FocusedInputTargetPolicy.insertionEvidence(
+        insertedText: "OK.",
+        beforeText: "Sounds good. OK.",
+        afterText: "Sounds good. OK. (edited)",
+        beforeSelectedRange: nil,
+        afterSelectedRange: nil,
+        beforeCharacterCount: nil,
+        afterCharacterCount: nil
+    )
+
+    #expect(evidence == nil)
+}
+
+@Test("A repeated transcript is verified when its occurrence count increases")
+func repeatedTranscriptIsVerifiedByOccurrenceCount() {
+    let evidence = FocusedInputTargetPolicy.insertionEvidence(
+        insertedText: "OK.",
+        beforeText: "Sounds good. OK.",
+        afterText: "Sounds good. OK. OK.",
+        beforeSelectedRange: nil,
+        afterSelectedRange: nil,
+        beforeCharacterCount: nil,
+        afterCharacterCount: nil
+    )
+
+    #expect(evidence == .textValue)
+}
+
+@Test("Occurrence counting is non-overlapping")
+func occurrenceCountIsNonOverlapping() {
+    #expect(FocusedInputTargetPolicy.occurrenceCount(of: "aa", in: "aaa") == 1)
+    #expect(FocusedInputTargetPolicy.occurrenceCount(of: "aa", in: "aaaa") == 2)
+    #expect(FocusedInputTargetPolicy.occurrenceCount(of: "OK.", in: "") == 0)
+    #expect(FocusedInputTargetPolicy.occurrenceCount(of: "", in: "abc") == 0)
+}
 #endif
