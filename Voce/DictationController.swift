@@ -345,6 +345,7 @@ final class DictationController: ObservableObject {
     private var realtimeWhisperClientSecretRefreshTask: Task<Void, Never>?
     private var captureReadyOverlayStartTaskID: UUID?
     private var terminationObserver: Any?
+    private var hasTornDown = false
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
     private var activeHostedCloudUsageLimitSeconds: TimeInterval?
@@ -474,7 +475,10 @@ final class DictationController: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            // The process exits as soon as willTerminate observers return, so
+            // a Task scheduled from here never runs. The observer is
+            // registered on the main queue, so run teardown synchronously.
+            MainActor.assumeIsolated {
                 self?.teardown()
             }
         }
@@ -487,6 +491,8 @@ final class DictationController: ObservableObject {
     /// Idempotent shutdown: stops hotkeys, cancels in-flight work, releases media,
     /// hides the overlay, and invalidates timers. Triggered by willTerminateNotification.
     func teardown() {
+        guard !hasTornDown else { return }
+        hasTornDown = true
         if let observer = terminationObserver {
             NotificationCenter.default.removeObserver(observer)
             terminationObserver = nil
@@ -529,8 +535,22 @@ final class DictationController: ObservableObject {
         }
         recordingTimer?.invalidate()
         recordingTimer = nil
-        // Persist learning data before exit.
-        Task { await learningEngine.save() }
+        persistLearningDataBeforeExit()
+    }
+
+    /// Saves learning data before the process exits. LearningEngine is an
+    /// actor, so wait for the save on another executor, bounded so a busy
+    /// engine cannot hang quitting.
+    private func persistLearningDataBeforeExit() {
+        let learningEngine = learningEngine
+        let saved = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            await learningEngine.save()
+            saved.signal()
+        }
+        if saved.wait(timeout: .now() + 1.5) == .timedOut {
+            Self.logger.error("Timed out saving learning data before exit")
+        }
     }
 
     var menuBarIconName: String {
