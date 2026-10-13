@@ -38,52 +38,81 @@ struct AppleSpeechTranscriptionEngine: TranscriptionEngine, Sendable {
     func transcribe(audioURL: URL, languageHints: [String]) async throws -> RawTranscript {
         let preferredLocaleIdentifier = languageHints.first ?? config.localeIdentifier
 
-        return try await Task.detached(priority: .userInitiated) {
-            let clock = ContinuousClock()
-            let startedAt = clock.now
-            let locale = try await Self.resolveLocale(identifier: preferredLocaleIdentifier)
-            let audioFile = try Self.openAudioFile(at: audioURL)
-            var preset = DictationTranscriber.Preset.longDictation
-            preset.transcriptionOptions.formUnion([.emoji, .etiquetteReplacements])
-            // We only use the final text. Asking Apple for alternatives,
-            // frequent incremental finalizations, and confidence data adds
-            // work without improving the inserted result.
-            preset.attributeOptions.formUnion([.audioTimeRange])
-
-            let transcriber = DictationTranscriber(locale: locale, preset: preset)
-            let analyzer = SpeechAnalyzer(
-                modules: [transcriber],
-                options: .init(priority: .userInitiated, modelRetention: .whileInUse)
+        // The detached task keeps SpeechAnalyzer off the caller's executor, but
+        // detached work does not inherit cancellation. Forward it explicitly so
+        // a cancelled dictation stops the analyzer instead of letting it run on.
+        let work = Task.detached(priority: .userInitiated) {
+            try await Self.transcribeDetached(
+                audioURL: audioURL,
+                preferredLocaleIdentifier: preferredLocaleIdentifier
             )
+        }
+        return try await withTaskCancellationHandler {
+            try await work.value
+        } onCancel: {
+            work.cancel()
+        }
+    }
 
-            let resultsTask = Task(priority: .userInitiated) {
-                var collected: [DictationTranscriber.Result] = []
-                for try await result in transcriber.results {
-                    collected.append(result)
-                }
-                return collected
+    private static func transcribeDetached(
+        audioURL: URL,
+        preferredLocaleIdentifier: String
+    ) async throws -> RawTranscript {
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+        let locale = try await resolveLocale(identifier: preferredLocaleIdentifier)
+        try Task.checkCancellation()
+        let audioFile = try openAudioFile(at: audioURL)
+        var preset = DictationTranscriber.Preset.longDictation
+        preset.transcriptionOptions.formUnion([.emoji, .etiquetteReplacements])
+        // We only use the final text. Asking Apple for alternatives,
+        // frequent incremental finalizations, and confidence data adds
+        // work without improving the inserted result.
+        preset.attributeOptions.formUnion([.audioTimeRange])
+
+        let transcriber = DictationTranscriber(locale: locale, preset: preset)
+        let analyzer = SpeechAnalyzer(
+            modules: [transcriber],
+            options: .init(priority: .userInitiated, modelRetention: .whileInUse)
+        )
+
+        let resultsTask = Task(priority: .userInitiated) {
+            var collected: [DictationTranscriber.Result] = []
+            for try await result in transcriber.results {
+                collected.append(result)
             }
+            return collected
+        }
 
-            do {
-                try await analyzer.prepareToAnalyze(in: audioFile.processingFormat)
-                try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
-                let results = try await resultsTask.value
-                let transcript = try Self.makeRawTranscript(from: results)
-                let elapsed = startedAt.duration(to: clock.now)
-                let elapsedSeconds = Double(elapsed.components.seconds)
-                    + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
-                Self.logger.notice(
-                    "Apple Speech final transcription completed in \(elapsedSeconds, format: .fixed(precision: 2))s for locale \(preferredLocaleIdentifier, privacy: .public)"
-                )
-                return transcript
-            } catch is CancellationError {
+        do {
+            try await analyzer.prepareToAnalyze(in: audioFile.processingFormat)
+            try Task.checkCancellation()
+            try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
+            let results = try await withTaskCancellationHandler {
+                try await resultsTask.value
+            } onCancel: {
+                // Ending the analyzer finishes `transcriber.results`, which
+                // is what actually unblocks the collecting task.
                 resultsTask.cancel()
+                Task { await analyzer.cancelAndFinishNow() }
+            }
+            try Task.checkCancellation()
+            let transcript = try makeRawTranscript(from: results)
+            let elapsed = startedAt.duration(to: clock.now)
+            let elapsedSeconds = Double(elapsed.components.seconds)
+                + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+            logger.notice(
+                "Apple Speech final transcription completed in \(elapsedSeconds, format: .fixed(precision: 2))s for locale \(preferredLocaleIdentifier, privacy: .public)"
+            )
+            return transcript
+        } catch {
+            resultsTask.cancel()
+            await analyzer.cancelAndFinishNow()
+            if error is CancellationError || Task.isCancelled {
                 throw CancellationError()
-            } catch {
-                resultsTask.cancel()
-                throw error
             }
-        }.value
+            throw error
+        }
     }
 
     static func preflightCheck(localeIdentifier: String) async throws {
