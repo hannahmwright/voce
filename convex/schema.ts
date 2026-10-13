@@ -64,6 +64,8 @@ export default defineSchema({
     productId: v.optional(v.string()),
     currentPeriodEnd: v.optional(v.number()),
     cancelAtPeriodEnd: v.optional(v.boolean()),
+    // Stripe `event.created` (ms) of the newest webhook event applied to this record.
+    lastStripeEventAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })

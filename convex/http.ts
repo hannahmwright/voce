@@ -444,7 +444,40 @@ async function emailForSubscription(stripe: Stripe, subscription: Stripe.Subscri
   return undefined;
 }
 
-async function syncSubscription(ctx: any, stripe: Stripe | null, subscription: Stripe.Subscription) {
+function subscriptionSnapshot(subscription: Stripe.Subscription) {
+  return {
+    status: subscription.status as string,
+    priceId: priceIdFromSubscription(subscription),
+    productId: productIdFromSubscription(subscription),
+    currentPeriodEnd: currentPeriodEndFromSubscription(subscription),
+    cancelAtPeriodEnd: subscription.cancel_at_period_end,
+  };
+}
+
+// checkout.session.completed and invoice.paid do not carry the subscription's
+// current status. When Stripe is configured, read it instead of assuming
+// "active"; fall back to the event data if the lookup fails.
+async function liveSubscriptionSnapshot(stripe: Stripe | null, stripeSubscriptionId: string) {
+  if (!stripe) {
+    return null;
+  }
+  try {
+    return subscriptionSnapshot(await stripe.subscriptions.retrieve(stripeSubscriptionId));
+  } catch (error) {
+    console.error("Could not retrieve Stripe subscription for webhook", {
+      stripeSubscriptionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function syncSubscription(
+  ctx: any,
+  stripe: Stripe | null,
+  subscription: Stripe.Subscription,
+  eventCreatedAt?: number,
+) {
   const stripeCustomerId =
     typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id;
   const email = stripe ? await emailForSubscription(stripe, subscription) : undefined;
@@ -457,6 +490,7 @@ async function syncSubscription(ctx: any, stripe: Stripe | null, subscription: S
       productId: productIdFromSubscription(subscription),
       currentPeriodEnd: currentPeriodEndFromSubscription(subscription),
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      eventCreatedAt,
     });
     return;
   }
@@ -474,10 +508,16 @@ async function syncSubscription(ctx: any, stripe: Stripe | null, subscription: S
     productId: productIdFromSubscription(subscription),
     currentPeriodEnd: currentPeriodEndFromSubscription(subscription),
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    eventCreatedAt,
   });
 }
 
-async function syncCheckoutSession(ctx: any, session: Stripe.Checkout.Session) {
+async function syncCheckoutSession(
+  ctx: any,
+  stripe: Stripe | null,
+  session: Stripe.Checkout.Session,
+  eventCreatedAt: number,
+) {
   if (session.mode !== "subscription") {
     return;
   }
@@ -493,15 +533,30 @@ async function syncCheckoutSession(ctx: any, session: Stripe.Checkout.Session) {
     stripeCustomerId,
     email,
   });
+
+  // Delayed payment methods complete checkout with payment_status "unpaid";
+  // access is granted later by invoice.paid / customer.subscription.updated.
+  // "no_payment_required" covers free trials and 100% discounts.
+  if (session.payment_status !== "paid" && session.payment_status !== "no_payment_required") {
+    return;
+  }
+
+  const live = await liveSubscriptionSnapshot(stripe, stripeSubscriptionId);
   await ctx.runMutation(internal.stripe.upsertSubscriptionFromWebhook, {
     stripeSubscriptionId,
     stripeCustomerId,
     email,
-    status: "active",
+    ...(live ?? { status: "active" }),
+    eventCreatedAt,
   });
 }
 
-async function syncPaidInvoice(ctx: any, invoice: Stripe.Invoice) {
+async function syncPaidInvoice(
+  ctx: any,
+  stripe: Stripe | null,
+  invoice: Stripe.Invoice,
+  eventCreatedAt: number,
+) {
   const stripeSubscriptionId =
     stringId((invoice as any).subscription) ??
     stringId((invoice as any).parent?.subscription_details?.subscription) ??
@@ -523,14 +578,18 @@ async function syncPaidInvoice(ctx: any, invoice: Stripe.Invoice) {
     stripeCustomerId,
     email,
   });
+  const live = await liveSubscriptionSnapshot(stripe, stripeSubscriptionId);
   await ctx.runMutation(internal.stripe.upsertSubscriptionFromWebhook, {
     stripeSubscriptionId,
     stripeCustomerId,
     email,
-    status: "active",
-    priceId: stringId(line?.pricing?.price_details?.price) ?? stringId(line?.price?.id),
-    productId: stringId(line?.pricing?.price_details?.product) ?? stringId(line?.price?.product),
-    currentPeriodEnd: line?.period?.end ? line.period.end * 1000 : undefined,
+    ...(live ?? {
+      status: "active",
+      priceId: stringId(line?.pricing?.price_details?.price) ?? stringId(line?.price?.id),
+      productId: stringId(line?.pricing?.price_details?.product) ?? stringId(line?.price?.product),
+      currentPeriodEnd: line?.period?.end ? line.period.end * 1000 : undefined,
+    }),
+    eventCreatedAt,
   });
 }
 
@@ -1075,18 +1134,32 @@ http.route({
       return jsonResponse({ error: message }, 400);
     }
 
+    const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
+    const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
+    const eventCreatedAt = event.created * 1000;
+
     switch (event.type) {
       case "checkout.session.completed":
-        await syncCheckoutSession(ctx, event.data.object as Stripe.Checkout.Session);
+        await syncCheckoutSession(
+          ctx,
+          stripe,
+          event.data.object as Stripe.Checkout.Session,
+          eventCreatedAt,
+        );
         break;
       case "invoice.paid":
       case "invoice.payment_succeeded":
-        await syncPaidInvoice(ctx, event.data.object as Stripe.Invoice);
+        await syncPaidInvoice(ctx, stripe, event.data.object as Stripe.Invoice, eventCreatedAt);
         break;
       case "customer.subscription.created":
       case "customer.subscription.updated":
       case "customer.subscription.deleted":
-        await syncSubscription(ctx, null, event.data.object as Stripe.Subscription);
+        await syncSubscription(
+          ctx,
+          null,
+          event.data.object as Stripe.Subscription,
+          eventCreatedAt,
+        );
         break;
       default:
         break;
