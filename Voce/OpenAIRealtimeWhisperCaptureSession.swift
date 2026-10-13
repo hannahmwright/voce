@@ -398,8 +398,25 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         )
 
         let connection: RealtimeConnection
+        let armingStartedAt = ContinuousClock().now
         do {
-            connection = try await openConnection(forceCredentialRefresh: false)
+            do {
+                connection = try await openConnection(forceCredentialRefresh: false)
+            } catch let error where Self.isRejectedCredentialError(error) {
+                // A cached client secret can be rejected as expired even
+                // though it looked valid locally (for example, clock skew).
+                // Fetch a fresh one once, within the arming deadline.
+                let elapsed = armingStartedAt.duration(to: ContinuousClock().now)
+                let elapsedSeconds = Double(elapsed.components.seconds)
+                    + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                let remainingSeconds = Self.connectionHandshakeTimeoutSeconds - elapsedSeconds
+                guard remainingSeconds >= 2, !isStopped else { throw error }
+                Self.logger.notice("Realtime credential rejected while arming; retrying once with a refreshed credential")
+                connection = try await openConnection(
+                    forceCredentialRefresh: true,
+                    handshakeTimeoutSeconds: remainingSeconds
+                )
+            }
         } catch {
             cleanupAfterStartFailure()
             throw error
@@ -893,6 +910,20 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
     }
 
+    /// A rejected (for example expired) credential on the realtime socket,
+    /// as opposed to a credential the token provider could not issue.
+    static func isRejectedCredentialError(_ error: Error) -> Bool {
+        switch error as? CloudDictationError {
+        case .authenticationFailed:
+            return true
+        case .providerError(let message):
+            let message = message.lowercased()
+            return message.contains("expired") || message.contains("invalid_client_secret")
+        default:
+            return false
+        }
+    }
+
     /// A rejected websocket upgrade surfaces as a generic URL error; report
     /// 401/403 as an authentication failure so it is not retried.
     private static func connectionError(for socket: URLSessionWebSocketTask, underlying error: Error) -> Error {
@@ -912,7 +943,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 
     private func openConnection(
-        forceCredentialRefresh: Bool
+        forceCredentialRefresh: Bool,
+        handshakeTimeoutSeconds: TimeInterval = connectionHandshakeTimeoutSeconds
     ) async throws -> RealtimeConnection {
         let segmentID = UUID()
         await longFormTranscript.registerSegment(segmentID)
@@ -955,7 +987,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // afterwards cannot bound arming. Cancelling the socket at the
         // deadline fails a pending send immediately.
         let handshakeDeadline = Task { [socket, sessionReadiness] in
-            let deadline = UInt64(Self.connectionHandshakeTimeoutSeconds * 1_000_000_000)
+            let deadline = UInt64(handshakeTimeoutSeconds * 1_000_000_000)
             guard (try? await Task.sleep(nanoseconds: deadline)) != nil else { return }
             await sessionReadiness.fail(CloudDictationError.timedOut)
             socket.cancel(with: .goingAway, reason: nil)
@@ -964,7 +996,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
         do {
             try await sendSessionUpdate(writer: writer)
-            try await sessionReadiness.waitUntilReady(timeoutSeconds: Self.connectionHandshakeTimeoutSeconds)
+            try await sessionReadiness.waitUntilReady(timeoutSeconds: handshakeTimeoutSeconds)
             return RealtimeConnection(
                 segmentID: segmentID,
                 socket: socket,

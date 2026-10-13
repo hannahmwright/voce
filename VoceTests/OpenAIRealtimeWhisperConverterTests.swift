@@ -431,6 +431,21 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         stuckReceive.cancel()
     }
 
+    func testOnlyRejectedSocketCredentialsTriggerARefreshRetry() {
+        XCTAssertTrue(OpenAIRealtimeWhisperCaptureSession.isRejectedCredentialError(
+            CloudDictationError.authenticationFailed
+        ))
+        XCTAssertTrue(OpenAIRealtimeWhisperCaptureSession.isRejectedCredentialError(
+            CloudDictationError.providerError("Your ephemeral token has expired.")
+        ))
+        XCTAssertFalse(OpenAIRealtimeWhisperCaptureSession.isRejectedCredentialError(
+            CloudDictationError.subscriptionRequired
+        ))
+        XCTAssertFalse(OpenAIRealtimeWhisperCaptureSession.isRejectedCredentialError(
+            CloudDictationError.timedOut
+        ))
+    }
+
     func testRolloverFailsFastOnCredentialAndQuotaErrors() {
         let nonRetryable: [Error] = [
             CloudDictationError.missingAPIKey,
