@@ -11,13 +11,18 @@ import os
 ///   anywhere, unless they are clearly used as a noun ("a comma", "the new line
 ///   of products").
 /// - Ambiguous common-noun triggers ("period", "colon", "dash", "space") only
-///   fire at the end of the utterance, immediately before another command, or
-///   when the recognizer already set them off with punctuation
-///   ("…how are you, period."). They never fire mid-sentence
+///   fire at the end of the utterance, next to another command, when the
+///   recognizer already set them off with punctuation ("…how are you,
+///   period."), or (period/colon) when the next word is capitalized
+///   ("…the note period I will…"). They never fire inside a sentence
 ///   ("The trial period ended yesterday.").
+/// - In those strong positions only an article or a trigger-specific compound
+///   ("trial period", "disk space", "his colon") blocks a command, so ordinary
+///   endings ("I can't do that period") still work.
 /// - Deletion commands ("delete that", "scratch that") only fire as the final
 ///   phrase of the utterance or as a stand-alone sentence ("Scratch that."), and
-///   not when grammatically part of a sentence ("Please delete that.").
+///   not when grammatically part of a sentence ("Please delete that.",
+///   "then delete that").
 ///
 /// Custom (non built-in) insert commands keep the legacy behaviour of firing
 /// wherever their trigger appears as a whole phrase.
@@ -102,8 +107,9 @@ public final class VoiceCommandService: Sendable {
         guard !candidates.isEmpty else { return text }
 
         for index in candidates.indices {
+            let previous = index > 0 ? candidates[index - 1] : nil
             let next = index + 1 < candidates.count ? candidates[index + 1] : nil
-            candidates[index].fires = shouldFire(candidates[index], next: next, in: nsText)
+            candidates[index].fires = shouldFire(candidates[index], previous: previous, next: next, in: nsText)
         }
         guard candidates.contains(where: \.fires) else { return text }
 
@@ -114,6 +120,11 @@ public final class VoiceCommandService: Sendable {
         var cursor = 0
         for edit in edits {
             result += nsText.substring(with: NSRange(location: cursor, length: edit.range.location - cursor))
+            if edit.trimsPrecedingSpace {
+                while result.last == " " {
+                    result.removeLast()
+                }
+            }
             result += edit.replacement
             cursor = edit.range.location + edit.range.length
         }
@@ -123,28 +134,47 @@ public final class VoiceCommandService: Sendable {
 
     // MARK: - Eligibility
 
-    private func shouldFire(_ candidate: Candidate, next: Candidate?, in text: NSString) -> Bool {
+    private func shouldFire(_ candidate: Candidate, previous: Candidate?, next: Candidate?, in text: NSString) -> Bool {
         let context = MatchContext(range: candidate.range, in: text)
+        let trigger = candidate.trigger
+        let isNextToCommand = (next.map { isAdjacent(candidate.range, to: $0.range, in: text) } ?? false)
+            || (previous.map { isAdjacent($0.range, to: candidate.range, in: text) } ?? false)
 
-        switch placement(for: candidate.command, trigger: candidate.trigger) {
+        switch placement(for: candidate.command, trigger: trigger) {
         case .custom:
             return true
 
         case .anywhere:
-            return !isUsedAsNoun(candidate.trigger, context: context, ambiguous: false)
+            // At the end of the utterance or next to another command, only an
+            // article or a trigger-specific compound marks a noun ("the Oxford
+            // comma"); ordinary endings ("Did you call her question mark") fire.
+            if context.isAtEnd || isNextToCommand {
+                return !isCompoundNoun(trigger, context: context)
+            }
+            return !isUsedAsNounMidSentence(trigger, context: context)
 
         case .ambiguous(let firesAtEnd):
-            guard !isUsedAsNoun(candidate.trigger, context: context, ambiguous: true) else { return false }
-            if firesAtEnd, context.isAtEnd { return true }
-            // "…end of sentence period new paragraph…"
-            if let next, isAdjacent(candidate.range, to: next.range, in: text) { return true }
-            return context.isPrecededByPunctuation && (context.isFollowedByPunctuation || context.isAtEnd)
+            let isSetOffByPunctuation = context.isPrecededByPunctuation
+                && (context.isFollowedByPunctuation || context.isAtEnd)
+            if (firesAtEnd && context.isAtEnd) || isNextToCommand || isSetOffByPunctuation {
+                // "I can't do that period", "Count me in period" fire;
+                // "the trial period", "a colon" do not.
+                return !isCompoundNoun(trigger, context: context)
+            }
+            // Mid-utterance, period/colon fire when the recognizer started a new
+            // sentence after them: "the note period I will send it",
+            // "Dear team colon Please review". "The trial period ended" does not.
+            if firesAtEnd, Self.sentenceBreakTriggers.contains(trigger), context.nextWordStartsSentence {
+                return !isCompoundNoun(trigger, context: context)
+                    && !(context.previousWord.map { Self.ambiguousGuardWords.contains($0) } ?? false)
+            }
+            return false
 
         case .deletion:
             if context.isAtEnd {
                 // "Can you delete that?" is a question, not a command.
                 guard !context.trailingText.contains("?") else { return false }
-                if let previous = context.previousWord, Self.deletionGuardWords.contains(previous) {
+                if let previous = context.previousWord, deletionGuardWords(for: trigger).contains(previous) {
                     return false
                 }
                 return true
@@ -168,15 +198,28 @@ public final class VoiceCommandService: Sendable {
         return .anywhere
     }
 
-    private func isUsedAsNoun(_ trigger: String, context: MatchContext, ambiguous: Bool) -> Bool {
-        if context.nextWord == "of" {
-            // "a period of time", "a dash of salt", "a new line of products"
-            return true
-        }
+    /// Article or trigger-specific compound directly before the trigger:
+    /// "a colon", "the period", "trial period", "disk space", "Oxford comma".
+    private func isCompoundNoun(_ trigger: String, context: MatchContext) -> Bool {
         guard let previous = context.previousWord else { return false }
-        if Self.articleGuardWords.contains(previous) { return true }
-        if ambiguous, Self.ambiguousGuardWords.contains(previous) { return true }
+        if Self.articles.contains(previous) { return true }
         return Self.triggerSpecificGuardWords[trigger]?.contains(previous) ?? false
+    }
+
+    /// Noun use of an anywhere-trigger in the middle of a sentence:
+    /// "a new line of products", "Put a comma after the greeting".
+    private func isUsedAsNounMidSentence(_ trigger: String, context: MatchContext) -> Bool {
+        if context.nextWord == "of" { return true }
+        if isCompoundNoun(trigger, context: context) { return true }
+        guard let previous = context.previousWord else { return false }
+        return Self.determinerGuardWords.contains(previous)
+    }
+
+    private func deletionGuardWords(for trigger: String) -> Set<String> {
+        // "scratch that" is rarely prose, so only modal/pronoun constructions
+        // ("I'll scratch that", "to scratch that") block it; "delete that" is
+        // common prose ("then delete that", "just delete that").
+        trigger == "scratch that" ? Self.deletionGuardWords : Self.deletionGuardWords.union(Self.deleteThatExtraGuardWords)
     }
 
     private func isAdjacent(_ lhs: NSRange, to rhs: NSRange, in text: NSString) -> Bool {
@@ -191,6 +234,9 @@ public final class VoiceCommandService: Sendable {
     private struct Edit {
         var range: NSRange
         var replacement: String
+        /// Closing punctuation drops trailing spaces already emitted (e.g. the
+        /// space after a preceding " — " replacement: "One dash period" → "One —.").
+        var trimsPrecedingSpace: Bool
     }
 
     private func buildEdits(for candidates: [Candidate], in text: NSString) -> [Edit] {
@@ -216,7 +262,10 @@ public final class VoiceCommandService: Sendable {
         }
         deletionSpans = Self.mergedRanges(deletionSpans)
 
-        var edits: [Edit] = deletionSpans.map { Edit(range: $0, replacement: "") }
+        var edits: [Edit] = deletionSpans.map { Edit(range: $0, replacement: "", trimsPrecedingSpace: false) }
+        // End of the last insertion edit emitted; consecutive commands
+        // ("new line new line") must not absorb into each other's ranges.
+        var lastInsertionEnd = 0
 
         for (index, candidate) in candidates.enumerated() where candidate.fires {
             guard case .insertText(let replacement) = candidate.command.action else { continue }
@@ -225,9 +274,10 @@ public final class VoiceCommandService: Sendable {
             }
 
             // Absorb surrounding whitespace/punctuation without crossing into
-            // neighbouring candidates or deletion spans.
+            // neighbouring candidates, earlier edits, or deletion spans.
             let previousLimit = max(
                 index > 0 ? candidates[index - 1].range.location + candidates[index - 1].range.length : 0,
+                lastInsertionEnd,
                 deletionSpans.filter { $0.location + $0.length <= candidate.range.location }
                     .map { $0.location + $0.length }.max() ?? 0
             )
@@ -236,16 +286,16 @@ public final class VoiceCommandService: Sendable {
                 deletionSpans.filter { $0.location >= candidate.range.location + candidate.range.length }
                     .map(\.location).min() ?? text.length
             )
-            edits.append(
-                insertionEdit(
-                    replacement: replacement,
-                    isBuiltIn: candidate.command.isBuiltIn,
-                    range: candidate.range,
-                    previousLimit: previousLimit,
-                    nextLimit: nextLimit,
-                    in: text
-                )
+            let edit = insertionEdit(
+                replacement: replacement,
+                isBuiltIn: candidate.command.isBuiltIn,
+                range: candidate.range,
+                previousLimit: previousLimit,
+                nextLimit: nextLimit,
+                in: text
             )
+            edits.append(edit)
+            lastInsertionEnd = edit.range.location + edit.range.length
         }
 
         edits.sort { $0.range.location < $1.range.location }
@@ -285,7 +335,8 @@ public final class VoiceCommandService: Sendable {
         let horizontalSpace = CharacterSet.whitespaces
         let spaceAndSoftPunctuation = horizontalSpace.union(Self.softPunctuation)
 
-        switch Self.insertionKind(for: replacement, isBuiltIn: isBuiltIn) {
+        let kind = Self.insertionKind(for: replacement, isBuiltIn: isBuiltIn)
+        switch kind {
         case .closingPunctuation:
             // "how are you, period." → "how are you."
             absorbBefore(spaceAndSoftPunctuation)
@@ -311,7 +362,18 @@ public final class VoiceCommandService: Sendable {
             break
         }
 
-        return Edit(range: NSRange(location: start, length: end - start), replacement: replacement)
+        let trimsPrecedingSpace: Bool
+        switch kind {
+        case .closingPunctuation, .closingBracket, .lineBreak:
+            trimsPrecedingSpace = true
+        default:
+            trimsPrecedingSpace = false
+        }
+        return Edit(
+            range: NSRange(location: start, length: end - start),
+            replacement: replacement,
+            trimsPrecedingSpace: trimsPrecedingSpace
+        )
     }
 
     private enum InsertionKind {
@@ -416,13 +478,20 @@ public final class VoiceCommandService: Sendable {
     /// so it only fires before another command or when set off by punctuation.
     private static let ambiguousTriggersNotFiringAtEnd: Set<String> = ["space"]
 
-    /// Words that, directly before a trigger, mark it as a noun ("a comma").
-    private static let articleGuardWords: Set<String> = [
-        "a", "an", "the", "my", "your", "our", "their", "his", "her", "its",
-        "every", "each", "another", "no",
+    private static let articles: Set<String> = ["a", "an", "the"]
+
+    /// Determiners that mark a mid-sentence anywhere-trigger as a noun. Object
+    /// pronouns (her, his, my, your, its) and "no" are deliberately absent:
+    /// "I saw her comma then I left", "I told him no comma not today".
+    private static let determinerGuardWords: Set<String> = [
+        "a", "an", "the", "our", "their", "every", "each", "another",
     ]
 
-    /// Extra noun markers for ambiguous common-noun triggers.
+    /// Triggers that may fire mid-utterance when the next word starts a sentence.
+    private static let sentenceBreakTriggers: Set<String> = ["period", "colon"]
+
+    /// Extra noun markers checked only for the lower-confidence mid-utterance
+    /// case (period/colon followed by a capitalized word).
     private static let ambiguousGuardWords: Set<String> = [
         "this", "that", "these", "those", "some", "any", "more", "less", "much", "enough",
         "extra", "same", "whole", "entire", "one", "per", "what", "which", "whose",
@@ -445,6 +514,12 @@ public final class VoiceCommandService: Sendable {
             "retention", "interim", "honeymoon", "dark", "early", "late", "modern", "colonial",
             "victorian", "medieval", "classical", "baroque", "romantic", "critical", "growth",
             "incubation", "observation", "trading", "measurement", "orbital", "free",
+            // Adjectives and possessives that commonly modify "period" at the
+            // end of a sentence ("a long period", "her period").
+            "long", "short", "brief", "given", "certain", "difficult", "hard", "tough",
+            "busy", "quiet", "set", "fixed", "limited", "previous", "prior", "following",
+            "current", "recent", "similar", "specific", "same", "whole", "entire", "extra",
+            "little", "her", "his", "my", "your", "their", "our", "its", "whose",
         ],
         "space": [
             "disk", "storage", "memory", "office", "parking", "living", "work", "working",
@@ -453,9 +528,14 @@ public final class VoiceCommandService: Sendable {
             "floor", "desk", "closet", "head", "user", "kernel", "color", "colour", "screen",
             "ad", "cyber", "air", "commercial", "public", "private", "creative", "available",
             "physical", "virtual", "outer", "need", "needs", "needed",
+            "more", "less", "some", "enough", "white", "empty", "open", "free", "blank",
+            "much", "extra", "any", "no",
         ],
         "dash": ["hundred", "yard", "meter", "metre", "mad", "em", "en", "dot", "sprint", "100", "50", "40"],
-        "colon": ["sigmoid", "transverse", "ascending", "descending", "healthy", "double"],
+        "colon": [
+            "sigmoid", "transverse", "ascending", "descending", "healthy", "double",
+            "her", "his", "my", "your", "their", "our", "its", "whose",
+        ],
         "hyphen": ["soft", "hard", "double", "breaking"],
         "comma": ["oxford", "serial", "inverted"],
         "question mark": ["big", "huge", "giant", "real", "serious", "major"],
@@ -464,16 +544,22 @@ public final class VoiceCommandService: Sendable {
         "new paragraph": ["this", "that", "these", "those", "entire", "whole", "brand", "first", "next", "last", "some", "any"],
     ]
 
-    /// Words that, directly before "delete that"/"scratch that" at the end of an
-    /// utterance, make it part of a sentence ("Please delete that.").
+    /// Words that, directly before a deletion trigger at the end of an
+    /// utterance, make it part of a sentence ("Please delete that.",
+    /// "I'll scratch that").
     private static let deletionGuardWords: Set<String> = [
         "to", "please", "can", "could", "would", "will", "should", "must", "might", "may",
-        "shall", "i", "you", "we", "they", "he", "she", "it", "and", "or", "but", "then",
-        "not", "never", "also", "just", "let's", "lets", "let", "don't", "didn't",
-        "doesn't", "won't", "can't", "couldn't", "shouldn't", "wouldn't", "i'll", "we'll",
-        "you'll", "they'll", "he'll", "she'll", "i'd", "we'd", "you'd", "they'd", "did",
-        "do", "does", "so", "go", "gonna", "wanna", "always", "simply", "who", "which",
-        "please", "pls", "plz",
+        "shall", "i", "you", "we", "they", "he", "she", "it", "not", "never",
+        "let's", "lets", "let", "don't", "didn't", "doesn't", "won't", "can't", "couldn't",
+        "shouldn't", "wouldn't", "i'll", "we'll", "you'll", "they'll", "he'll", "she'll",
+        "i'd", "we'd", "you'd", "they'd", "did", "do", "does", "gonna", "wanna", "who",
+        "which", "pls", "plz",
+    ]
+
+    /// Additional guards for "delete that", which is common in prose
+    /// ("then delete that", "just delete that"), unlike "scratch that".
+    private static let deleteThatExtraGuardWords: Set<String> = [
+        "and", "or", "but", "then", "so", "just", "also", "simply", "always", "go",
     ]
 }
 
@@ -495,6 +581,9 @@ private struct MatchContext {
     var isAtSentenceStart: Bool
     /// The trigger is followed directly by a sentence terminator.
     var isFollowedBySentenceEnd: Bool
+    /// The next word (after spaces only) is capitalized, e.g. the recognizer
+    /// started a new sentence: "…the note period I will…".
+    var nextWordStartsSentence: Bool
 
     init(range: NSRange, in text: NSString) {
         let before = text.substring(to: range.location)
@@ -517,6 +606,7 @@ private struct MatchContext {
         nextWord = (firstAfter.map { $0.isLetter || $0.isNumber } ?? false)
             ? WordTokenizer.words(in: String(afterTrimmed.prefix(64))).first
             : nil
+        nextWordStartsSentence = firstAfter.map { $0.isLetter && $0.isUppercase } ?? false
     }
 }
 
