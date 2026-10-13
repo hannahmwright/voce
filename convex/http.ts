@@ -17,6 +17,11 @@ const DEFAULT_FEATURE = APP_ACCESS_FEATURE;
 const CHECKOUT_PLAN_VALUES = new Set(["base", "pro"]);
 const CHECKOUT_BILLING_VALUES = new Set(["monthly", "annual"]);
 const EMAIL_CODE_TTL_MS = 10 * 60 * 1000;
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+const AUTH_START_LIMIT_PER_EMAIL = 5;
+const AUTH_START_LIMIT_PER_IP = 30;
+const SUPPORT_LIMIT_PER_EMAIL = 5;
+const SUPPORT_LIMIT_PER_IP = 20;
 const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 
 function jsonResponse(body: unknown, status = 200) {
@@ -24,6 +29,45 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function clientIP(request: Request) {
+  // Best effort: these headers are only as trustworthy as the edge in front of
+  // Convex, so IP limits are a secondary guard next to per-email limits.
+  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return (
+    request.headers.get("cf-connecting-ip")?.trim() ||
+    request.headers.get("x-real-ip")?.trim() ||
+    forwarded ||
+    null
+  );
+}
+
+async function rateLimited(
+  ctx: any,
+  checks: Array<{ key: string; limit: number }>,
+): Promise<Response | null> {
+  for (const check of checks) {
+    const result = await ctx.runMutation(internal.auth.hitRateLimit, {
+      key: check.key,
+      limit: check.limit,
+      windowMs: RATE_LIMIT_WINDOW_MS,
+    });
+    if (!result.allowed) {
+      const retryAfterSeconds = Math.max(1, Math.ceil(result.retryAfterMs / 1000));
+      return new Response(
+        JSON.stringify({ error: "Too many requests. Please try again later." }),
+        {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": String(retryAfterSeconds),
+          },
+        },
+      );
+    }
+  }
+  return null;
 }
 
 function bearerToken(request: Request) {
@@ -580,6 +624,15 @@ http.route({
       return jsonResponse({ error: "Invalid email" }, 400);
     }
 
+    const ip = clientIP(request);
+    const limited = await rateLimited(ctx, [
+      { key: `auth-start:email:${email}`, limit: AUTH_START_LIMIT_PER_EMAIL },
+      ...(ip ? [{ key: `auth-start:ip:${ip}`, limit: AUTH_START_LIMIT_PER_IP }] : []),
+    ]);
+    if (limited) {
+      return limited;
+    }
+
     const code = randomDigits(6);
     const hash = await codeHash(email, code);
     await ctx.runMutation(internal.auth.createEmailCode, {
@@ -621,11 +674,14 @@ http.route({
     }
 
     const hash = await codeHash(email, code);
-    const isValid = await ctx.runMutation(internal.auth.consumeEmailCode, {
+    const verification = await ctx.runMutation(internal.auth.consumeEmailCode, {
       email,
       codeHash: hash,
     });
-    if (!isValid) {
+    if (!verification.ok) {
+      if (verification.locked) {
+        return jsonResponse({ error: "Too many attempts. Request a new code." }, 429);
+      }
       return jsonResponse({ error: "Invalid or expired code" }, 401);
     }
 
@@ -1056,7 +1112,7 @@ http.route({
 http.route({
   path: "/support/request",
   method: "POST",
-  handler: httpAction(async (_ctx, request) => {
+  handler: httpAction(async (ctx, request) => {
     try {
       const body = (await request.json()) as {
         category?: string;
@@ -1094,6 +1150,15 @@ http.route({
       }
       if (appVersion.length === 0 || buildNumber.length === 0 || macOSVersion.length === 0) {
         return jsonResponse({ error: "Missing app metadata" }, 400);
+      }
+
+      const ip = clientIP(request);
+      const limited = await rateLimited(ctx, [
+        { key: `support:email:${email}`, limit: SUPPORT_LIMIT_PER_EMAIL },
+        ...(ip ? [{ key: `support:ip:${ip}`, limit: SUPPORT_LIMIT_PER_IP }] : []),
+      ]);
+      if (limited) {
+        return limited;
       }
 
       await sendSupportEmail({

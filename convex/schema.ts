@@ -8,10 +8,22 @@ export default defineSchema({
     expiresAt: v.number(),
     attempts: v.number(),
     consumedAt: v.optional(v.number()),
+    // Set when a newer code is issued for the same email.
+    invalidatedAt: v.optional(v.number()),
     createdAt: v.number(),
   })
     .index("by_email", ["email"])
-    .index("by_email_code_hash", ["email", "codeHash"]),
+    .index("by_email_code_hash", ["email", "codeHash"])
+    .index("by_expires_at", ["expiresAt"]),
+
+  // Fixed-window request counters for unauthenticated endpoints.
+  rateLimits: defineTable({
+    key: v.string(),
+    windowStartedAt: v.number(),
+    count: v.number(),
+  })
+    .index("by_key", ["key"])
+    .index("by_window_started_at", ["windowStartedAt"]),
 
   authSessions: defineTable({
     email: v.string(),
