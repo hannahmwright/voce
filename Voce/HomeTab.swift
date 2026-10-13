@@ -1119,17 +1119,17 @@ struct HomeTab: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering in hoveredID = hovering ? entry.id : nil }
-        .onTapGesture { controller.copyEntry(entry) }
+        .onTapGesture { copyEntry(entry) }
         .contextMenu {
             if showsAISections {
-                Button { controller.copyEntryTranscript(entry) } label: {
+                Button { copyEntryTranscript(entry) } label: {
                     Label("Copy Transcript", systemImage: "waveform.and.mic")
                 }
-                Button { controller.copyEntryAIOutput(entry) } label: {
+                Button { copyEntryAIOutput(entry) } label: {
                     Label("Copy AI Output", systemImage: "sparkles")
                 }
             } else {
-                Button { controller.copyEntry(entry) } label: {
+                Button { copyEntry(entry) } label: {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
             }
@@ -1217,6 +1217,29 @@ struct HomeTab: View {
         }
 
         guard let toastMessage else { return }
+        showCopyToast(toastMessage)
+    }
+
+    // Copy actions in Home show their toast directly. Keying it only off
+    // controller.status missed repeat copies: copying a second entry sets the
+    // same status string, so onChange never fired. The status observer stays
+    // for copies started elsewhere (e.g. the menu bar).
+    private func copyEntry(_ entry: TranscriptEntry) {
+        controller.copyEntry(entry)
+        showCopyToast("Transcript copied")
+    }
+
+    private func copyEntryTranscript(_ entry: TranscriptEntry) {
+        controller.copyEntryTranscript(entry)
+        showCopyToast("Transcript copied")
+    }
+
+    private func copyEntryAIOutput(_ entry: TranscriptEntry) {
+        controller.copyEntryAIOutput(entry)
+        showCopyToast("AI output copied")
+    }
+
+    private func showCopyToast(_ toastMessage: String) {
         copyToastToken = UUID()
         let token = copyToastToken
 
