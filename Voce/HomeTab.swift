@@ -15,6 +15,9 @@ struct HomeTab: View {
     @State private var dismissedPermissionCallouts: Set<PermissionCalloutKind> = []
     @State private var copyToastMessage: String?
     @State private var copyToastToken = UUID()
+    /// When a copy started in Home last showed its own toast. The controller
+    /// also sets a "copied" status for it; ignore that echo.
+    @State private var lastHomeCopyToastAt: Date?
 
     var body: some View {
         GeometryReader { proxy in
@@ -1198,26 +1201,39 @@ struct HomeTab: View {
         }
 
         guard let toastMessage else { return }
+        if let lastHomeCopyToastAt, Date().timeIntervalSince(lastHomeCopyToastAt) < 1 {
+            return
+        }
         showCopyToast(toastMessage)
     }
 
-    // Copy actions in Home show their toast directly. Keying it only off
-    // controller.status missed repeat copies: copying a second entry sets the
-    // same status string, so onChange never fired. The status observer stays
-    // for copies started elsewhere (e.g. the menu bar).
+    // Copy actions in Home show their toast directly, once the clipboard
+    // write succeeds. Keying it only off controller.status missed repeat
+    // copies: copying a second entry sets the same status string, so onChange
+    // never fired. The status observer stays for copies started elsewhere
+    // (e.g. the menu bar) and skips the echo of Home's own copies.
     private func copyEntry(_ entry: TranscriptEntry) {
-        controller.copyEntry(entry)
-        showCopyToast("Transcript copied")
+        controller.copyEntry(entry) { didCopy in
+            showHomeCopyToast("Transcript copied", didCopy: didCopy)
+        }
     }
 
     private func copyEntryTranscript(_ entry: TranscriptEntry) {
-        controller.copyEntryTranscript(entry)
-        showCopyToast("Transcript copied")
+        controller.copyEntryTranscript(entry) { didCopy in
+            showHomeCopyToast("Transcript copied", didCopy: didCopy)
+        }
     }
 
     private func copyEntryAIOutput(_ entry: TranscriptEntry) {
-        controller.copyEntryAIOutput(entry)
-        showCopyToast("AI output copied")
+        controller.copyEntryAIOutput(entry) { didCopy in
+            showHomeCopyToast("AI output copied", didCopy: didCopy)
+        }
+    }
+
+    private func showHomeCopyToast(_ message: String, didCopy: Bool) {
+        guard didCopy else { return }
+        lastHomeCopyToastAt = Date()
+        showCopyToast(message)
     }
 
     private func showCopyToast(_ toastMessage: String) {

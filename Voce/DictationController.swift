@@ -1190,41 +1190,50 @@ final class DictationController: ObservableObject {
         await learningEngine.corrections()
     }
 
-    func copyEntry(_ entry: TranscriptEntry) {
+    /// `completion` (optional) reports whether the clipboard write succeeded.
+    func copyEntry(_ entry: TranscriptEntry, completion: (@MainActor (Bool) -> Void)? = nil) {
         Task {
             do {
                 let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
                 try await clipboardService.setString(text)
                 status = "Selected transcript copied."
+                completion?(true)
             } catch {
                 status = "Copy failed"
                 lastError = error.localizedDescription
+                completion?(false)
             }
         }
     }
 
-    func copyEntryTranscript(_ entry: TranscriptEntry) {
+    /// `completion` (optional) reports whether the clipboard write succeeded.
+    func copyEntryTranscript(_ entry: TranscriptEntry, completion: (@MainActor (Bool) -> Void)? = nil) {
         Task {
             do {
                 let text = (entry.sourceText?.isEmpty == false ? entry.sourceText : entry.rawText) ?? entry.rawText
                 try await clipboardService.setString(text)
                 status = "Transcribed text copied."
+                completion?(true)
             } catch {
                 status = "Copy failed"
                 lastError = error.localizedDescription
+                completion?(false)
             }
         }
     }
 
-    func copyEntryAIOutput(_ entry: TranscriptEntry) {
+    /// `completion` (optional) reports whether the clipboard write succeeded.
+    func copyEntryAIOutput(_ entry: TranscriptEntry, completion: (@MainActor (Bool) -> Void)? = nil) {
         Task {
             do {
                 let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
                 try await clipboardService.setString(text)
                 status = "AI output copied."
+                completion?(true)
             } catch {
                 status = "Copy failed"
                 lastError = error.localizedDescription
+                completion?(false)
             }
         }
     }
