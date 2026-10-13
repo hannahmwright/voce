@@ -2874,7 +2874,9 @@ final class DictationController: ObservableObject {
                     } else {
                         status = aiError.errorDescription ?? "AI request failed."
                         lastError = aiError.errorDescription ?? ""
-                        overlay.hide()
+                        if !isOverlayInUseByCapture {
+                            overlay.hide()
+                        }
                         clipboardRecoveryPrompt.hide()
                     }
                     do {
@@ -3117,6 +3119,12 @@ final class DictationController: ObservableObject {
 
     private func dismissOverlaySoon(pop: Bool = false, delayNanoseconds: UInt64 = 1_500_000_000) {
         overlayDismissTask?.cancel()
+        // A finishing dictation must not hide the overlay of a newer one
+        // that started while it was processing.
+        guard !isOverlayInUseByCapture else {
+            overlayDismissTask = nil
+            return
+        }
 
         guard delayNanoseconds > 0 else {
             if pop {
@@ -3132,6 +3140,10 @@ final class DictationController: ObservableObject {
         overlayDismissTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: delayNanoseconds)
             guard !Task.isCancelled else { return }
+            guard !isOverlayInUseByCapture else {
+                overlayDismissTask = nil
+                return
+            }
             if pop {
                 overlay.popAndHide()
             } else {
@@ -3154,7 +3166,9 @@ final class DictationController: ObservableObject {
         } else {
             status = routingErrorStatusMessage(for: routingError)
             lastError = ""
-            overlay.hide()
+            if !isOverlayInUseByCapture {
+                overlay.hide()
+            }
             clipboardRecoveryPrompt.hide()
         }
         scheduleLearningUpdate(for: finalizedTranscript)
@@ -3175,6 +3189,11 @@ final class DictationController: ObservableObject {
     private func cancelPendingOverlayDismissal() {
         overlayDismissTask?.cancel()
         overlayDismissTask = nil
+    }
+
+    /// A dictation is recording or arming and owns the overlay.
+    private var isOverlayInUseByCapture: Bool {
+        isRecording || activeStartTask != nil
     }
 
     private var isOverlayReservedForDictationSession: Bool {
