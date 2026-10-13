@@ -406,6 +406,9 @@ final class DictationController: ObservableObject {
     private struct SelectionCapture {
         var text: String
         var appContext: AppContext
+        /// The editable field holding the selection, so a quick fix can paste
+        /// its replacement back over it after the popover took focus.
+        var inputTarget: FocusedInputTarget?
     }
 
     private struct PasteboardSnapshot {
@@ -3059,13 +3062,14 @@ final class DictationController: ObservableObject {
 
     private func captureFrontmostSelection() async -> SelectionCapture? {
         let appContext = AppContextProvider.current()
+        let inputTarget = FocusedInputTarget.captureCurrent()
         var selectedText = accessibilitySelectedText()
         if selectedText == nil {
             selectedText = await copySelectedTextWithTemporaryPasteboard()
         }
         let trimmed = selectedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !trimmed.isEmpty else { return nil }
-        return SelectionCapture(text: trimmed, appContext: appContext)
+        return SelectionCapture(text: trimmed, appContext: appContext, inputTarget: inputTarget)
     }
 
     /// The live lexicon service (shared with the coordinator) was updated in
@@ -3098,7 +3102,11 @@ final class DictationController: ObservableObject {
         noteLexiconAppliedToRuntime()
         savePreferences()
 
-        let result = await insertionService.insert(text: trimmedReplacement, target: capture.appContext)
+        let result = await insertionService.insert(
+            text: trimmedReplacement,
+            target: capture.appContext,
+            inputTarget: capture.inputTarget
+        )
         switch result.status {
         case .inserted:
             status = "Dictionary quick fix saved and replaced."
