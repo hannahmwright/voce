@@ -467,6 +467,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc private func forceQuitAction() {
         closePopover()
+        // Teardown writes the exit-time preferences save, so debounced
+        // settings edits must reach the controller first.
+        NotificationCenter.default.post(name: .voceFlushPendingPreferenceDrafts, object: nil)
         controller?.teardown()
         NSApp.terminate(nil)
     }
