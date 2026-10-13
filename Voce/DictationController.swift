@@ -818,6 +818,12 @@ final class DictationController: ObservableObject {
             stopSession(mode: .pressToTalk)
             return
         }
+        // Releasing the key after a start was refused or failed must not
+        // replace the reason (e.g. a permission error) with "No active
+        // hold-to-talk recording."
+        if case .ignore = transition, recordingStateMachine.state == .idle {
+            return
+        }
         apply(transition: transition)
     }
 
@@ -1922,11 +1928,27 @@ final class DictationController: ObservableObject {
             }
             var startMediaToken: MediaInterruptionToken?
             do {
+                // A stop that lands before the capture session exists (a quick
+                // tap) makes this start stale. Bail at each suspension point
+                // instead of opening the microphone and socket for nothing; the
+                // stop finishes the dictation once this task returns.
                 try await ensureMicrophonePermission()
+                guard activeStartTaskID == startTaskID else {
+                    abandonStartBeforeCapture(dictationSequence: dictationSequence, mediaToken: nil)
+                    return
+                }
                 try await validateEngineReadinessForRecording(appContext: capturedContext)
+                guard activeStartTaskID == startTaskID else {
+                    abandonStartBeforeCapture(dictationSequence: dictationSequence, mediaToken: nil)
+                    return
+                }
 
                 if shouldPauseMedia {
                     startMediaToken = await mediaInterruption.beginInterruption()
+                    guard activeStartTaskID == startTaskID else {
+                        abandonStartBeforeCapture(dictationSequence: dictationSequence, mediaToken: startMediaToken)
+                        return
+                    }
                     activeMediaToken = startMediaToken
                 }
 
@@ -2091,6 +2113,29 @@ final class DictationController: ObservableObject {
         }
         activeStartTask = startTask
         inFlightStartTask = (startTaskID, startTask)
+    }
+
+    /// Releases what a start acquired before it went stale, ahead of creating
+    /// its capture session. The stop that made it stale finishes the dictation
+    /// silently, so leave a neutral status rather than "Checking microphone...".
+    private func abandonStartBeforeCapture(
+        dictationSequence: UInt64,
+        mediaToken: MediaInterruptionToken?
+    ) {
+        if let mediaToken {
+            mediaInterruption.endInterruption(token: mediaToken)
+            if activeMediaToken == mediaToken {
+                activeMediaToken = nil
+            }
+        }
+        guard latestDictationSequence == dictationSequence, !isRecording else { return }
+        status = "Recording stopped"
+        // startSession cancelled any pending dismissal of the previous overlay;
+        // hide it unless an earlier dictation is still finishing behind it.
+        if backgroundProcessingSessionCount == 0 {
+            overlay.hide()
+        }
+        screenRecordingHaze.hide()
     }
 
     private func shouldDisplayStreamingCaptureFeedback(for mode: RecordingMode) -> Bool {
@@ -2312,16 +2357,25 @@ final class DictationController: ObservableObject {
                 markRecordingFinished(owner: dictationSequence)
             }
 
-            guard let coordinator, let sessionID, let dictationSequence else {
+            guard let coordinator, let sessionID, let dictationSequence,
+                  previewSession != nil || realtimeSession != nil
+            else {
+                // Setup never produced a capture (a quick tap, or a start that
+                // failed and already reported why), or a streaming failure took
+                // the capture over and reports it. Release this dictation
+                // quietly instead of showing a misleading failure.
                 previewSession?.cancel()
                 realtimeSession?.cancel()
+                if let mediaToken {
+                    mediaInterruption.endInterruption(token: mediaToken)
+                }
                 markRecordingFinished(owner: dictationSequence ?? readyDictationSequence)
-                let error = CloudDictationError.providerError("No active recording session.")
-                if await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error) == false {
-                    status = "No active recording session."
-                    lastError = status
-                    overlay.show(state: .failure(message: status))
-                    dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                if let coordinator, let sessionID {
+                    await coordinator.cancel(sessionID: sessionID)
+                }
+                if let realtimeSession {
+                    let error = CloudDictationError.providerError("Recording stopped before it finished starting.")
+                    await recoverRealtimeDictationToClipboard(from: realtimeSession, error: error)
                 }
                 // Only start a queued dictation once this one has fully
                 // released the shared state, so cleanup cannot reset it.
