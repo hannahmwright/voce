@@ -1,5 +1,6 @@
 import { internalMutation, internalQuery, type MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
 const MAX_CODE_ATTEMPTS = 5;
@@ -11,6 +12,8 @@ const CLEANUP_BATCH_SIZE = 200;
 const AUTH_CODE_RETENTION_AFTER_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const RATE_LIMIT_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_CODES_TO_INVALIDATE = 25;
+// A user who taps "resend" may type the code from any of the recent emails.
+const MAX_ACTIVE_CODES = 3;
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -69,6 +72,28 @@ async function ensureEmailAccount(ctx: MutationCtx, email: string, firstSeenAt: 
   await ctx.db.insert("emailAccounts", { email, firstSeenAt });
 }
 
+type EmailAuthCode = {
+  _id: Id<"emailAuthCodes">;
+  codeHash: string;
+  expiresAt: number;
+  attempts: number;
+  consumedAt?: number;
+  invalidatedAt?: number;
+};
+
+function isUsableCode(code: EmailAuthCode, now: number) {
+  return code.consumedAt === undefined && code.invalidatedAt === undefined && code.expiresAt > now;
+}
+
+async function usableCodesNewestFirst(ctx: MutationCtx, email: string, now: number) {
+  const recentCodes = await ctx.db
+    .query("emailAuthCodes")
+    .withIndex("by_email", (q) => q.eq("email", email))
+    .order("desc")
+    .take(MAX_CODES_TO_INVALIDATE);
+  return recentCodes.filter((code) => isUsableCode(code, now));
+}
+
 export const createEmailCode = internalMutation({
   args: {
     email: v.string(),
@@ -78,20 +103,16 @@ export const createEmailCode = internalMutation({
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
     const now = Date.now();
-    // Only the newest code for an email is valid. Older codes that have not
-    // expired yet are invalidated so they cannot be guessed in parallel.
-    const recentCodes = await ctx.db
-      .query("emailAuthCodes")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .order("desc")
-      .take(MAX_CODES_TO_INVALIDATE);
-    for (const code of recentCodes) {
-      if (
-        code.consumedAt === undefined &&
-        code.invalidatedAt === undefined &&
-        code.expiresAt > now
-      ) {
+    // At most MAX_ACTIVE_CODES codes stay valid, including the new one.
+    // Codes that hit the failed-attempt limit are burned so that requesting
+    // a new code clears the lockout.
+    const usableCodes = await usableCodesNewestFirst(ctx, email, now);
+    let keptCodes = 0;
+    for (const code of usableCodes) {
+      if (code.attempts >= MAX_CODE_ATTEMPTS || keptCodes >= MAX_ACTIVE_CODES - 1) {
         await ctx.db.patch(code._id, { invalidatedAt: now });
+      } else {
+        keptCodes += 1;
       }
     }
 
@@ -113,36 +134,44 @@ export const consumeEmailCode = internalMutation({
   handler: async (ctx, args): Promise<{ ok: boolean; locked: boolean }> => {
     const email = normalizeEmail(args.email);
     const now = Date.now();
-    // Verify only against the newest code issued for this email.
-    const code = await ctx.db
-      .query("emailAuthCodes")
-      .withIndex("by_email", (q) => q.eq("email", email))
-      .order("desc")
-      .first();
-
-    if (
-      !code ||
-      code.consumedAt !== undefined ||
-      code.invalidatedAt !== undefined ||
-      code.expiresAt <= now
-    ) {
+    const candidates = (await usableCodesNewestFirst(ctx, email, now)).slice(0, MAX_ACTIVE_CODES);
+    if (candidates.length === 0) {
       return { ok: false, locked: false };
     }
 
-    if (code.attempts >= MAX_CODE_ATTEMPTS) {
+    // Failed attempts are shared across the active codes so issuing extra
+    // codes does not multiply the guesses an attacker gets.
+    const failures = Math.max(...candidates.map((code) => code.attempts));
+    if (failures >= MAX_CODE_ATTEMPTS) {
       return { ok: false, locked: true };
     }
 
-    if (!constantTimeEqual(code.codeHash, args.codeHash)) {
-      const attempts = code.attempts + 1;
-      await ctx.db.patch(code._id, { attempts });
+    // Compare against every candidate so timing does not reveal which matched.
+    let match: EmailAuthCode | null = null;
+    for (const code of candidates) {
+      const isMatch = constantTimeEqual(code.codeHash, args.codeHash);
+      if (isMatch && match === null) {
+        match = code;
+      }
+    }
+
+    if (!match) {
+      const attempts = failures + 1;
+      for (const code of candidates) {
+        await ctx.db.patch(code._id, { attempts });
+      }
       return { ok: false, locked: attempts >= MAX_CODE_ATTEMPTS };
     }
 
-    await ctx.db.patch(code._id, {
-      attempts: code.attempts + 1,
+    await ctx.db.patch(match._id, {
+      attempts: match.attempts + 1,
       consumedAt: now,
     });
+    for (const code of candidates) {
+      if (code._id !== match._id) {
+        await ctx.db.patch(code._id, { invalidatedAt: now });
+      }
+    }
     return { ok: true, locked: false };
   },
 });
