@@ -294,7 +294,7 @@ final class TemporaryPasteboardDataProvider: NSObject, NSPasteboardItemDataProvi
 }
 
 private func readFocusedTextValue() -> String? {
-    let systemWide = AXUIElementCreateSystemWide()
+    let systemWide = AccessibilityMessaging.systemWideElement()
     var focusedRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(
         systemWide,
@@ -457,7 +457,7 @@ public struct AccessibilityInsertionTransport: InsertionTransport {
             throw MacInsertionError.targetAppNotFrontmost
         }
 
-        let systemWide = AXUIElementCreateSystemWide()
+        let systemWide = AccessibilityMessaging.systemWideElement()
         var focusedRef: CFTypeRef?
         let focusedStatus = AXUIElementCopyAttributeValue(
             systemWide,

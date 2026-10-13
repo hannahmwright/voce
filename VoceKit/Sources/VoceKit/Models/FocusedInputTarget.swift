@@ -136,6 +136,24 @@ enum FocusedInputTargetPolicy {
     }
 }
 
+/// Bounds how long Accessibility IPC may block the calling thread (these
+/// calls run on the main actor). The system default is about 6 seconds per
+/// call, so an unresponsive target app could freeze Voce for many seconds
+/// across the several reads a capture or paste verification performs.
+/// Setting the timeout on the system-wide element sets the process-wide
+/// default for every element. 1 second leaves headroom for slow but healthy
+/// responders (large text values, Chromium building its AX tree on first
+/// access) while still bounding a hung app.
+enum AccessibilityMessaging {
+    static let timeoutSeconds: Float = 1.0
+
+    static func systemWideElement() -> AXUIElement {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, timeoutSeconds)
+        return systemWide
+    }
+}
+
 /// A live snapshot of the editable Accessibility element that was focused
 /// when dictation began. It is intentionally runtime-only and is never
 /// serialized with transcript history.
@@ -146,15 +164,13 @@ public final class FocusedInputTarget: @unchecked Sendable {
     let bundleIdentifier: String
     let identity: Identity
 
-    public let initialValue: String?
-
+    /// Only the attributes used for editability checks and diagnostics are
+    /// read; every attribute is a synchronous IPC round trip to the target.
     struct Identity: Sendable, Equatable {
         let role: String?
         let subrole: String?
         let identifier: String?
-        let title: String?
         let description: String?
-        let windowTitle: String?
     }
 
     private struct TextObservation {
@@ -185,14 +201,12 @@ public final class FocusedInputTarget: @unchecked Sendable {
         element: AXUIElement,
         processIdentifier: pid_t,
         bundleIdentifier: String,
-        identity: Identity,
-        initialValue: String?
+        identity: Identity
     ) {
         self.element = element
         self.processIdentifier = processIdentifier
         self.bundleIdentifier = bundleIdentifier
         self.identity = identity
-        self.initialValue = initialValue
     }
 
     /// Captures the focused element only when it is an editable Accessibility
@@ -207,6 +221,7 @@ public final class FocusedInputTarget: @unchecked Sendable {
             recordCaptureFailure("focused_element_unavailable")
             return nil
         }
+        AXUIElementSetMessagingTimeout(element, AccessibilityMessaging.timeoutSeconds)
 
         guard let processIdentifier = processIdentifier(of: element) else {
             recordCaptureFailure("focused_element_pid_unavailable")
@@ -272,8 +287,7 @@ public final class FocusedInputTarget: @unchecked Sendable {
             element: element,
             processIdentifier: processIdentifier,
             bundleIdentifier: bundleIdentifier,
-            identity: identity,
-            initialValue: textObservation.text
+            identity: identity
         )
     }
 
@@ -344,7 +358,7 @@ public final class FocusedInputTarget: @unchecked Sendable {
     }
 
     private static func currentFocusedElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
+        let systemWide = AccessibilityMessaging.systemWideElement()
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             systemWide,
@@ -537,28 +551,11 @@ public final class FocusedInputTarget: @unchecked Sendable {
     }
 
     private static func identity(for element: AXUIElement) -> Identity {
-        var windowRef: CFTypeRef?
-        let windowStatus = AXUIElementCopyAttributeValue(
-            element,
-            kAXWindowAttribute as CFString,
-            &windowRef
-        )
-        let window: AXUIElement?
-        if windowStatus == .success,
-           let windowRef,
-           CFGetTypeID(windowRef) == AXUIElementGetTypeID() {
-            window = unsafeDowncast(windowRef as AnyObject, to: AXUIElement.self)
-        } else {
-            window = nil
-        }
-
-        return Identity(
+        Identity(
             role: stringAttribute(kAXRoleAttribute as CFString, on: element),
             subrole: stringAttribute(kAXSubroleAttribute as CFString, on: element),
             identifier: stringAttribute(kAXIdentifierAttribute as CFString, on: element),
-            title: stringAttribute(kAXTitleAttribute as CFString, on: element),
-            description: stringAttribute(kAXDescriptionAttribute as CFString, on: element),
-            windowTitle: window.flatMap { stringAttribute(kAXTitleAttribute as CFString, on: $0) }
+            description: stringAttribute(kAXDescriptionAttribute as CFString, on: element)
         )
     }
 
