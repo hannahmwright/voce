@@ -301,7 +301,15 @@ final class DictationController: ObservableObject {
     private var cachedAIAvailability: (status: AppleFoundationModelsAvailabilityStatus, checkedAt: CFAbsoluteTime)?
 
     private var recordingStateMachine = RecordingStateMachine()
-    private var currentSessionID: SessionID?
+    /// The coordinator a streaming session was registered on, kept with its
+    /// ID: a runtime rebuild can replace `coordinator` mid-dictation, and only
+    /// the original coordinator knows the session.
+    private struct RegisteredStreamingSession {
+        let id: SessionID
+        let coordinator: SessionCoordinator
+    }
+
+    private var currentSession: RegisteredStreamingSession?
     private var latestDictationSequence: UInt64 = 0
     private var activeDictationSequence: UInt64?
     private var activeAppContext: AppContext?
@@ -2024,7 +2032,7 @@ final class DictationController: ObservableObject {
 
                 let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
-                currentSessionID = sessionID
+                currentSession = RegisteredStreamingSession(id: sessionID, coordinator: coordinator)
 
                 // A stop or streaming failure that lands while the microphone
                 // is still arming clears `activeStartTaskID` and finalises this
@@ -2197,10 +2205,10 @@ final class DictationController: ObservableObject {
             // newer dictation may have started; only release state we still own.
             var sessionToCancel: (id: SessionID, coordinator: SessionCoordinator)?
             if activeDictationSequence == failingSequence {
-                if let sessionID = currentSessionID, let coordinator {
-                    sessionToCancel = (sessionID, coordinator)
+                if let currentSession {
+                    sessionToCancel = (currentSession.id, currentSession.coordinator)
                 }
-                currentSessionID = nil
+                currentSession = nil
                 activeDictationSequence = nil
 
                 if let token = activeMediaToken {
@@ -2262,16 +2270,15 @@ final class DictationController: ObservableObject {
         activeHostedCloudUsageLimitSeconds = nil
         updateActiveRecordingHotkeys()
 
-        let readyCoordinator = coordinator
-        let readySessionID = currentSessionID
+        let readySession = currentSession
         let readyDictationSequence = activeDictationSequence
         let readyPreferredCompletionAction = pendingCompletionActionOverride
         let readyStyleOverride = activeStyleOverride
         let readyMediaToken = activeMediaToken
         let readyInputTarget = activeInputTarget
 
-        if readySessionID != nil {
-            currentSessionID = nil
+        if readySession != nil {
+            currentSession = nil
             activeDictationSequence = nil
             activeAppContext = nil
             activeInputTarget = nil
@@ -2305,9 +2312,9 @@ final class DictationController: ObservableObject {
             let mediaToken: MediaInterruptionToken?
             let inputTarget: FocusedInputTarget?
 
-            if let readyCoordinator, let readySessionID {
-                coordinator = readyCoordinator
-                sessionID = readySessionID
+            if let readySession {
+                coordinator = readySession.coordinator
+                sessionID = readySession.id
                 dictationSequence = readyDictationSequence
                 preferredCompletionAction = readyPreferredCompletionAction
                 styleOverride = readyStyleOverride
@@ -2339,14 +2346,14 @@ final class DictationController: ObservableObject {
                     activeRealtimeWhisperSession = nil
                     activeCloudUsageMetering = nil
                 }
-                coordinator = self.coordinator
-                sessionID = currentSessionID
+                coordinator = currentSession?.coordinator
+                sessionID = currentSession?.id
                 dictationSequence = readyDictationSequence
                 preferredCompletionAction = pendingCompletionActionOverride
                 styleOverride = activeStyleOverride
                 mediaToken = activeMediaToken
 
-                currentSessionID = nil
+                currentSession = nil
                 activeDictationSequence = nil
                 activeAppContext = nil
                 inputTarget = activeInputTarget
@@ -2382,7 +2389,7 @@ final class DictationController: ObservableObject {
                 startPendingRecordingAfterAudioSecuredIfNeeded()
                 return
             }
-            if readySessionID == nil {
+            if readySession == nil {
                 startPendingRecordingAfterAudioSecuredIfNeeded()
             }
             beginBackgroundProcessingSession()
