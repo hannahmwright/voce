@@ -625,6 +625,64 @@ func keyboardShortcutDisplayName(for shortcut: VoceKeyboardShortcut) -> String {
     return (modifierNames + [hotkeyDisplayName(for: shortcut.keyCode)]).joined(separator: " + ")
 }
 
+// MARK: - Tab activity
+
+/// Whether the tab (or settings pane) hosting a view is currently the one the
+/// user is looking at. ContentView keeps every tab alive in a ZStack and hides
+/// inactive ones with opacity, so `onDisappear` never fires when switching
+/// tabs; views that hold global state (key capture monitors, keyboard
+/// shortcuts, refresh-on-show work) observe this instead. Defaults to true so
+/// views hosted outside ContentView (onboarding, sheets) behave as before.
+private struct VoceTabIsActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var voceTabIsActive: Bool {
+        get { self[VoceTabIsActiveKey.self] }
+        set { self[VoceTabIsActiveKey.self] = newValue }
+    }
+}
+
+/// Ends an in-progress hotkey capture when the user leaves the place they
+/// started it: the app resigning active, or the window that was key when the
+/// capture began resigning key. Without this, a capture started in Settings
+/// keeps swallowing key-downs after the user clicks elsewhere, and the next
+/// keystroke silently becomes a global hotkey.
+@MainActor
+final class HotkeyCaptureInterruptionObserver {
+    private var tokens: [NSObjectProtocol] = []
+
+    func install(onInterrupt: @escaping @MainActor () -> Void) {
+        remove()
+        let center = NotificationCenter.default
+        let handler: @Sendable (Notification) -> Void = { _ in
+            Task { @MainActor in
+                onInterrupt()
+            }
+        }
+        tokens.append(center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main,
+            using: handler
+        ))
+        tokens.append(center.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: NSApp.keyWindow,
+            queue: .main,
+            using: handler
+        ))
+    }
+
+    func remove() {
+        for token in tokens {
+            NotificationCenter.default.removeObserver(token)
+        }
+        tokens.removeAll()
+    }
+}
+
 @MainActor
 final class HotkeyCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
@@ -632,7 +690,7 @@ final class HotkeyCaptureCoordinator: ObservableObject {
 
     private var keyMonitor: Any?
     private var flagsMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
+    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
     private var allowModifierCapture = true
 
     func startCapture(
@@ -656,14 +714,8 @@ final class HotkeyCaptureCoordinator: ObservableObject {
             return self.handleFlagsChanged(event, onCapture: onCapture)
         }
 
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.stopCapture()
-            }
+        interruptionObserver.install { [weak self] in
+            self?.stopCapture()
         }
     }
 
@@ -678,10 +730,7 @@ final class HotkeyCaptureCoordinator: ObservableObject {
             self.flagsMonitor = nil
         }
 
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-            self.resignObserver = nil
-        }
+        interruptionObserver.remove()
 
         isCapturing = false
         if clearHelperText {
@@ -754,7 +803,7 @@ final class KeyboardShortcutCaptureCoordinator: ObservableObject {
     @Published var helperText: String?
 
     private var keyMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
+    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
 
     func startCapture(onCapture: @escaping (VoceKeyboardShortcut) -> Void) {
         stopCapture(clearHelperText: false)
@@ -766,14 +815,8 @@ final class KeyboardShortcutCaptureCoordinator: ObservableObject {
             return self.handleKeyDown(event, onCapture: onCapture)
         }
 
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.stopCapture()
-            }
+        interruptionObserver.install { [weak self] in
+            self?.stopCapture()
         }
     }
 
@@ -783,10 +826,7 @@ final class KeyboardShortcutCaptureCoordinator: ObservableObject {
             self.keyMonitor = nil
         }
 
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-            self.resignObserver = nil
-        }
+        interruptionObserver.remove()
 
         isCapturing = false
         if clearHelperText {
@@ -823,7 +863,7 @@ final class HandsFreeToggleHotkeyCaptureCoordinator: ObservableObject {
 
     private var keyMonitor: Any?
     private var flagsMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
+    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
     private var allowModifierCapture = true
     private var pendingHotkey: HandsFreeHotkey?
     private var pendingCommitTask: Task<Void, Never>?
@@ -850,14 +890,8 @@ final class HandsFreeToggleHotkeyCaptureCoordinator: ObservableObject {
             return self.handleFlagsChanged(event, onCapture: onCapture)
         }
 
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.stopCapture()
-            }
+        interruptionObserver.install { [weak self] in
+            self?.stopCapture()
         }
     }
 
@@ -872,10 +906,7 @@ final class HandsFreeToggleHotkeyCaptureCoordinator: ObservableObject {
             self.flagsMonitor = nil
         }
 
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-            self.resignObserver = nil
-        }
+        interruptionObserver.remove()
 
         pendingCommitTask?.cancel()
         pendingCommitTask = nil
@@ -990,7 +1021,7 @@ final class PressToTalkHotkeyCaptureCoordinator: ObservableObject {
 
     private var keyMonitor: Any?
     private var flagsMonitor: Any?
-    private var resignObserver: NSObjectProtocol?
+    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
     private var pendingHotkey: PressToTalkHotkey?
 
     func startCapture(onCapture: @escaping (PressToTalkHotkey) -> Void) {
@@ -1009,14 +1040,8 @@ final class PressToTalkHotkeyCaptureCoordinator: ObservableObject {
             return self.handleFlagsChanged(event, onCapture: onCapture)
         }
 
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.stopCapture()
-            }
+        interruptionObserver.install { [weak self] in
+            self?.stopCapture()
         }
     }
 
@@ -1031,10 +1056,7 @@ final class PressToTalkHotkeyCaptureCoordinator: ObservableObject {
             self.flagsMonitor = nil
         }
 
-        if let resignObserver {
-            NotificationCenter.default.removeObserver(resignObserver)
-            self.resignObserver = nil
-        }
+        interruptionObserver.remove()
 
         pendingHotkey = nil
         isCapturing = false
@@ -1163,6 +1185,9 @@ struct PressToTalkHotkeyRecorderField: View {
         .onDisappear {
             coordinator.stopCapture()
         }
+        .stopsHotkeyCaptureWhenTabInactive {
+            coordinator.stopCapture()
+        }
     }
 
     private var fieldTitle: String {
@@ -1247,6 +1272,9 @@ struct HotkeyRecorderField: View {
             }
         }
         .onDisappear {
+            coordinator.stopCapture()
+        }
+        .stopsHotkeyCaptureWhenTabInactive {
             coordinator.stopCapture()
         }
     }
@@ -1358,6 +1386,9 @@ struct KeyboardShortcutRecorderField: View {
         .onDisappear {
             coordinator.stopCapture()
         }
+        .stopsHotkeyCaptureWhenTabInactive {
+            coordinator.stopCapture()
+        }
     }
 
     private var fieldTitle: String {
@@ -1375,6 +1406,7 @@ struct HandsFreeToggleHotkeyRecorderField: View {
     var autoStartCapture: Bool = false
     @StateObject private var coordinator = HandsFreeToggleHotkeyCaptureCoordinator()
     @State private var didAutoStartCapture = false
+    @Environment(\.voceTabIsActive) private var tabIsActive
 
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
@@ -1446,6 +1478,9 @@ struct HandsFreeToggleHotkeyRecorderField: View {
         .onDisappear {
             coordinator.stopCapture()
         }
+        .stopsHotkeyCaptureWhenTabInactive {
+            coordinator.stopCapture()
+        }
         .onAppear {
             triggerAutoCaptureIfNeeded()
         }
@@ -1467,11 +1502,32 @@ struct HandsFreeToggleHotkeyRecorderField: View {
     }
 
     private func triggerAutoCaptureIfNeeded() {
-        guard autoStartCapture, !didAutoStartCapture, !coordinator.isCapturing else { return }
+        guard autoStartCapture, tabIsActive, !didAutoStartCapture, !coordinator.isCapturing else { return }
         didAutoStartCapture = true
         coordinator.startCapture(allowModifierCapture: allowModifierCapture) { capturedHotkey in
             hotkey = capturedHotkey
         }
+    }
+}
+
+/// Tabs are hidden rather than removed, so `onDisappear` doesn't end a capture
+/// when the user switches away; this does.
+private struct StopHotkeyCaptureWhenTabInactiveModifier: ViewModifier {
+    @Environment(\.voceTabIsActive) private var tabIsActive
+    let stopCapture: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: tabIsActive) { _, isActive in
+            if !isActive {
+                stopCapture()
+            }
+        }
+    }
+}
+
+private extension View {
+    func stopsHotkeyCaptureWhenTabInactive(_ stopCapture: @escaping () -> Void) -> some View {
+        modifier(StopHotkeyCaptureWhenTabInactiveModifier(stopCapture: stopCapture))
     }
 }
 

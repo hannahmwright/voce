@@ -60,6 +60,9 @@ struct HomeTab: View {
         }
         .task(id: isActive) {
             guard isActive else { return }
+            // Catch up immediately on activation: Home may have been hidden
+            // across midnight or a week boundary.
+            currentTime = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }

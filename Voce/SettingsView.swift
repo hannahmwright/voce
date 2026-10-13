@@ -73,7 +73,9 @@ struct SettingsView: View {
                             )
                     }
                     .buttonStyle(.plain)
-                    .keyboardShortcut(.escape, modifiers: [])
+                    // Settings stays mounted (hidden) while other tabs show, so
+                    // only claim Esc while it's actually the visible tab.
+                    .keyboardShortcut(isActive ? KeyboardShortcut(.escape, modifiers: []) : nil)
                     .accessibilityLabel("Back")
 
 	                    Text("Settings")
@@ -132,7 +134,16 @@ struct SettingsView: View {
                 controller.savePreferencesQuietly(preferences: newValue)
             }
         }
+        .onChange(of: isActive) { _, isActive in
+            if !isActive {
+                settingsSearchIsFocused = false
+            }
+        }
+        // Recorder fields and other children stop global work (key capture)
+        // when Settings is hidden behind another tab or the window goes inactive.
+        .environment(\.voceTabIsActive, isActive)
         .onExitCommand {
+            guard isActive else { return }
             if isSearchingSettings {
                 settingsSearchText = ""
             } else {
@@ -197,7 +208,7 @@ struct SettingsView: View {
         .background(
             // Invisible ⌘F target: focuses the search field from anywhere in Settings.
             Button("") { settingsSearchIsFocused = true }
-                .keyboardShortcut("f", modifiers: .command)
+                .keyboardShortcut(isActive ? KeyboardShortcut("f", modifiers: .command) : nil)
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)

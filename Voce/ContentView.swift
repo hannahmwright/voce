@@ -1386,6 +1386,9 @@ private struct TabContentVisibilityModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // Hidden tabs stay alive, so they never see onDisappear; let them
+            // react to becoming inactive instead.
+            .environment(\.voceTabIsActive, isVisible)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)
