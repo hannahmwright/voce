@@ -53,15 +53,17 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
     private let maximumConcurrentRequests: Int
     private let maximumAttemptsPerChunk: Int
     private let retryBaseDelaySeconds: TimeInterval
+    private let overallDeadlineSeconds: TimeInterval
 
     init(
         provider: any CloudSpeechProviderClient,
         localeIdentifier: String,
         thresholdWordCount: Int = 120,
         targetChunkWordCount: Int = 80,
-        maximumConcurrentRequests: Int = 4,
+        maximumConcurrentRequests: Int = 8,
         maximumAttemptsPerChunk: Int = 3,
-        retryBaseDelaySeconds: TimeInterval = 0.5
+        retryBaseDelaySeconds: TimeInterval = 0.5,
+        overallDeadlineSeconds: TimeInterval = 50
     ) {
         self.provider = provider
         self.localeIdentifier = localeIdentifier
@@ -70,6 +72,7 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
         self.maximumConcurrentRequests = max(1, maximumConcurrentRequests)
         self.maximumAttemptsPerChunk = max(1, maximumAttemptsPerChunk)
         self.retryBaseDelaySeconds = max(0, retryBaseDelaySeconds)
+        self.overallDeadlineSeconds = max(0.1, overallDeadlineSeconds)
     }
 
     func refine(
@@ -114,10 +117,17 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
         return Self.cleanTranscript(rawText: raw.text, refinedText: refined)
     }
 
-    /// Refines chunks with bounded concurrency. A chunk that still fails after
-    /// retrying transient errors keeps its original text, so one bad request
-    /// no longer throws away every other refined chunk. Errors that will fail
-    /// every request (credentials, subscription) and failures of every chunk
+    private enum ChunkOutcome: Sendable {
+        case chunk(index: Int, result: Result<String, Error>)
+        case deadline
+    }
+
+    /// Refines chunks with bounded concurrency under one overall deadline, so
+    /// a slow backend costs about as long as one request did before chunking
+    /// rather than minutes. A chunk that fails, or is still running at the
+    /// deadline, keeps its original text, so one bad request no longer throws
+    /// away every other refined chunk. Errors that will fail every request,
+    /// failure of the whole first wave, or no chunk refined by the deadline
     /// still throw so the caller's whole-transcript fallback runs.
     private func refineChunks(
         _ chunks: [String],
@@ -129,17 +139,33 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
         let localeIdentifier = localeIdentifier
         let maximumAttempts = maximumAttemptsPerChunk
         let retryBaseDelay = retryBaseDelaySeconds
+        let deadlineNanoseconds = UInt64(overallDeadlineSeconds * 1_000_000_000)
+        let firstWaveSize = min(maximumConcurrentRequests, chunks.count)
         var refinedChunks = chunks
+        var refinedChunkCount = 0
         var failedChunkCount = 0
+        var firstWaveFailureCount = 0
         var lastError: Error?
+        var reachedDeadline = false
 
-        try await withThrowingTaskGroup(of: (Int, Result<String, Error>).self) { group in
+        try await withThrowingTaskGroup(of: ChunkOutcome.self) { group in
+            group.addTask {
+                try? await Task.sleep(nanoseconds: deadlineNanoseconds)
+                return .deadline
+            }
+
             var nextIndex = 0
+            var chunksInFlight = 0
+            func fillAvailableSlots() {
+                while chunksInFlight < firstWaveSize, nextIndex < chunks.count {
+                    addNextChunk()
+                }
+            }
             func addNextChunk() {
-                guard nextIndex < chunks.count else { return }
                 let index = nextIndex
                 let chunk = chunks[index]
                 nextIndex += 1
+                chunksInFlight += 1
                 group.addTask {
                     do {
                         let refined = try await Self.refineWithRetry(
@@ -154,37 +180,66 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
                                 appContext: appContext
                             )
                         }
-                        return (index, .success(refined))
+                        return .chunk(index: index, result: .success(refined))
                     } catch {
-                        return (index, .failure(error))
+                        return .chunk(index: index, result: .failure(error))
                     }
                 }
             }
 
-            for _ in 0..<min(maximumConcurrentRequests, chunks.count) {
-                addNextChunk()
-            }
+            fillAvailableSlots()
 
-            while let (index, result) = try await group.next() {
+            var finishedChunkCount = 0
+            while finishedChunkCount < chunks.count, let outcome = try await group.next() {
+                guard case .chunk(let index, let result) = outcome else {
+                    // Unfinished chunks keep their original text. Cancelling
+                    // also cancels their in-flight requests.
+                    reachedDeadline = true
+                    break
+                }
+                finishedChunkCount += 1
+                chunksInFlight -= 1
                 switch result {
                 case .success(let refined):
                     refinedChunks[index] = refined
+                    refinedChunkCount += 1
                 case .failure(let error):
-                    if error is CancellationError || Self.failsEveryRequest(error) {
+                    if Task.isCancelled || error is CancellationError || Self.failsEveryRequest(error) {
                         group.cancelAll()
                         throw error
                     }
                     failedChunkCount += 1
                     lastError = error
+                    if index < firstWaveSize {
+                        firstWaveFailureCount += 1
+                    }
                     Self.logger.error(
                         "Chunk \(index, privacy: .public) refinement failed; keeping its original text: \(error.localizedDescription, privacy: .public)"
                     )
+                    // If nothing in the first wave succeeded, the backend is
+                    // unhealthy: stop instead of working through every chunk.
+                    if firstWaveFailureCount == firstWaveSize, refinedChunkCount == 0 {
+                        group.cancelAll()
+                        throw error
+                    }
                 }
-                addNextChunk()
+                // Until some chunk succeeds, failures do not start new
+                // requests, so an unhealthy backend sees only the first wave.
+                if refinedChunkCount > 0 {
+                    fillAvailableSlots()
+                }
             }
+            group.cancelAll()
         }
 
-        if failedChunkCount == chunks.count, let lastError {
+        if reachedDeadline {
+            Self.logger.error(
+                "Chunked refinement reached its deadline; \(chunks.count - refinedChunkCount, privacy: .public) of \(chunks.count, privacy: .public) chunks keep their original text"
+            )
+            if refinedChunkCount == 0 {
+                throw lastError ?? CloudDictationError.timedOut
+            }
+        } else if failedChunkCount == chunks.count, let lastError {
             throw lastError
         }
         return refinedChunks
@@ -210,9 +265,12 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
         }
     }
 
+    /// Timeouts are not retried: each request already waited up to 45
+    /// seconds, and the overall deadline bounds the rest. Quota exhaustion
+    /// arrives as a non-retryable `providerError`, not `rateLimited`.
     static func isTransient(_ error: Error) -> Bool {
         switch error as? CloudDictationError {
-        case .rateLimited, .timedOut, .networkUnavailable:
+        case .rateLimited, .networkUnavailable:
             return true
         default:
             return false
@@ -227,6 +285,8 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
              .subscriptionRequired,
              .hostedCloudMinutesExhausted:
             return true
+        case .providerError(let message):
+            return CloudDictationError.isQuotaExhaustedMessage(message)
         default:
             return false
         }

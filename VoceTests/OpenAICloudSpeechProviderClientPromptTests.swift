@@ -50,6 +50,7 @@ private actor ChunkRefinementRecorder {
 private struct FakeChunkRefinementProvider: CloudSpeechProviderClient {
     let recorder: ChunkRefinementRecorder
     let failure: @Sendable (_ chunk: String, _ attempt: Int) -> Error?
+    var delayNanoseconds: @Sendable (_ chunk: String) -> UInt64 = { _ in 20_000_000 }
 
     func preflightCheck(localeIdentifier: String) async throws {}
 
@@ -65,7 +66,7 @@ private struct FakeChunkRefinementProvider: CloudSpeechProviderClient {
         appContext: AppContext?
     ) async throws -> String {
         let attempt = await recorder.begin(transcript)
-        try? await Task.sleep(nanoseconds: 20_000_000)
+        try? await Task.sleep(nanoseconds: delayNanoseconds(transcript))
         await recorder.end()
         if let error = failure(transcript, attempt) {
             throw error
@@ -76,14 +77,16 @@ private struct FakeChunkRefinementProvider: CloudSpeechProviderClient {
 
 private func refineInChunks(
     _ text: String,
-    provider: FakeChunkRefinementProvider
+    provider: FakeChunkRefinementProvider,
+    overallDeadlineSeconds: TimeInterval = 50
 ) async throws -> String {
     let engine = ChunkedTranscriptRefinementEngine(
         provider: provider,
         localeIdentifier: "en-US",
         thresholdWordCount: 4,
         targetChunkWordCount: 2,
-        retryBaseDelaySeconds: 0
+        retryBaseDelaySeconds: 0,
+        overallDeadlineSeconds: overallDeadlineSeconds
     )
     let profile = StyleProfile(
         name: "Default",
@@ -111,7 +114,7 @@ func chunkedRefinementLimitsConcurrency() async throws {
 
     let refined = try await refineInChunks(chunkedRefinementSample, provider: provider)
 
-    #expect(await recorder.maximumInFlight <= 4)
+    #expect(await recorder.maximumInFlight <= 8)
     #expect(refined.contains("SENTENCE 1."))
     #expect(refined.contains("SENTENCE 12."))
 }
@@ -154,4 +157,59 @@ func chunkedRefinementThrowsOnCredentialFailure() async {
     await #expect(throws: CloudDictationError.self) {
         _ = try await refineInChunks(chunkedRefinementSample, provider: provider)
     }
+}
+
+@Test("Chunked refinement does not retry timed-out chunks")
+func chunkedRefinementDoesNotRetryTimeouts() async throws {
+    let recorder = ChunkRefinementRecorder()
+    let provider = FakeChunkRefinementProvider(recorder: recorder) { chunk, _ in
+        chunk == "Sentence 2." ? CloudDictationError.timedOut : nil
+    }
+
+    let refined = try await refineInChunks(chunkedRefinementSample, provider: provider)
+
+    #expect(refined.contains("Sentence 2."))
+    #expect(await recorder.attemptsByChunk["Sentence 2."] == 1)
+}
+
+@Test("Chunked refinement keeps original text for chunks unfinished at the deadline")
+func chunkedRefinementStopsAtDeadline() async throws {
+    let recorder = ChunkRefinementRecorder()
+    var provider = FakeChunkRefinementProvider(recorder: recorder) { _, _ in nil }
+    provider.delayNanoseconds = { chunk in
+        chunk == "Sentence 12." ? 30_000_000_000 : 20_000_000
+    }
+    let start = ContinuousClock().now
+
+    let refined = try await refineInChunks(
+        chunkedRefinementSample,
+        provider: provider,
+        overallDeadlineSeconds: 0.5
+    )
+
+    #expect(start.duration(to: ContinuousClock().now) < .seconds(5))
+    #expect(refined.contains("Sentence 12."))
+    #expect(refined.contains("SENTENCE 11."))
+}
+
+@Test("Chunked refinement stops when the whole first wave fails")
+func chunkedRefinementAbortsWhenFirstWaveFails() async {
+    let recorder = ChunkRefinementRecorder()
+    let provider = FakeChunkRefinementProvider(recorder: recorder) { _, _ in
+        CloudDictationError.providerError("backend down")
+    }
+
+    await #expect(throws: CloudDictationError.self) {
+        _ = try await refineInChunks(chunkedRefinementSample, provider: provider)
+    }
+    #expect(await recorder.attemptsByChunk.count <= 8)
+}
+
+@Test("Quota-exhausted errors are not retried and fail every chunk")
+func chunkedRefinementTreatsQuotaAsFatal() {
+    let quota = CloudDictationError.providerError("OpenAI account quota exceeded (insufficient_quota).")
+    #expect(ChunkedTranscriptRefinementEngine.isTransient(quota) == false)
+    #expect(ChunkedTranscriptRefinementEngine.failsEveryRequest(quota))
+    #expect(ChunkedTranscriptRefinementEngine.isTransient(CloudDictationError.rateLimited))
+    #expect(ChunkedTranscriptRefinementEngine.isTransient(CloudDictationError.timedOut) == false)
 }

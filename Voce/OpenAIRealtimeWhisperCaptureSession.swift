@@ -841,11 +841,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
              .hostedCloudMinutesExhausted:
             return true
         case .providerError(let message):
-            let message = message.lowercased()
-            return message.contains("insufficient_quota")
-                || message.contains("exceeded your current quota")
-                || message.contains("invalid_api_key")
-                || message.contains("incorrect api key")
+            let lowercased = message.lowercased()
+            return CloudDictationError.isQuotaExhaustedMessage(message)
+                || lowercased.contains("invalid_api_key")
+                || lowercased.contains("incorrect api key")
         default:
             return false
         }

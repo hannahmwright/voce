@@ -56,6 +56,14 @@ enum CloudDictationError: LocalizedError {
             return "Cloud dictation unavailable: \(message)"
         }
     }
+
+    /// Recognizes OpenAI's quota-exhausted error text, which shares status
+    /// 429 with transient rate limiting but never succeeds on retry.
+    static func isQuotaExhaustedMessage(_ message: String) -> Bool {
+        let message = message.lowercased()
+        return message.contains("insufficient_quota")
+            || message.contains("exceeded your current quota")
+    }
 }
 
 struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
@@ -282,6 +290,9 @@ struct OpenAICloudSpeechProviderClient: CloudSpeechProviderClient {
             switch httpResponse.statusCode {
             case 401, 403:
                 throw CloudDictationError.authenticationFailed
+            case 429 where CloudDictationError.isQuotaExhaustedMessage(message):
+                // A 429 for an exhausted quota will not clear on retry.
+                throw CloudDictationError.providerError("OpenAI account quota exceeded (insufficient_quota).")
             case 429:
                 throw CloudDictationError.rateLimited
             default:
