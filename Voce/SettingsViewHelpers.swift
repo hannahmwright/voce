@@ -1324,22 +1324,7 @@ struct PressToTalkHotkeyRecorderField: View {
                     .padding(.horizontal, VoceDesign.md)
                     .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .fill(Color.white.opacity(0.82))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                    .fill(.thinMaterial.opacity(0.06))
-                            )
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .stroke(
-                                coordinator.isCapturing ? VoceDesign.accent.opacity(0.6) : VoceDesign.border.opacity(0.95),
-                                lineWidth: coordinator.isCapturing ? VoceDesign.borderNormal : VoceDesign.borderThin
-                            )
-                    )
-                    .shadow(color: .black.opacity(0.025), radius: 2, x: 0, y: 1)
+                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Hold-to-talk hotkey")
@@ -1417,22 +1402,7 @@ struct HotkeyRecorderField: View {
                     .padding(.horizontal, VoceDesign.md)
                     .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .fill(Color.white.opacity(0.82))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                    .fill(.thinMaterial.opacity(0.06))
-                            )
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .stroke(
-                                coordinator.isCapturing ? VoceDesign.accent.opacity(0.6) : VoceDesign.border.opacity(0.95),
-                                lineWidth: coordinator.isCapturing ? VoceDesign.borderNormal : VoceDesign.borderThin
-                            )
-                    )
-                    .shadow(color: .black.opacity(0.025), radius: 2, x: 0, y: 1)
+                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Global hands-free hotkey")
@@ -1511,22 +1481,7 @@ struct KeyboardShortcutRecorderField: View {
                     .padding(.horizontal, VoceDesign.md)
                     .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .fill(Color.white.opacity(0.82))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                    .fill(.thinMaterial.opacity(0.06))
-                            )
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .stroke(
-                                coordinator.isCapturing ? VoceDesign.accent.opacity(0.6) : VoceDesign.border.opacity(0.95),
-                                lineWidth: coordinator.isCapturing ? VoceDesign.borderNormal : VoceDesign.borderThin
-                            )
-                    )
-                    .shadow(color: .black.opacity(0.025), radius: 2, x: 0, y: 1)
+                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(accessibilityLabel)
@@ -1621,22 +1576,7 @@ struct HandsFreeToggleHotkeyRecorderField: View {
                     .padding(.horizontal, VoceDesign.md)
                     .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background {
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .fill(Color.white.opacity(0.82))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                                    .fill(.thinMaterial.opacity(0.06))
-                            )
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
-                            .stroke(
-                                coordinator.isCapturing ? VoceDesign.accent.opacity(0.6) : VoceDesign.border.opacity(0.95),
-                                lineWidth: coordinator.isCapturing ? VoceDesign.borderNormal : VoceDesign.borderThin
-                            )
-                    )
-                    .shadow(color: .black.opacity(0.025), radius: 2, x: 0, y: 1)
+                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Global hands-free hotkey")
@@ -1701,6 +1641,45 @@ struct HandsFreeToggleHotkeyRecorderField: View {
         coordinator.startCapture(allowModifierCapture: allowModifierCapture) { capturedHotkey in
             hotkey = capturedHotkey
         }
+    }
+}
+
+/// Field chrome shared by the hotkey recorders. Light mode keeps the original
+/// near-white key-cap look; dark mode previously drew the same near-white fill
+/// under off-white text, leaving the recorded key unreadable, so it now uses
+/// the dark input surface `settingsInputChrome()` uses.
+private struct HotkeyRecorderChromeModifier: ViewModifier {
+    let isCapturing: Bool
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .fill(colorScheme == .dark ? VoceDesign.surfaceSolid : Color.white.opacity(0.82))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                            .fill(
+                                colorScheme == .dark
+                                    ? AnyShapeStyle(Color.white.opacity(0.03))
+                                    : AnyShapeStyle(.thinMaterial.opacity(0.06))
+                            )
+                    )
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall, style: .continuous)
+                    .stroke(
+                        isCapturing ? VoceDesign.accent.opacity(0.6) : VoceDesign.border.opacity(0.95),
+                        lineWidth: isCapturing ? VoceDesign.borderNormal : VoceDesign.borderThin
+                    )
+            )
+            .shadow(color: .black.opacity(0.025), radius: 2, x: 0, y: 1)
+    }
+}
+
+private extension View {
+    func hotkeyRecorderChrome(isCapturing: Bool) -> some View {
+        modifier(HotkeyRecorderChromeModifier(isCapturing: isCapturing))
     }
 }
 
