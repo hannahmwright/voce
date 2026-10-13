@@ -72,6 +72,28 @@ func directiveOutputNormalizerKeepsPreambleLookalikes(kind: AIWorkflowKind, outp
     #expect(AIWorkflowOutputNormalizer.normalize(output, kind: kind) == output)
 }
 
+@Test(
+    "Directive output normalizer strips common here's/summary preambles",
+    arguments: [
+        (AIWorkflowKind.summarize, "Here's a summary of the meeting:"),
+        (AIWorkflowKind.summarize, "Here is a concise summary of the discussion:"),
+        (AIWorkflowKind.rewrite, "Here is the rewritten email:"),
+        (AIWorkflowKind.rewrite, "Here's your rewritten message:"),
+        (AIWorkflowKind.summarize, "Summary of key points:"),
+        (AIWorkflowKind.dictationPolish, "Here's the cleaned-up transcript:"),
+    ]
+)
+func directiveOutputNormalizerStripsHerePreambles(kind: AIWorkflowKind, preamble: String) {
+    #expect(AIWorkflowOutputNormalizer.normalize("\(preamble) We ship Monday.", kind: kind) == "We ship Monday.")
+    #expect(AIWorkflowOutputNormalizer.normalize("\(preamble)\nWe ship Monday.", kind: kind) == "We ship Monday.")
+}
+
+@Test("Directive output normalizer keeps \"Here's the thing:\" content")
+func directiveOutputNormalizerKeepsHeresTheThing() {
+    let output = "Here's the thing: we ship Monday."
+    #expect(AIWorkflowOutputNormalizer.normalize(output, kind: .rewrite) == output)
+}
+
 @Test("Directive output normalizer still strips common assistant preambles")
 func directiveOutputNormalizerStripsCommonPreambles() {
     #expect(

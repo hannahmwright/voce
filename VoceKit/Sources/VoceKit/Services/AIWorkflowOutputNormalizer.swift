@@ -107,10 +107,16 @@ public enum AIWorkflowOutputNormalizer {
             .joined(separator: "|")
         let opener = #"(?:sure|certainly|absolutely|of course|okay|ok)\b"#
         let here = #"(?:here(?:'|\x{2019})s|here is|below is)"#
-        let ofTheText = #"(?:\s+of\s+(?:the|your)\s+(?:text|input|transcript|message|note))?"#
+        // After "here's", any of these nouns can close the preamble:
+        // "Here is the rewritten email", "Here's your rewritten message".
+        let nounAlternatives = (labels + Self.preambleNouns)
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        // Optional "of [the|your|this] <up to three words>": "a summary of the meeting".
+        let ofPhrase = #"(?:\s+of\s+(?:(?:the|your|this|my|our)\s+)?[\p{L}-]+(?:\s+[\p{L}-]+){0,2})?"#
         let labelPattern = "^(?:\(opener)[\\s,!.]*)?"
-            + "(?:\(here)\\s+(?:(?:the|a|an|your|my)\\s+)?(?:[\\p{L}-]+\\s+){0,3}?(?:\(labelAlternatives)|version|text)"
-            + "|(?:\(labelAlternatives)))\(ofTheText)$"
+            + "(?:\(here)\\s+(?:(?:the|a|an|your|my)\\s+)?(?:[\\p{L}-]+\\s+){0,3}?(?:\(nounAlternatives))"
+            + "|(?:\(labelAlternatives)))\(ofPhrase)$"
         let acknowledgementPattern = "^\(opener)(?:[\\s,!.]+(?:i can do that|i can help with that|here you go|here it is|no problem|happy to help))?$"
 
         return [labelPattern, acknowledgementPattern].contains { pattern in
@@ -120,4 +126,9 @@ public enum AIWorkflowOutputNormalizer {
     }
 
     private static let regexCache = RegexCache(capacity: 32)
+
+    private static let preambleNouns = [
+        "email", "message", "transcript", "draft", "prompt", "notes", "note", "summary",
+        "version", "text", "rewrite", "response", "reply",
+    ]
 }
