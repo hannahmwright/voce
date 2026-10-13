@@ -38,10 +38,17 @@ private func cleanup(
         ("Um, I think so.", "I think so."),
         ("Yes. Um, okay.", "Yes. Okay."),
         ("I agree, uh.", "I agree."),
-        ("we should, uh, go", "we should go"),
+        ("we should, uh, go", "we should, go"),
         ("Head out. Um, check it", "Head out. Check it"),
         ("Um e.g., apples, etc., and so on", "e.g., apples, etc., and so on"),
-        ("Bring fruit, uh, e.g., apples vs., um, pears", "Bring fruit e.g., apples vs., pears"),
+        ("Bring fruit, uh, e.g., apples vs., um, pears", "Bring fruit, e.g., apples vs., pears"),
+        ("Hi John, um, how are you?", "Hi John, how are you?"),
+        ("He said, uh, \"go\"", "He said, \"go\""),
+        ("First, um, we go; second, uh, we stop", "First, we go; second, we stop"),
+        ("Hello. Uh, what? Um.", "Hello. What?"),
+        ("three things: uh, milk", "three things: milk"),
+        ("Done.\nUm, next item", "Done.\nNext item"),
+        ("Wait... um, okay", "Wait... okay"),
     ]
 )
 func fillerRemovalLeavesNoStrayCommas(input: String, expected: String) async throws {

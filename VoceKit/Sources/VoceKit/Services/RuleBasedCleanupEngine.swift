@@ -225,7 +225,8 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         repeatedCommas: NSRegularExpression?,
         commaBeforeTerminal: NSRegularExpression?,
         leadingComma: NSRegularExpression?,
-        commaAfterSentenceEnd: NSRegularExpression?
+        commaAfterSentenceEnd: NSRegularExpression?,
+        periodAfterTerminal: NSRegularExpression?
     ) = {
         func compile(_ pattern: String) -> NSRegularExpression? {
             try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
@@ -239,9 +240,13 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             compile(#",[ \t]*([.!?;:])"#),
             // Comma at the start of the text: ", I think" → "I think"
             compile(#"^[ \t]*[,;:][ \t]*"#),
-            // Comma right after a sentence end: "Yes., okay" → "Yes. okay",
+            // Comma right after a sentence end or colon: "Yes., okay" →
+            // "Yes. okay", "three things:, milk" → "three things: milk",
             // but not after abbreviations: "e.g., apples, etc., and so on".
-            compile(#"((?:(?<!\b\p{L}{1,2})(?<!\b(?:etc|vs|al|approx|incl|misc|cf))\.)|[!?])[ \t]*,[ \t]*"#)
+            compile(#"((?:(?<!\b\p{L}{1,2})(?<!\b(?:etc|vs|al|approx|incl|misc|cf))\.)|[!?:;])[ \t]*,[ \t]*"#),
+            // A removed trailing filler's period after other terminal
+            // punctuation: "What?." → "What?", "Done.." → "Done." (not "...").
+            compile(#"(?:([!?])\.|(?<!\.)(\.)\.)(?!\.)"#)
         )
     }()
 
@@ -252,6 +257,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         updated = replace(rules.commaBeforeTerminal, in: updated, with: "$1")
         updated = replace(rules.leadingComma, in: updated, with: "")
         updated = replace(rules.commaAfterSentenceEnd, in: updated, with: "$1 ")
+        updated = replace(rules.periodAfterTerminal, in: updated, with: "$1$2")
         return updated
     }
 
@@ -260,29 +266,18 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return regex.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
     }
 
-    /// "So, um, I think" → "So, I think" keeps the discourse comma after a
-    /// single sentence-initial word; "we should, uh, go" → "we should go"
-    /// drops both commas, which only existed to set off the filler.
+    /// A filler set off by commas leaves one comma: "So, um, I think" →
+    /// "So, I think"; "Hi John, um, how are you?" → "Hi John, how are you?".
     private func collapseRepeatedCommas(in text: String, using regex: NSRegularExpression?) -> String {
-        guard let regex else { return text }
-        let nsText = text as NSString
-        let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-        guard !matches.isEmpty else { return text }
-
-        var result = text as NSString
-        for match in matches.reversed() {
-            let before = nsText.substring(to: match.range.location)
-            let sentenceStart = before.lastIndex(where: { ".!?\n".contains($0) }).map { before.index(after: $0) } ?? before.startIndex
-            let wordsSinceSentenceStart = WordTokenizer.words(in: String(before[sentenceStart...])).count
-            result = result.replacingCharacters(in: match.range, with: wordsSinceSentenceStart <= 1 ? "," : "") as NSString
-        }
-        return result as String
+        replace(regex, in: text, with: ",")
     }
 
     /// "out. Um, check it" → "out. Check it": a filler that starts a sentence
     /// is removed together with its comma and the next word is capitalized.
     private static let sentenceInitialFillerRegex = try? NSRegularExpression(
-        pattern: #"([.!?][ \t]+)([Uu][MmHh])\b,?[ \t]*(\p{L})"#
+        // A real sentence end (not "...", "e.g.", "Mr.") followed by spaces or
+        // a line break, then um/uh, optional comma, and the next word.
+        pattern: #"(?i)((?:(?<!\.)(?<!\.\p{L})(?<!\b(?:etc|vs|approx|mr|mrs|ms|dr|st|cf))\.|[!?])(?:[ \t]*\n[ \t]*|[ \t]+))(um|uh)\b,?[ \t]*(\p{L})"#
     )
 
     private func removeSentenceInitialFillers(from text: String) -> (text: String, removed: [String]) {
