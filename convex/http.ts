@@ -61,9 +61,21 @@ function isValidEmail(email: string) {
 }
 
 function randomDigits(length: number) {
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (byte) => String(byte % 10)).join("");
+  // Rejection sampling: bytes 250-255 are discarded so every digit is equally likely.
+  const digits: string[] = [];
+  const bytes = new Uint8Array(Math.max(16, length * 2));
+  while (digits.length < length) {
+    crypto.getRandomValues(bytes);
+    for (const byte of bytes) {
+      if (byte < 250) {
+        digits.push(String(byte % 10));
+        if (digits.length === length) {
+          break;
+        }
+      }
+    }
+  }
+  return digits.join("");
 }
 
 function randomToken() {
