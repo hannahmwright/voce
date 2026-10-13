@@ -327,6 +327,14 @@ final class DictationController: ObservableObject {
     private var activePreviewSession: AppleSpeechPreviewSession?
     private var activeRealtimeWhisperSession: OpenAIRealtimeWhisperCaptureSession?
     private var activeCloudUsageMetering: ActiveCloudUsageMetering?
+    /// When the active dictation's capture began. Whichever path takes the
+    /// capture over (stop, streaming failure, teardown) meters it once.
+    private struct CaptureUsageMeter {
+        let dictationSequence: UInt64
+        let startedAt: SuspendingClock.Instant
+    }
+
+    private var activeCaptureUsageMeter: CaptureUsageMeter?
     private var metricEntries: [TranscriptEntry] = []
     private var pendingRuntimeRebuild = false
     private let menuBar = MenuBarController()
@@ -502,6 +510,13 @@ final class DictationController: ObservableObject {
         activeStartTaskID = nil
         inFlightStartTask?.task.cancel()
         inFlightStartTask = nil
+        if let meter = activeCaptureUsageMeter {
+            // Persisted by the usage queue, so it is reported on next launch.
+            finishCaptureUsageMetering(
+                dictationSequence: meter.dictationSequence,
+                cloudUsageMetering: activeCloudUsageMetering
+            )
+        }
         activeDictationSequence = nil
         activePreviewSession?.cancel()
         activePreviewSession = nil
@@ -2038,6 +2053,10 @@ final class DictationController: ObservableObject {
                     )
                     activeRealtimeWhisperSession?.cancel()
                     activeRealtimeWhisperSession = session
+                    activeCaptureUsageMeter = CaptureUsageMeter(
+                        dictationSequence: dictationSequence,
+                        startedAt: .now
+                    )
                     try await session.start()
                 } else {
                     activeCloudUsageMetering = nil
@@ -2064,6 +2083,10 @@ final class DictationController: ObservableObject {
                     )
                     activePreviewSession?.cancel()
                     activePreviewSession = session
+                    activeCaptureUsageMeter = CaptureUsageMeter(
+                        dictationSequence: dictationSequence,
+                        startedAt: .now
+                    )
                     try await session.start()
                 }
 
@@ -2092,13 +2115,17 @@ final class DictationController: ObservableObject {
                 updateActiveRecordingHotkeys()
                 recordingElapsed = 0
                 recordingTimer?.invalidate()
-                recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                // Common modes keep the elapsed display and usage-limit checks
+                // ticking while a menu or the status item is tracking.
+                let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.recordingElapsed += 1
                         self?.stopIfFreeUsageLimitReached()
                         self?.stopIfHostedCloudUsageLimitReached()
                     }
                 }
+                RunLoop.main.add(timer, forMode: .common)
+                recordingTimer = timer
                 if captureReadyOverlayStartTaskID != startTaskID {
                     overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
                     captureReadyOverlayStartTaskID = startTaskID
@@ -2144,6 +2171,10 @@ final class DictationController: ObservableObject {
                 activePreviewSession = nil
                 activeRealtimeWhisperSession = nil
                 activeCloudUsageMetering = nil
+                // A capture that never started produced nothing to meter.
+                if activeCaptureUsageMeter?.dictationSequence == dictationSequence {
+                    activeCaptureUsageMeter = nil
+                }
                 markRecordingFinished(owner: dictationSequence)
                 status = "Failed to start"
                 lastError = error.localizedDescription
@@ -2214,6 +2245,7 @@ final class DictationController: ObservableObject {
         guard previewSession != nil || realtimeSession != nil else { return }
 
         let pendingStart = inFlightStartTask?.task
+        let failingCloudUsageMetering = activeCloudUsageMetering
         activeStartTask = nil
         activeStartTaskID = nil
         activePreviewSession = nil
@@ -2242,6 +2274,12 @@ final class DictationController: ObservableObject {
             // newer dictation may have started; only release state we still own.
             var sessionToCancel: (id: SessionID, coordinator: SessionCoordinator)?
             if activeDictationSequence == failingSequence {
+                // Minutes streamed before the failure were used (and may
+                // have been recovered to the clipboard), so they count.
+                finishCaptureUsageMetering(
+                    dictationSequence: failingSequence,
+                    cloudUsageMetering: failingCloudUsageMetering
+                )
                 if let currentSession {
                     sessionToCancel = (currentSession.id, currentSession.coordinator)
                 }
@@ -2291,13 +2329,10 @@ final class DictationController: ObservableObject {
         activeRealtimeWhisperSession = nil
         let cloudUsageMetering = activeCloudUsageMetering
         activeCloudUsageMetering = nil
-        let recordedSeconds = recordingElapsed
         // Shared cleanup — runs on every path including the guard-return.
         recordingTimer?.invalidate()
         recordingTimer = nil
         captureReadyOverlayStartTaskID = nil
-        accumulateRecordingSeconds(recordedSeconds)
-        recordVoceUsageSeconds(recordedSeconds)
         recordingElapsed = 0
         isRecording = false
         handsFreeOn = false
@@ -2315,6 +2350,12 @@ final class DictationController: ObservableObject {
         let readyInputTarget = activeInputTarget
 
         if readySession != nil {
+            if let readyDictationSequence {
+                finishCaptureUsageMetering(
+                    dictationSequence: readyDictationSequence,
+                    cloudUsageMetering: cloudUsageMetering
+                )
+            }
             currentSession = nil
             activeDictationSequence = nil
             activeAppContext = nil
@@ -2383,6 +2424,10 @@ final class DictationController: ObservableObject {
                     activeRealtimeWhisperSession = nil
                     activeCloudUsageMetering = nil
                 }
+                finishCaptureUsageMetering(
+                    dictationSequence: readyDictationSequence,
+                    cloudUsageMetering: cloudUsageMetering
+                )
                 coordinator = currentSession?.coordinator
                 sessionID = currentSession?.id
                 dictationSequence = readyDictationSequence
@@ -2459,10 +2504,6 @@ final class DictationController: ObservableObject {
                     let stopResult = try await realtimeSession.stop()
                     defer { try? FileManager.default.removeItem(at: stopResult.captureURL) }
                     captureDurationMS = stopResult.rawTranscript.durationMS
-                    recordDictationAuditUsage(
-                        mode: cloudUsageMetering,
-                        seconds: TimeInterval(captureDurationMS) / 1_000
-                    )
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
                         + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -2487,10 +2528,6 @@ final class DictationController: ObservableObject {
                 } else if let previewSession {
                     let stopResult = try previewSession.stop()
                     captureDurationMS = stopResult.captureDurationMS
-                    recordDictationAuditUsage(
-                        mode: nil,
-                        seconds: TimeInterval(captureDurationMS) / 1_000
-                    )
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
                         + Double(stopElapsed.components.attoseconds) / 1_000_000_000_000_000_000
@@ -3390,6 +3427,29 @@ final class DictationController: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Meters a dictation's capture exactly once, from capture start until the
+    /// path that ends the recording (stop, streaming failure, teardown) takes
+    /// the capture over. Wall-clock time is used so usage is counted even when
+    /// the capture fails to finalize, and fractions of a second are kept.
+    private func finishCaptureUsageMetering(
+        dictationSequence: UInt64,
+        cloudUsageMetering: ActiveCloudUsageMetering?
+    ) {
+        guard let meter = activeCaptureUsageMeter,
+              meter.dictationSequence == dictationSequence
+        else { return }
+        activeCaptureUsageMeter = nil
+
+        let elapsed = meter.startedAt.duration(to: .now)
+        let seconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+        guard seconds > 0 else { return }
+
+        accumulateRecordingSeconds(seconds)
+        recordVoceUsageSeconds(seconds)
+        recordDictationAuditUsage(mode: cloudUsageMetering, seconds: seconds)
     }
 
     private func recordVoceUsageSeconds(_ seconds: TimeInterval) {
