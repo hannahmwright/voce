@@ -6,7 +6,9 @@ import VoceKitTestSupport
 private func finalize(
     transcript: String,
     snippets: [Snippet],
-    structureMode: StructureMode = .paragraph
+    structureMode: StructureMode = .paragraph,
+    cleanupEngine: any CleanupEngine = RuleBasedCleanupEngine(),
+    lexicon: [LexiconEntry] = []
 ) async throws -> FinalizedTranscript {
     let audioURL = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("audio-\(UUID().uuidString).wav")
     try Data().write(to: audioURL)
@@ -14,8 +16,8 @@ private func finalize(
     let coordinator = SessionCoordinator(
         captureService: StubAudioCaptureService(queuedAudioURLs: [audioURL]),
         transcriptionEngine: StaticTranscriptionEngine { _, _ in RawTranscript(text: transcript) },
-        cleanupEngine: RuleBasedCleanupEngine(),
-        lexiconService: PersonalLexiconService(),
+        cleanupEngine: cleanupEngine,
+        lexiconService: PersonalLexiconService(entries: lexicon),
         styleProfileService: StyleProfileService(
             globalProfile: StyleProfile(
                 name: "Default",

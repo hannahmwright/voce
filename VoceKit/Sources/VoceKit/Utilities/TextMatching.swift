@@ -111,7 +111,9 @@ public enum WordTokenizer {
         let properties = scalar.properties
         if properties.isAlphabetic { return true }
         switch properties.generalCategory {
-        case .decimalNumber, .letterNumber, .otherNumber, .nonspacingMark, .spacingMark, .enclosingMark:
+        // Private-use scalars form snippet placeholders; counting a placeholder
+        // as one word keeps ranking the same as for the trigger it replaced.
+        case .decimalNumber, .letterNumber, .otherNumber, .nonspacingMark, .spacingMark, .enclosingMark, .privateUse:
             return true
         default:
             return false

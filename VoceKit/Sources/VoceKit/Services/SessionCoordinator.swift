@@ -190,6 +190,18 @@ public actor SessionCoordinator {
         let startedAt = clock.now
         let rawTranscript = raw
 
+        // Detect snippet triggers on the raw recognizer text and swap them for
+        // opaque placeholders; expansions are inserted verbatim at the very end,
+        // so cleanup, lexicon, voice commands and cloud refinement can neither
+        // mangle the trigger nor rewrite the expansion.
+        let snippetStartedAt = clock.now
+        let protectedSnippets = await snippetService.protect(rawTranscript.text, appContext: active.appContext)
+        var protectedTranscript = rawTranscript
+        protectedTranscript.text = protectedSnippets.text
+        Self.logger.notice(
+            "Snippet detection finished in \(self.secondsSince(snippetStartedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
+
         let profileStartedAt = clock.now
         let profile = if let styleOverride {
             styleOverride
@@ -205,12 +217,13 @@ public actor SessionCoordinator {
         let cleanupResult: CleanupExecutionResult
         if skipsCleanup {
             cleanupResult = CleanupExecutionResult(
-                transcript: CleanTranscript(text: rawTranscript.text),
+                transcript: CleanTranscript(text: protectedTranscript.text),
                 outcome: CleanupOutcome(source: .localOnly)
             )
         } else {
             cleanupResult = try await prepareCleanTranscript(
-                raw: rawTranscript,
+                raw: protectedTranscript,
+                protectedSnippets: protectedSnippets,
                 profile: profile,
                 lexicon: lexicon,
                 appContext: active.appContext,
@@ -231,11 +244,7 @@ public actor SessionCoordinator {
         // Expand snippets last so expansions are inserted verbatim: cleanup would
         // otherwise flatten multi-line expansions, strip "fillers" inside them,
         // apply lexicon/voice commands to them, or let the ranker reject them.
-        let snippetStartedAt = clock.now
-        let finalText = await snippetService.apply(to: commandedText, appContext: active.appContext)
-        Self.logger.notice(
-            "Snippet expansion finished in \(self.secondsSince(snippetStartedAt, clock: clock), format: .fixed(precision: 2))s"
-        )
+        let finalText = protectedSnippets.restore(in: commandedText)
 
         Self.logger.notice(
             "Session finaliseTranscript total \(self.secondsSince(startedAt, clock: clock), format: .fixed(precision: 2))s"
@@ -270,6 +279,7 @@ public actor SessionCoordinator {
 
     private func prepareCleanTranscript(
         raw: RawTranscript,
+        protectedSnippets: SnippetProtectedText,
         profile: StyleProfile,
         lexicon: PersonalLexicon,
         appContext: AppContext,
@@ -286,12 +296,22 @@ public actor SessionCoordinator {
 
         do {
             let cleaned = try await engines.cleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            guard protectedSnippets.placeholdersAreIntact(in: cleaned.text) else {
+                // A cleanup engine (typically cloud refinement) dropped,
+                // duplicated or altered a snippet placeholder; its output can't
+                // be trusted to receive the expansions, so use local cleanup.
+                throw SnippetPlaceholderError.placeholdersNotPreserved
+            }
             return CleanupExecutionResult(
                 transcript: cleaned,
                 outcome: CleanupOutcome(source: .localSuccess)
             )
         } catch {
             var fallback = try await engines.fallbackCleanupEngine.cleanup(raw: raw, profile: profile, lexicon: lexicon)
+            if !protectedSnippets.placeholdersAreIntact(in: fallback.text) {
+                // Last resort: the uncleaned text, which holds every placeholder.
+                fallback = CleanTranscript(text: raw.text)
+            }
             let warning = "Primary cleanup unavailable, used local fallback."
             fallback.uncertaintyFlags.append(warning)
             return CleanupExecutionResult(
@@ -300,4 +320,8 @@ public actor SessionCoordinator {
             )
         }
     }
+}
+
+private enum SnippetPlaceholderError: Error {
+    case placeholdersNotPreserved
 }
