@@ -81,7 +81,7 @@ const OPENAI_BASE_URL = "https://api.openai.com";
 // the absolute expiresAt with a 5-minute lead, so the lifetime must stay far
 // above that (and above plausible Mac clock skew) or their warm-up refresh
 // loops and cached secrets break. Do not shorten without an app-side change.
-const REALTIME_CLIENT_SECRET_TTL_SECONDS = 60 * 60;
+const REALTIME_CLIENT_SECRET_TTL_SECONDS = 2 * 60 * 60;
 
 function openAIAPIKey() {
   const key = process.env.VOCE_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;

@@ -176,12 +176,12 @@ function planTierForStripeSubscription(subscription: {
     return "base";
   }
 
-  // Without an explicit plan mapping, an unrecognized subscription (for example
-  // a legacy price) keeps app access but does not get hosted cloud dictation,
-  // which costs money per minute.
+  // Backward-compatible default for legacy subscriptions that predate explicit
+  // plan mapping. Base checkouts are recognized above by their checkout price,
+  // so this only keeps unrecognized (legacy Pro) subscribers on Pro.
   if (!EXPLICIT_STRIPE_PLAN_MAPPING_CONFIGURED) {
     warnMissingStripePlanMappingOnce();
-    return "base";
+    return "pro";
   }
 
   return null;
@@ -195,7 +195,7 @@ function warnMissingStripePlanMappingOnce() {
   }
   didWarnMissingStripePlanMapping = true;
   console.warn(
-    "Stripe plan mapping is not configured; treating unrecognized active subscriptions as Base. " +
+    "Stripe plan mapping is not configured; treating unrecognized active subscriptions as Pro. " +
       "Set STRIPE_PRO_PRODUCT_IDS / STRIPE_PRO_PRICE_IDS (and the Base equivalents).",
   );
 }
