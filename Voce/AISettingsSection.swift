@@ -113,11 +113,13 @@ struct AISettingsSection: View {
                 .font(VoceDesign.heading3())
                 .foregroundStyle(VoceDesign.textPrimary)
 
-            workflowSection("Built in", workflows: preferences.ai.workflows.filter(\.isBuiltIn))
+            let workflows = displayedWorkflows
+
+            workflowSection("Built in", workflows: workflows.filter(\.isBuiltIn))
 
             workflowSection(
                 "Custom",
-                workflows: preferences.ai.workflows.filter { !$0.isBuiltIn },
+                workflows: workflows.filter { !$0.isBuiltIn },
                 showsNewButton: true
             )
         }
@@ -674,7 +676,19 @@ struct AISettingsSection: View {
         sheetMode = nil
     }
 
+    /// Workflows to list, one row per ID. Rows are keyed and edited by ID, so
+    /// a duplicated ID in stored preferences would break ForEach; show the
+    /// first occurrence (the one edits and toggles act on) without changing
+    /// the stored list.
+    private var displayedWorkflows: [AIWorkflow] {
+        var seenIDs = Set<UUID>()
+        return preferences.ai.workflows.filter { seenIDs.insert($0.id).inserted }
+    }
+
+    /// Removes only the row's workflow (the first with this ID), never every
+    /// copy of a duplicated ID.
     private func removeWorkflow(id: UUID) {
-        preferences.ai.workflows.removeAll { $0.id == id }
+        guard let index = workflowIndex(for: id) else { return }
+        preferences.ai.workflows.remove(at: index)
     }
 }
