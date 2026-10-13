@@ -724,7 +724,7 @@ struct HomeTab: View {
     }
 
     private var activityDisplayedMonthLabel: String {
-        activityMonthFormatter.string(from: activityDisplayedMonthStart)
+        Self.activityMonthFormatter.string(from: activityDisplayedMonthStart)
     }
 
     private var canNavigateActivityForward: Bool {
@@ -816,7 +816,7 @@ struct HomeTab: View {
     }
 
     private func activityTooltip(for cell: HomeActivityCell) -> String {
-        let date = activityDateFormatter.string(from: cell.date)
+        let date = Self.activityDateFormatter.string(from: cell.date)
         if !cell.isInDisplayedMonth {
             return "\(date): outside \(activityDisplayedMonthLabel)"
         }
@@ -938,18 +938,34 @@ struct HomeTab: View {
         return "\(Int(hours.rounded()))h"
     }
 
-    private var activityDateFormatter: DateFormatter {
+    // Cached: the body re-renders on every published controller change, and
+    // building a DateFormatter per row per render adds up over a day's history.
+    private static let activityDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .none
         return formatter
-    }
+    }()
 
-    private var activityMonthFormatter: DateFormatter {
+    private static let activityMonthFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "LLLL yyyy"
         return formatter
-    }
+    }()
+
+    private static let dayLabelFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private static let entryTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
 
     // MARK: - Hotkey Badge (warm color from backdrop palette)
 
@@ -1494,17 +1510,11 @@ struct HomeTab: View {
     private func dayLabel(for date: Date, calendar: Calendar) -> String {
         if calendar.isDateInToday(date) { return "Today" }
         if calendar.isDateInYesterday(date) { return "Yesterday" }
-        let formatter = DateFormatter()
-        formatter.dateStyle = .long
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
+        return Self.dayLabelFormatter.string(from: date)
     }
 
     private func absoluteTimestamp(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        return formatter.string(from: date)
+        Self.entryTimestampFormatter.string(from: date)
     }
 
     @ViewBuilder

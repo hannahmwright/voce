@@ -221,6 +221,7 @@ private enum ActiveCloudUsageMetering {
 final class DictationController: ObservableObject {
     private static let minimumVisibleEmptyTranscriptDurationMS = 3_000
     private static let directOpenAIEstimatedCostPerMinute = 0.017
+    private static let aiAvailabilityCacheSeconds: CFAbsoluteTime = 5
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "DictationController")
 
     private enum RecordingStartError: LocalizedError {
@@ -297,6 +298,7 @@ final class DictationController: ObservableObject {
     private let learningEngine = LearningEngine()
     private let completionRoutingService = CompletionRoutingService()
     private let aiGenerationService = AppleFoundationModelsService()
+    private var cachedAIAvailability: (status: AppleFoundationModelsAvailabilityStatus, checkedAt: CFAbsoluteTime)?
 
     private var recordingStateMachine = RecordingStateMachine()
     private var currentSessionID: SessionID?
@@ -1936,6 +1938,7 @@ final class DictationController: ObservableObject {
                             }
                         }
                     )
+                    activeRealtimeWhisperSession?.cancel()
                     activeRealtimeWhisperSession = session
                     try await session.start()
                 } else {
@@ -1961,6 +1964,7 @@ final class DictationController: ObservableObject {
                             }
                         }
                     )
+                    activePreviewSession?.cancel()
                     activePreviewSession = session
                     try await session.start()
                 }
@@ -1968,6 +1972,18 @@ final class DictationController: ObservableObject {
                 let sessionID = await coordinator.registerStreamingSession(appContext: capturedContext)
                 await coordinator.setHandsFreeEnabled(mode == .handsFree)
                 currentSessionID = sessionID
+
+                // A stop or streaming failure that lands while the microphone
+                // is still arming clears `activeStartTaskID` and finalises this
+                // session once the task returns. Committing recording state
+                // here would leave a phantom recording whose timer nothing
+                // invalidates, so publish the session ID and bail.
+                guard activeStartTaskID == startTaskID else {
+                    if activeStartTaskID == nil, !isRecording {
+                        screenRecordingHaze.hide()
+                    }
+                    return
+                }
 
                 status = cloudRoutingNotice(for: capturedContext)
                     ?? (mode == .handsFree ? "Hands-free listening..." : "Recording...")
@@ -1977,6 +1993,7 @@ final class DictationController: ObservableObject {
                 activeRecordingMode = mode
                 updateActiveRecordingHotkeys()
                 recordingElapsed = 0
+                recordingTimer?.invalidate()
                 recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
                         self?.recordingElapsed += 1
@@ -2159,6 +2176,9 @@ final class DictationController: ObservableObject {
         }
 
         Task {
+            var previewSession = previewSession
+            var realtimeSession = realtimeSession
+            var cloudUsageMetering = cloudUsageMetering
             var isBackgroundProcessing = false
             var processingSequence: Int?
             defer {
@@ -2190,6 +2210,16 @@ final class DictationController: ObservableObject {
                 // If stop happens while the microphone is still arming, wait
                 // only until setup either publishes a session ID or fails.
                 await pendingStart?.value
+                // Setup may have created the capture session after this stop
+                // snapshotted the (then empty) session slots.
+                if previewSession == nil, realtimeSession == nil {
+                    previewSession = activePreviewSession
+                    realtimeSession = activeRealtimeWhisperSession
+                    cloudUsageMetering = cloudUsageMetering ?? activeCloudUsageMetering
+                    activePreviewSession = nil
+                    activeRealtimeWhisperSession = nil
+                    activeCloudUsageMetering = nil
+                }
                 coordinator = self.coordinator
                 sessionID = currentSessionID
                 dictationSequence = activeDictationSequence ?? readyDictationSequence
@@ -3031,11 +3061,25 @@ final class DictationController: ObservableObject {
     }
 
     var appleIntelligenceAvailabilityText: String {
-        aiGenerationService.availabilityStatus().displayText
+        currentAIAvailability().displayText
     }
 
     var aiAvailabilityIsAvailable: Bool {
-        aiGenerationService.availabilityStatus().isAvailable
+        currentAIAvailability().isAvailable
+    }
+
+    /// Views read availability several times per history row on every render,
+    /// and each uncached read builds a `SystemLanguageModel`. A short cache
+    /// keeps renders cheap while still noticing Apple Intelligence changes.
+    private func currentAIAvailability() -> AppleFoundationModelsAvailabilityStatus {
+        let now = CFAbsoluteTimeGetCurrent()
+        if let cachedAIAvailability,
+           now - cachedAIAvailability.checkedAt < Self.aiAvailabilityCacheSeconds {
+            return cachedAIAvailability.status
+        }
+        let status = aiGenerationService.availabilityStatus()
+        cachedAIAvailability = (status, now)
+        return status
     }
 
     private var aiRuntimeEnabled: Bool {

@@ -469,7 +469,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 try await Self.ensureDrained(audioSendTask, timeoutSeconds: 10)
             } catch {
                 Self.logger.error("Timed out draining realtime audio sends; abandoning wedged connection without commit")
-                abandonWedgedRealtimeConnection()
+                abandonRealtimeConnection()
                 cleanupOutputFile(at: outputURL)
                 throw error
             }
@@ -479,6 +479,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         await pendingRollover?.value
 
         if let latestWriteError {
+            abandonRealtimeConnection()
             cleanupOutputFile(at: outputURL)
             throw latestWriteError
         }
@@ -489,6 +490,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         guard let writer = socketWriter,
               let accumulator = transcriptAccumulator,
               let activeSegmentID else {
+            abandonRealtimeConnection()
             cleanupOutputFile(at: outputURL)
             throw CloudDictationError.invalidResponse
         }
@@ -499,9 +501,19 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         Self.logger.notice(
             "RealtimeDiag: drained, committing +\(self.diagElapsedMS(), privacy: .public)ms appendedChunks=\(sentChunks, privacy: .public) appendedBytes=\(sentBytes, privacy: .public) capturedFrames=\(capturedFrames, privacy: .public) inputFrames=\(inputFrames, privacy: .public) outputFrames=\(outputFrames, privacy: .public) (~\(Self.diagAudioSeconds(fromOutputFrames: outputFrames), format: .fixed(precision: 1))s audio on wire)"
         )
-        try await writer.commit()
-        Self.logger.notice("RealtimeDiag: commit sent +\(self.diagElapsedMS(), privacy: .public)ms")
-        let activeSegmentTranscript = try await accumulator.waitForFinal(timeoutSeconds: 90)
+        let activeSegmentTranscript: String
+        do {
+            try await writer.commit()
+            Self.logger.notice("RealtimeDiag: commit sent +\(self.diagElapsedMS(), privacy: .public)ms")
+            activeSegmentTranscript = try await accumulator.waitForFinal(timeoutSeconds: 90)
+        } catch {
+            // Without this the receive loop keeps the session and its socket
+            // alive until the server closes the connection. The recovery
+            // checkpoint is separate, so clipboard recovery still works.
+            abandonRealtimeConnection()
+            cleanupOutputFile(at: outputURL)
+            throw error
+        }
         let transcript = await longFormTranscript.completeSegment(
             activeSegmentID,
             transcript: activeSegmentTranscript
@@ -571,10 +583,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
     }
 
-    /// Tears down the realtime connection after a drain timeout. The socket
-    /// cancel also unblocks the leftover sender task: its in-flight
-    /// `URLSessionWebSocketTask.send` fails once the socket dies.
-    private func abandonWedgedRealtimeConnection() {
+    /// Tears down the realtime connection when `stop()` fails, e.g. after a
+    /// drain timeout. The socket cancel also unblocks a leftover sender task:
+    /// its in-flight `URLSessionWebSocketTask.send` fails once the socket dies.
+    private func abandonRealtimeConnection() {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         receiveTask?.cancel()
