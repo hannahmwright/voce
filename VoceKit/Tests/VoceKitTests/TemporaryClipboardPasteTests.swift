@@ -318,3 +318,30 @@ func deferredStagingStagesOnce() {
     #expect(staging.transaction?.stagedChangeCount == firstChangeCount)
     #expect(pasteboard.changeCount == firstChangeCount)
 }
+
+private actor NoticeRaisingClipboard: TemporaryClipboardPasteService {
+    func setString(_ text: String) async throws {}
+
+    func performTemporaryPaste(
+        text: String,
+        paste: @escaping @Sendable () async -> AutoPasteOutcome
+    ) async throws -> AutoPasteOutcome {
+        let outcome = await paste()
+        InsertionNoticeContext.collector?.record("Previous clipboard was not restored.")
+        return outcome
+    }
+}
+
+@Test("A verified paste stays inserted and carries a clipboard notice separately")
+func verifiedPasteCarriesNoticeWithoutDowngrading() async {
+    let service = InsertionService(transports: [
+        ClipboardInsertionTransport(clipboard: NoticeRaisingClipboard()) { _ in .attempted }
+    ])
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .inserted)
+    #expect(result.errorMessage == nil)
+    #expect(result.recoveryAction == nil)
+    #expect(result.notice == "Previous clipboard was not restored.")
+}

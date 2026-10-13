@@ -14,6 +14,30 @@ public enum AutoPasteOutcome: Sendable, Equatable {
     }
 }
 
+/// Collects a non-error notice raised while a transport runs (see
+/// `InsertResult.notice`). Installed by `InsertionService` around the
+/// clipboard transport via `InsertionNoticeContext`.
+final class InsertionNoticeCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedNotice: String?
+
+    var notice: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedNotice
+    }
+
+    func record(_ notice: String) {
+        lock.lock()
+        storedNotice = notice
+        lock.unlock()
+    }
+}
+
+enum InsertionNoticeContext {
+    @TaskLocal static var collector: InsertionNoticeCollector?
+}
+
 public struct InsertionService: InsertionServiceProtocol, Sendable {
     private let transports: [any InsertionTransport]
 
@@ -54,11 +78,14 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         for transport in prioritizedTransports(for: target) {
             if let clipboardTransport = transport as? ClipboardInsertionTransport {
                 do {
-                    let outcome = try await clipboardTransport.insertAndReturnOutcome(
-                        text: text,
-                        target: target,
-                        inputTarget: inputTarget
-                    )
+                    let noticeCollector = InsertionNoticeCollector()
+                    let outcome = try await InsertionNoticeContext.$collector.withValue(noticeCollector) {
+                        try await clipboardTransport.insertAndReturnOutcome(
+                            text: text,
+                            target: target,
+                            inputTarget: inputTarget
+                        )
+                    }
                     let status: InsertionStatus
                     let errorMessage: String?
                     let recoveryAction: InsertionRecoveryAction?
@@ -84,7 +111,8 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         method: .clipboardPaste,
                         insertedText: text,
                         errorMessage: errorMessage,
-                        recoveryAction: recoveryAction
+                        recoveryAction: recoveryAction,
+                        notice: noticeCollector.notice
                     )
                 } catch {
                     failures.append(
@@ -373,10 +401,16 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         }
 
         if disposition == .transcriptKeptSnapshotTooLarge {
-            // Surfaced as unverified (copied-only + "check before pasting") so
-            // the app tells the user their previous clipboard was replaced.
-            return .unverified(
-                reason: "Voce pasted the transcript, but your previous clipboard was too large to restore, so the transcript was left on your clipboard."
+            // The paste itself was verified, so the outcome stays `.attempted`
+            // (inserted; Insert & Submit still sends Return). The replaced
+            // clipboard is reported separately as `InsertResult.notice`.
+            InsertionNoticeContext.collector?.record(
+                "Your previous clipboard was too large to restore, so the transcript was left on your clipboard."
+            )
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "clipboard_not_restored",
+                details: ["reason": "snapshot_too_large"]
             )
         }
 
