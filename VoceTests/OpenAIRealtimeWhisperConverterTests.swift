@@ -91,33 +91,50 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(outputFrames - expectedOutputFrames), 120)
     }
 
-    func testCachedConverterMatchesFreshConversionPerBuffer() throws {
-        let sourceFormat = try XCTUnwrap(AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 48_000,
-            channels: 1,
-            interleaved: false
-        ))
-        let cached = CachedPCMConverter(outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat)
+    // The capture path streams every mic buffer through one converter: the
+    // total must match the input duration and the 24 kHz output must be
+    // continuous, with no filter seam at each ~21 ms buffer edge.
+    func testRealtimeStreamingConversionIsContinuousAcrossBuffers() throws {
+        let sourceFormat = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let converter = StreamingPCMConverter(outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat)
+        var inputFrames = 0
+        var data = Data()
 
-        for _ in 0..<20 {
+        for bufferIndex in 0..<100 {
             let sourceBuffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: 1_024))
             sourceBuffer.frameLength = 1_024
-            fillSineWave(sourceBuffer)
-
-            let fresh = try XCTUnwrap(OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(sourceBuffer))
-            let reused = try XCTUnwrap(OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(
+            let channel = try XCTUnwrap(sourceBuffer.floatChannelData?[0])
+            for frame in 0..<1_024 {
+                let t = Float(bufferIndex * 1_024 + frame) / 48_000
+                channel[frame] = sin(2 * .pi * 440 * t) * 0.5
+            }
+            inputFrames += 1_024
+            if let conversion = OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(
                 sourceBuffer,
-                using: cached
-            ))
-
-            XCTAssertEqual(reused.outputFrameCount, fresh.outputFrameCount)
-            XCTAssertEqual(reused.data, fresh.data)
+                using: converter
+            ) {
+                XCTAssertEqual(conversion.data.count, conversion.outputFrameCount * 2)
+                data.append(conversion.data)
+            }
         }
+        if let tail = OpenAIRealtimeWhisperCaptureSession.realtimePCMConversion(
+            from: converter.drain(),
+            inputFrameCount: 0
+        ) {
+            data.append(tail.data)
+        }
+
+        let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        XCTAssertLessThanOrEqual(abs(samples.count - inputFrames / 2), 4)
+        // A 440 Hz sine at half scale moves at most ~1,900 per 24 kHz sample.
+        let steadyState = samples.dropFirst(256).dropLast(256).map { Int($0) }
+        let largestStep = zip(steadyState, steadyState.dropFirst()).map { abs($1 - $0) }.max() ?? 0
+        XCTAssertLessThan(largestStep, 3_000)
     }
 
-    func testCachedConverterFollowsInputFormatChange() throws {
-        let cached = CachedPCMConverter(outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat)
+    func testRealtimeStreamingConversionFollowsInputFormatChange() throws {
+        let converter = StreamingPCMConverter(outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat)
+        var outputFrames = 0
         for (sampleRate, channels) in [(48_000.0, AVAudioChannelCount(1)), (44_100.0, 2), (16_000.0, 1)] {
             let sourceFormat = try XCTUnwrap(AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
@@ -125,22 +142,24 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
                 channels: channels,
                 interleaved: false
             ))
-            let frameCount = Int(sampleRate / 10)
-            let sourceBuffer = try XCTUnwrap(AVAudioPCMBuffer(
-                pcmFormat: sourceFormat,
-                frameCapacity: AVAudioFrameCount(frameCount)
-            ))
-            sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
-            fillSineWave(sourceBuffer)
-
-            let conversion = try XCTUnwrap(OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(
-                sourceBuffer,
-                using: cached
-            ))
-
-            XCTAssertLessThanOrEqual(abs(conversion.outputFrameCount - 2_400), 1, "sampleRate=\(sampleRate)")
-            XCTAssertEqual(conversion.data.count, conversion.outputFrameCount * 2)
+            for _ in 0..<10 {
+                let frameCount = Int(sampleRate / 10)
+                let sourceBuffer = try XCTUnwrap(AVAudioPCMBuffer(
+                    pcmFormat: sourceFormat,
+                    frameCapacity: AVAudioFrameCount(frameCount)
+                ))
+                sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
+                fillSineWave(sourceBuffer)
+                outputFrames += OpenAIRealtimeWhisperCaptureSession.convertToRealtimePCMData(
+                    sourceBuffer,
+                    using: converter
+                )?.outputFrameCount ?? 0
+            }
         }
+        outputFrames += converter.drain().reduce(0) { $0 + Int($1.frameLength) }
+
+        // Three seconds of input at any rate is 72,000 frames at 24 kHz.
+        XCTAssertLessThanOrEqual(abs(outputFrames - 72_000), 12)
     }
 
     func testStreamingConverterPassesMatchingFormatThrough() throws {
