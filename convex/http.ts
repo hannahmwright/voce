@@ -819,9 +819,18 @@ http.route({
     });
     if (!verification.ok) {
       if (verification.locked) {
+        if (verification.lockReason === "hourly") {
+          return jsonResponse(
+            {
+              error: "Too many incorrect codes. Try again in about an hour.",
+              code: "too_many_incorrect_codes_hourly",
+            },
+            429,
+          );
+        }
         return jsonResponse(
           {
-            error: "Too many incorrect codes. Request a new code or try again later.",
+            error: "Too many incorrect codes. Request a new code.",
             code: "too_many_incorrect_codes",
           },
           429,
