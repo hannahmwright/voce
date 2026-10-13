@@ -24,9 +24,10 @@ enum RealtimeDictationRecoveryError: Error, LocalizedError {
     }
 }
 
-/// A durable, append-only transcript checkpoint for an active realtime
-/// dictation. Deltas are flushed as they arrive so a socket failure or app
-/// termination cannot erase everything the provider has already transcribed.
+/// A durable transcript checkpoint for an active realtime dictation. The
+/// capture session rewrites it with the combined long-form transcript as
+/// text arrives (throttled), so a socket failure or app termination cannot
+/// erase everything the provider has already transcribed.
 final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     struct PendingRecovery: Sendable {
         let url: URL
@@ -39,6 +40,7 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     private var handle: FileHandle?
     private var text = ""
     private var lastSynchronizationAt = Date.distantPast
+    private var lastRevision: UInt64 = 0
 
     init(
         directoryURL: URL = RealtimeDictationRecoveryCheckpoint.defaultDirectoryURL()
@@ -83,18 +85,31 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
         }
     }
 
-    func replace(with transcript: String) {
+    /// Replaces the checkpoint with a full transcript. When `revision` is
+    /// given, an older render never overwrites a newer one, so concurrent
+    /// writers (throttled partials, segment completion) cannot regress it.
+    /// The new text is written before the file is truncated so an
+    /// interrupted write never leaves an empty checkpoint. Without
+    /// `synchronize`, the flush to disk is throttled to once a second.
+    func replace(with transcript: String, revision: UInt64? = nil, synchronize: Bool = true) {
         lock.withLock {
+            if let revision {
+                guard revision >= lastRevision else { return }
+                lastRevision = revision
+            }
             text = transcript
             guard let data = transcript.data(using: .utf8), let handle else { return }
             do {
-                try handle.truncate(atOffset: 0)
                 try handle.seek(toOffset: 0)
                 try handle.write(contentsOf: data)
-                try handle.synchronize()
-                lastSynchronizationAt = Date()
+                try handle.truncate(atOffset: UInt64(data.count))
+                let now = Date()
+                if synchronize || now.timeIntervalSince(lastSynchronizationAt) >= 1 {
+                    try handle.synchronize()
+                    lastSynchronizationAt = now
+                }
             } catch {
-                // Keep the in-memory final transcript available for recovery.
+                // Keep the in-memory transcript available for recovery.
             }
         }
     }
@@ -225,6 +240,9 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private var rolloverTask: Task<Void, Never>?
     private let longFormTranscript = RealtimeLongFormTranscript()
     private var recoveryCheckpoint: RealtimeDictationRecoveryCheckpoint?
+    /// Coalesces transcript updates: at most ~10 partial-text callbacks and
+    /// checkpoint rewrites per second, always including the latest text.
+    private var partialTranscriptThrottle: CoalescingThrottle?
 
     // MARK: Diagnostics
     // This is intentionally narrow realtime instrumentation. It does not
@@ -303,8 +321,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
         let recoveryCheckpoint = try RealtimeDictationRecoveryCheckpoint()
+        let partialTranscriptThrottle = CoalescingThrottle(interval: 0.1) { [weak self] in
+            await self?.publishPartialTranscript()
+        }
         stateLock.withLock {
             self.recoveryCheckpoint = recoveryCheckpoint
+            self.partialTranscriptThrottle?.invalidate()
+            self.partialTranscriptThrottle = partialTranscriptThrottle
         }
 
         // Audio chunks must reach the realtime API strictly in capture order, and
@@ -509,6 +532,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             } catch {
                 Self.logger.error("Timed out draining realtime audio sends; abandoning wedged connection without commit")
                 abandonRealtimeConnection()
+                await persistRecoveryCheckpoint()
                 throw error
             }
         }
@@ -518,11 +542,13 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
         if let latestWriteError = stateLock.withLock({ latestWriteError }) {
             abandonRealtimeConnection()
+            await persistRecoveryCheckpoint()
             throw latestWriteError
         }
 
         guard let connection = stateLock.withLock({ self.connection }) else {
             abandonRealtimeConnection()
+            await persistRecoveryCheckpoint()
             throw CloudDictationError.invalidResponse
         }
 
@@ -542,13 +568,15 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             // alive until the server closes the connection. The recovery
             // checkpoint is separate, so clipboard recovery still works.
             abandonRealtimeConnection()
+            await persistRecoveryCheckpoint()
             throw error
         }
-        let transcript = await longFormTranscript.completeSegment(
+        _ = await longFormTranscript.completeSegment(
             connection.segmentID,
             transcript: activeSegmentTranscript
         )
-        stateLock.withLock { recoveryCheckpoint }?.replace(with: transcript)
+        let transcript = await persistRecoveryCheckpoint()
+        stateLock.withLock { partialTranscriptThrottle }?.invalidate()
         Self.logger.notice(
             "RealtimeDiag: final transcript received +\(self.diagElapsedMS(), privacy: .public)ms chars=\(transcript.count, privacy: .public)"
         )
@@ -585,6 +613,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             capturedDurationSeconds = 0
             captureStartedAt = nil
             lastAudibleAt = nil
+            partialTranscriptThrottle?.invalidate()
             return (rolloverTask, audioSendTask)
         }
         // A rollover in flight notices `hasStopped` after its next await and
@@ -676,6 +705,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             audioSendContinuation?.finish()
             audioSendContinuation = nil
             pendingAudio = Data()
+            partialTranscriptThrottle?.invalidate()
             return (rolloverTask, audioSendTask)
         }
         rolloverTask?.cancel()
@@ -929,25 +959,26 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         do {
             try await oldConnection.writer.commit()
             let segmentTranscript = try await oldConnection.accumulator.waitForFinal(timeoutSeconds: 90)
-            let combined = await longFormTranscript.completeSegment(
+            _ = await longFormTranscript.completeSegment(
                 oldConnection.segmentID,
                 transcript: segmentTranscript
             )
-            stateLock.withLock { recoveryCheckpoint }?.replace(with: combined)
         } catch {
             // The streamed deltas are already durable. If finalization of the
             // retired segment fails, freeze its best partial text and keep the
             // new socket recording instead of losing the entire dictation.
             let partial = await oldConnection.accumulator.snapshot()
-            let combined = await longFormTranscript.completeSegment(
+            _ = await longFormTranscript.completeSegment(
                 oldConnection.segmentID,
                 transcript: partial
             )
-            stateLock.withLock { recoveryCheckpoint }?.replace(with: combined)
             Self.logger.error(
                 "Retired realtime segment finalized from checkpoint after rollover error: \(error.localizedDescription, privacy: .public)"
             )
         }
+        // Rendered from the combined transcript, so text the new connection
+        // streamed meanwhile is kept rather than overwritten.
+        await persistRecoveryCheckpoint()
 
         oldConnection.receiveTask.cancel()
         oldConnection.socket.cancel(with: .normalClosure, reason: nil)
@@ -1095,20 +1126,16 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                     firstDeltaLogged = true
                     Self.logger.notice("RealtimeDiag: first transcript delta +\(self.diagElapsedMS(), privacy: .public)ms")
                 }
-                let partial = await accumulator.appendDelta(delta)
-                stateLock.withLock { recoveryCheckpoint }?.append(delta: delta)
-                let combinedPartial = await longFormTranscript.updatePartial(
-                    segmentID,
-                    transcript: partial
-                )
+                // Appends are O(delta). The combined transcript is rendered,
+                // published and checkpointed by the throttle, not per delta.
+                let partialCharacterCount = await accumulator.appendDelta(delta)
+                await longFormTranscript.appendPartial(segmentID, delta: delta)
                 if deltaCount <= 12 || deltaCount.isMultiple(of: 50) {
                     Self.logger.notice(
-                        "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partial.count, privacy: .public)"
+                        "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partialCharacterCount, privacy: .public)"
                     )
                 }
-                if !combinedPartial.isEmpty {
-                    onPartialText(combinedPartial)
-                }
+                stateLock.withLock { partialTranscriptThrottle }?.signal()
             }
             if type == "conversation.item.input_audio_transcription.completed",
                let transcript = payload["transcript"] as? String {
@@ -1120,14 +1147,11 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                     firstCompletedDelivered = true
                     let completedText = Self.normalizeText(transcript)
                     let finalText = await accumulator.complete(completedText)
-                    let combinedTranscript = await longFormTranscript.completeSegment(
+                    _ = await longFormTranscript.completeSegment(
                         segmentID,
                         transcript: finalText
                     )
-                    stateLock.withLock { recoveryCheckpoint }?.replace(with: combinedTranscript)
-                    if !combinedTranscript.isEmpty {
-                        onPartialText(combinedTranscript)
-                    }
+                    stateLock.withLock { partialTranscriptThrottle }?.signal()
                     Self.logger.notice(
                         "RealtimeDiag: completed event #\(completedCount, privacy: .public) delivered to accumulator; continuing receive loop for diagnostics"
                     )
@@ -1147,9 +1171,39 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             return true
         }
         guard shouldNotify else { return }
-        DispatchQueue.main.async {
-            self.onTerminalError(error)
+        // Bring the checkpoint up to date first: the controller recovers the
+        // transcript from it as soon as it handles the error.
+        Task {
+            await self.persistRecoveryCheckpoint()
+            DispatchQueue.main.async {
+                self.onTerminalError(error)
+            }
         }
+    }
+
+    /// Throttled: delivers the combined transcript to the UI and rewrites the
+    /// checkpoint without forcing a disk flush.
+    private func publishPartialTranscript() async {
+        let snapshot = await longFormTranscript.snapshot()
+        stateLock.withLock { recoveryCheckpoint }?.replace(
+            with: snapshot.text,
+            revision: snapshot.revision,
+            synchronize: false
+        )
+        if !snapshot.text.isEmpty {
+            onPartialText(snapshot.text)
+        }
+    }
+
+    /// Writes the combined transcript to the checkpoint and flushes it.
+    @discardableResult
+    private func persistRecoveryCheckpoint() async -> String {
+        let snapshot = await longFormTranscript.snapshot()
+        stateLock.withLock { recoveryCheckpoint }?.replace(
+            with: snapshot.text,
+            revision: snapshot.revision
+        )
+        return snapshot.text
     }
 
     func recoveryTranscript() -> String {
@@ -1279,6 +1333,83 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let decibels = 20 * log10(max(rms, 0.000_001))
         let clipped = max(-55, min(0, decibels))
         return Double((clipped + 55) / 55)
+    }
+}
+
+/// Runs `action` at most once per `interval` however often `signal()` is
+/// called, and always once more after the last signal, so the latest state
+/// is delivered. Runs never overlap. After `invalidate()` nothing more runs.
+final class CoalescingThrottle: @unchecked Sendable {
+    private let interval: TimeInterval
+    private let action: @Sendable () async -> Void
+    private let lock = NSLock()
+    private var isSignaled = false
+    private var isScheduled = false
+    private var isInvalidated = false
+    private var lastRunAt: ContinuousClock.Instant?
+
+    init(interval: TimeInterval, action: @escaping @Sendable () async -> Void) {
+        self.interval = interval
+        self.action = action
+    }
+
+    func signal() {
+        let delay = lock.withLock { () -> TimeInterval? in
+            guard !isInvalidated else { return nil }
+            isSignaled = true
+            guard !isScheduled else { return nil }
+            isScheduled = true
+            return remainingDelay()
+        }
+        if let delay {
+            schedule(after: delay)
+        }
+    }
+
+    func invalidate() {
+        lock.withLock { isInvalidated = true }
+    }
+
+    /// Must be called with `lock` held.
+    private func remainingDelay() -> TimeInterval {
+        guard let lastRunAt else { return 0 }
+        let elapsed = lastRunAt.duration(to: ContinuousClock().now)
+        let elapsedSeconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+        return max(0, interval - elapsedSeconds)
+    }
+
+    private func schedule(after delay: TimeInterval) {
+        Task {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            await self.run()
+        }
+    }
+
+    private func run() async {
+        let shouldRun = lock.withLock { () -> Bool in
+            guard !isInvalidated else {
+                isScheduled = false
+                return false
+            }
+            isSignaled = false
+            lastRunAt = ContinuousClock().now
+            return true
+        }
+        guard shouldRun else { return }
+        await action()
+        let nextDelay = lock.withLock { () -> TimeInterval? in
+            guard isSignaled, !isInvalidated else {
+                isScheduled = false
+                return nil
+            }
+            return remainingDelay()
+        }
+        if let nextDelay {
+            schedule(after: nextDelay)
+        }
     }
 }
 
@@ -1486,6 +1617,12 @@ private actor RealtimeAudioRouter {
 }
 
 actor RealtimeLongFormTranscript {
+    struct Snapshot: Sendable {
+        let text: String
+        /// Increases with every change, so writers can drop stale renders.
+        let revision: UInt64
+    }
+
     private struct Segment {
         var partial = ""
         var completed: String?
@@ -1493,21 +1630,25 @@ actor RealtimeLongFormTranscript {
 
     private var order: [UUID] = []
     private var segments: [UUID: Segment] = [:]
+    private var revision: UInt64 = 0
 
     func reset() {
         order.removeAll(keepingCapacity: true)
         segments.removeAll(keepingCapacity: true)
+        revision &+= 1
     }
 
     func registerSegment(_ id: UUID) {
         guard segments[id] == nil else { return }
         order.append(id)
         segments[id] = Segment()
+        revision &+= 1
     }
 
     func removeSegment(_ id: UUID) {
         order.removeAll { $0 == id }
         segments[id] = nil
+        revision &+= 1
     }
 
     func updatePartial(_ id: UUID, transcript: String) -> String {
@@ -1516,7 +1657,19 @@ actor RealtimeLongFormTranscript {
         }
         segment.partial = transcript
         segments[id] = segment
+        revision &+= 1
         return renderedTranscript()
+    }
+
+    /// Appends a streamed delta in place (no copy of the running text).
+    func appendPartial(_ id: UUID, delta: String) {
+        guard let segment = segments[id], segment.completed == nil else { return }
+        segments[id]?.partial.append(delta)
+        revision &+= 1
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(text: renderedTranscript(), revision: revision)
     }
 
     func completeSegment(_ id: UUID, transcript: String) -> String {
@@ -1531,6 +1684,7 @@ actor RealtimeLongFormTranscript {
             segment.completed = completed
             segment.partial = completed
             segments[id] = segment
+            revision &+= 1
         }
         return renderedTranscript()
     }
@@ -1575,12 +1729,17 @@ private actor RealtimeWebSocketWriter {
 
 private actor RealtimeTranscriptAccumulator {
     private var partialText = ""
+    private var partialCharacterCount = 0
     private var result: Result<String, Error>?
     private var continuation: CheckedContinuation<Result<String, Error>, Never>?
 
-    func appendDelta(_ delta: String) -> String {
+    /// Returns the running character count; re-normalizing the whole partial
+    /// text on every delta made long dictations quadratic.
+    @discardableResult
+    func appendDelta(_ delta: String) -> Int {
         partialText += delta
-        return OpenAIRealtimeWhisperCaptureSession.normalizeText(partialText)
+        partialCharacterCount += delta.count
+        return partialCharacterCount
     }
 
     @discardableResult

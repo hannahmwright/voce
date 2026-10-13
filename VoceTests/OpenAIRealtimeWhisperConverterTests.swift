@@ -270,6 +270,73 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         XCTAssertEqual(combined, "The first session continues seamlessly.")
     }
 
+    func testRecoveryCheckpointIgnoresStaleRevisionsAndTruncatesShorterText() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voce-recovery-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let checkpoint = try RealtimeDictationRecoveryCheckpoint(directoryURL: directory)
+        checkpoint.replace(with: "A much longer partial transcript", revision: 2, synchronize: false)
+        checkpoint.replace(with: "Older render", revision: 1, synchronize: false)
+        XCTAssertEqual(checkpoint.snapshot(), "A much longer partial transcript")
+
+        checkpoint.replace(with: "Final text.", revision: 3)
+        checkpoint.preserveForNextLaunch()
+
+        let recoveries = RealtimeDictationRecoveryCheckpoint.pendingRecoveries(directoryURL: directory)
+        XCTAssertEqual(recoveries.first?.text, "Final text.")
+    }
+
+    // A delta from the new connection that lands while the retired segment is
+    // being completed must survive in the combined transcript (and so in the
+    // checkpoint rendered from it).
+    func testLongFormSnapshotKeepsNewSegmentDeltasWhileRetiredSegmentCompletes() async {
+        let transcript = RealtimeLongFormTranscript()
+        let retired = UUID()
+        let active = UUID()
+
+        await transcript.registerSegment(retired)
+        await transcript.appendPartial(retired, delta: "First half ")
+        await transcript.appendPartial(retired, delta: "of the dictation")
+        await transcript.registerSegment(active)
+        await transcript.appendPartial(active, delta: "second half")
+        let beforeCompletion = await transcript.snapshot()
+        _ = await transcript.completeSegment(retired, transcript: "First half of the dictation.")
+        await transcript.appendPartial(retired, delta: " ignored after completion")
+        await transcript.appendPartial(active, delta: " continues")
+        let snapshot = await transcript.snapshot()
+
+        XCTAssertEqual(snapshot.text, "First half of the dictation. second half continues")
+        XCTAssertGreaterThan(snapshot.revision, beforeCompletion.revision)
+    }
+
+    func testCoalescingThrottleLimitsRunsAndDeliversLatestValue() async throws {
+        let box = ThrottleTestBox()
+        let throttle = CoalescingThrottle(interval: 0.05) {
+            box.recordRun()
+        }
+
+        for value in 1...200 {
+            box.set(value)
+            throttle.signal()
+            if value.isMultiple(of: 20) {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        let (runs, lastSeen) = box.result()
+        XCTAssertEqual(lastSeen, 200)
+        XCTAssertGreaterThan(runs, 0)
+        XCTAssertLessThan(runs, 20)
+
+        throttle.invalidate()
+        box.set(201)
+        throttle.signal()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(box.result().lastSeen, 200)
+    }
+
     func testRolloverFailsFastOnCredentialAndQuotaErrors() {
         let nonRetryable: [Error] = [
             CloudDictationError.missingAPIKey,
@@ -308,5 +375,27 @@ final class OpenAIRealtimeWhisperConverterTests: XCTestCase {
         for frame in 0..<Int(buffer.frameLength) {
             channel[frame] = sin(2 * .pi * 440 * Float(frame) / sampleRate) * 0.2
         }
+    }
+}
+
+private final class ThrottleTestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    private var runs = 0
+    private var lastSeen = 0
+
+    func set(_ newValue: Int) {
+        lock.withLock { value = newValue }
+    }
+
+    func recordRun() {
+        lock.withLock {
+            runs += 1
+            lastSeen = value
+        }
+    }
+
+    func result() -> (runs: Int, lastSeen: Int) {
+        lock.withLock { (runs, lastSeen) }
     }
 }
