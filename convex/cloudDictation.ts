@@ -92,7 +92,24 @@ function transcriptionModel() {
 }
 
 function realtimeTranscriptionModel() {
-  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-live-transcribe";
+  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? DEFAULT_REALTIME_TRANSCRIPTION_MODEL;
+}
+
+// The Mac app requests the default realtime model unless a developer overrides it,
+// so only the default and the server-configured model may be requested.
+const DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-live-transcribe";
+
+function resolvedRealtimeTranscriptionModel(requestedModel: string | undefined) {
+  const serverModel = realtimeTranscriptionModel();
+  const model = requestedModel?.trim();
+  if (!model) {
+    return serverModel;
+  }
+  if (model === serverModel || model === DEFAULT_REALTIME_TRANSCRIPTION_MODEL) {
+    return model;
+  }
+  console.warn("ignoring unsupported realtime transcription model", { requestedModel: model });
+  return serverModel;
 }
 
 function refinementModel() {
@@ -448,7 +465,7 @@ export async function createRealtimeTranscriptionSession(args: {
   hints: string[];
   model?: string;
 }) {
-  const model = args.model?.trim() || realtimeTranscriptionModel();
+  const model = resolvedRealtimeTranscriptionModel(args.model);
   const response = await openAIRealtimeTranscriptionSessionRequest({
     expires_after: {
       anchor: "created_at",
