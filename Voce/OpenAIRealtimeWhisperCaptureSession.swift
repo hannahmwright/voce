@@ -179,6 +179,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// appends (24 kHz mono Int16) cuts websocket messages, JSON encoding and
     /// base64 work about fivefold while adding at most ~100 ms of latency.
     static let audioAppendBatchBytes = 4_800
+    /// Upper bound for the websocket handshake, `session.update` and its
+    /// acknowledgement together. Mic audio captured meanwhile is buffered,
+    /// so this also bounds the local backlog while arming.
+    static let connectionHandshakeTimeoutSeconds: TimeInterval = 10
 
     private let session: URLSession
     private let authTokenProvider: @Sendable (_ forceRefresh: Bool) async throws -> String
@@ -774,9 +778,22 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             }
         }
 
+        // One deadline covers the whole handshake. `sendSessionUpdate` first
+        // waits for the websocket upgrade, which is otherwise bounded only by
+        // the request's 90-second timeout, so a readiness timeout that starts
+        // afterwards cannot bound arming. Cancelling the socket at the
+        // deadline fails a pending send immediately.
+        let handshakeDeadline = Task { [socket, sessionReadiness] in
+            let deadline = UInt64(Self.connectionHandshakeTimeoutSeconds * 1_000_000_000)
+            guard (try? await Task.sleep(nanoseconds: deadline)) != nil else { return }
+            await sessionReadiness.fail(CloudDictationError.timedOut)
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+        defer { handshakeDeadline.cancel() }
+
         do {
             try await sendSessionUpdate(writer: writer)
-            try await sessionReadiness.waitUntilReady(timeoutSeconds: 5)
+            try await sessionReadiness.waitUntilReady(timeoutSeconds: Self.connectionHandshakeTimeoutSeconds)
             return RealtimeConnection(
                 segmentID: segmentID,
                 socket: socket,
@@ -788,7 +805,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             receiveTask.cancel()
             socket.cancel(with: .goingAway, reason: nil)
             await longFormTranscript.removeSegment(segmentID)
-            throw Self.connectionError(for: socket, underlying: error)
+            // Prefer the readiness failure: it carries the deadline timeout or
+            // the receive loop's error rather than the cancelled send.
+            let failure = await sessionReadiness.failure ?? error
+            throw Self.connectionError(for: socket, underlying: failure)
         }
     }
 
@@ -1289,6 +1309,11 @@ private actor RealtimeSessionReadiness {
 
     func fail(_ error: Error) {
         complete(.failure(error))
+    }
+
+    var failure: Error? {
+        guard case .failure(let error) = result else { return nil }
+        return error
     }
 
     func waitUntilReady(timeoutSeconds: TimeInterval) async throws {
