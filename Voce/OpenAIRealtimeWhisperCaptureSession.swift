@@ -1053,11 +1053,12 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             guard !Task.isCancelled, !isStopped else {
                 throw CancellationError()
             }
-            // Speech may have resumed during the handshake, so briefly
-            // re-align with a pause, then make sure the replacement is still
-            // open before routing audio to it. An unhealthy replacement is
-            // discarded and retried while the old connection keeps recording.
-            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 5)
+            // Speech may have resumed during the handshake, so wait for the
+            // next pause again (bounded well inside the 60-minute cap), then
+            // make sure the replacement is still open before routing audio to
+            // it. An unhealthy replacement is discarded and retried while the
+            // old connection keeps recording.
+            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 45)
             guard await newConnection.isHealthy() else {
                 throw CloudDictationError.networkUnavailable
             }
