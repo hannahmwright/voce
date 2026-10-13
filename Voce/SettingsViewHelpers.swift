@@ -1879,33 +1879,83 @@ private extension PressToTalkHotkey.Modifier {
 /// Home and the Settings app pickers used to call
 /// `NSWorkspace.urlForApplication`, read the app bundle and load its icon from
 /// disk for every row on every render — including inside sort comparators and
-/// for icons that were hidden until hover. Results (including "not installed")
-/// are cached for the life of the process.
+/// for icons that were hidden until hover. Entries for an app are dropped
+/// when it launches or quits (it may have been installed, moved or updated),
+/// and "not installed" results expire after a minute.
 @MainActor
 enum AppMetadataCache {
     private static var urlsByBundleID: [String: URL?] = [:]
+    private static var negativeLookupDates: [String: Date] = [:]
     private static var bundleNamesByBundleID: [String: String] = [:]
     private static var fileNamesByBundleID: [String: String] = [:]
     private static var iconsByKey: [String: NSImage?] = [:]
+    private static var workspaceObservers: [NSObjectProtocol] = []
+    private static let negativeEntryLifetime: TimeInterval = 60
 
+    /// Every other lookup goes through this first, so an expired or
+    /// invalidated URL also drops the names and icons derived from it.
     static func applicationURL(for bundleID: String) -> URL? {
         guard !bundleID.isEmpty else { return nil }
+        observeWorkspaceIfNeeded()
+
         if let cached = urlsByBundleID[bundleID] {
-            return cached
+            if let url = cached {
+                return url
+            }
+            if let checkedAt = negativeLookupDates[bundleID],
+               Date().timeIntervalSince(checkedAt) < negativeEntryLifetime {
+                return nil
+            }
+            invalidate(bundleID)
         }
+
         let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
         urlsByBundleID[bundleID] = url
+        negativeLookupDates[bundleID] = url == nil ? Date() : nil
         return url
+    }
+
+    private static func invalidate(_ bundleID: String) {
+        urlsByBundleID.removeValue(forKey: bundleID)
+        negativeLookupDates.removeValue(forKey: bundleID)
+        bundleNamesByBundleID.removeValue(forKey: bundleID)
+        fileNamesByBundleID.removeValue(forKey: bundleID)
+        let iconKeyPrefix = "\(bundleID)#"
+        iconsByKey = iconsByKey.filter { !$0.key.hasPrefix(iconKeyPrefix) }
+    }
+
+    private static func invalidateNegativeEntries() {
+        for bundleID in Array(negativeLookupDates.keys) {
+            invalidate(bundleID)
+        }
+    }
+
+    private static func observeWorkspaceIfNeeded() {
+        guard workspaceObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { notification in
+                let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let bundleID = app?.bundleIdentifier
+                MainActor.assumeIsolated {
+                    if let bundleID {
+                        invalidate(bundleID)
+                    }
+                    invalidateNegativeEntries()
+                }
+            })
+        }
     }
 
     /// The app's CFBundleName (e.g. "Code"), falling back to the capitalized
     /// last bundle-ID component. Used by the Settings app lists.
     static func bundleName(for bundleID: String) -> String {
+        let url = applicationURL(for: bundleID)
         if let cached = bundleNamesByBundleID[bundleID] {
             return cached
         }
         let name: String
-        if let url = applicationURL(for: bundleID),
+        if let url,
            let bundle = Bundle(url: url),
            let bundleName = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String {
             name = bundleName
@@ -1920,11 +1970,12 @@ enum AppMetadataCache {
     /// falling back to the last bundle-ID component. Used by Home.
     static func fileName(for bundleID: String) -> String {
         guard !bundleID.isEmpty else { return "Unknown" }
+        let url = applicationURL(for: bundleID)
         if let cached = fileNamesByBundleID[bundleID] {
             return cached
         }
         let name: String
-        if let url = applicationURL(for: bundleID) {
+        if let url {
             name = url.deletingPathExtension().lastPathComponent
         } else {
             name = bundleID.components(separatedBy: ".").last ?? bundleID
@@ -1934,12 +1985,13 @@ enum AppMetadataCache {
     }
 
     static func icon(for bundleID: String, size: CGFloat) -> NSImage? {
+        let url = applicationURL(for: bundleID)
         let key = "\(bundleID)#\(size)"
         if let cached = iconsByKey[key] {
             return cached
         }
         var icon: NSImage?
-        if let url = applicationURL(for: bundleID) {
+        if let url {
             let image = NSWorkspace.shared.icon(forFile: url.path)
             image.size = NSSize(width: size, height: size)
             icon = image
