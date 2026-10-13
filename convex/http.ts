@@ -34,6 +34,8 @@ const MAX_HINT_CHARS = 200;
 const MAX_DICTIONARY_ENTRIES = 1000;
 const MAX_DICTIONARY_FIELD_CHARS = 500;
 const MAX_SUPPORT_DIAGNOSTICS_CHARS = 200_000;
+// One dictation is reported per call; nothing legitimate is longer than this.
+const MAX_USAGE_SECONDS_PER_REPORT = 4 * 60 * 60;
 const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 // Refuse to mint a realtime client secret when less hosted time than this is left.
 const MIN_HOSTED_SECONDS_FOR_REALTIME_SESSION = 30;
@@ -901,7 +903,7 @@ http.route({
     const entitlement = await ctx.runMutation(internal.entitlements.recordUsage, {
       email,
       feature: body.feature ?? DEFAULT_FEATURE,
-      seconds: body.seconds,
+      seconds: Math.min(body.seconds, MAX_USAGE_SECONDS_PER_REPORT),
     });
     return jsonResponse(entitlement);
   }),
