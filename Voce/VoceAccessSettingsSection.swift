@@ -54,6 +54,12 @@ struct VoceAccessSettingsSection: View {
             .onDisappear {
                 commitEmailDraftIfComplete()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .voceFlushPendingPreferenceDrafts)) { _ in
+                commitEmailDraftIfComplete()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                commitEmailDraftIfComplete()
+            }
     }
 
     private var accessCard: some View {
@@ -205,7 +211,7 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         proButtonTitle,
                         systemImage: "cloud.fill",
-                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isEnabled: !savedSubscriberEmail.isEmpty,
                         isProminent: true,
                         action: { commitEmailDraft(); onSubscribePro(selectedBillingCycle) }
                     )
@@ -215,7 +221,7 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         baseButtonTitle,
                         systemImage: "mic.fill",
-                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isEnabled: !savedSubscriberEmail.isEmpty,
                         isProminent: false,
                         action: { commitEmailDraft(); onSubscribeBase(selectedBillingCycle) }
                     )
@@ -223,7 +229,7 @@ struct VoceAccessSettingsSection: View {
                     accessButton(
                         proButtonTitle,
                         systemImage: "cloud.fill",
-                        isEnabled: !normalizedSubscriberEmail.isEmpty,
+                        isEnabled: !savedSubscriberEmail.isEmpty,
                         isProminent: true,
                         action: { commitEmailDraft(); onSubscribePro(selectedBillingCycle) }
                     )
@@ -398,6 +404,12 @@ struct VoceAccessSettingsSection: View {
         Self.normalizedEmail(emailDraft)
     }
 
+    /// The stored email. Checkout uses this, so the Subscribe buttons follow it
+    /// rather than an unsaved draft.
+    private var savedSubscriberEmail: String {
+        Self.normalizedEmail(preferences.billing.subscriberEmail)
+    }
+
     private static func normalizedEmail(_ raw: String) -> String {
         raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
@@ -406,8 +418,13 @@ struct VoceAccessSettingsSection: View {
     /// submit, blur, and before any action that relies on the saved email.
     private func commitEmailDraft() {
         let email = normalizedSubscriberEmail
-        guard email != Self.normalizedEmail(preferences.billing.subscriberEmail) else { return }
-        onSaveEmail(email)
+        if email != savedSubscriberEmail {
+            onSaveEmail(email)
+        }
+        // Show what was saved (trimmed, lowercased), not the typed casing.
+        if emailDraft != email {
+            emailDraft = email
+        }
     }
 
     /// Leaving Settings mid-edit saves a complete-looking address (the user
