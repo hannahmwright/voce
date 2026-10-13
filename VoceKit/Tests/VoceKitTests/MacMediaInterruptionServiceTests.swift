@@ -2786,4 +2786,36 @@ func audibleWebKitHelperAttributedToSafariWhileSafariIsRunning() async {
     #expect(await safari.pauseCalls == 1)
     #expect(keyRecorder.sendCalls == 0)
 }
+@MainActor
+@Test("A new interruption does not inherit the pause when the owner was resumed manually")
+func newInterruptionDetectsAfreshWhenOwnerResumedManually() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([], fallbackState: .paused)
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying, .playing, .notPlaying],
+        fallback: .notPlaying,
+        fallbackDisplayID: MediaDisplayID.spotify
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        // The user resumed Spotify during the first dictation: it is audible.
+        audibleProcessBundleIDs: { ["com.spotify.client"] },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    let secondToken = await service.beginInterruption()
+    #expect(secondToken != nil)
+    #expect(detector.detectCalls == 4, "An audible owner must trigger fresh detection instead of inheriting.")
+    #expect(await spotify.pauseCalls == 2, "Manually resumed media must be paused for the new dictation.")
+}
 #endif

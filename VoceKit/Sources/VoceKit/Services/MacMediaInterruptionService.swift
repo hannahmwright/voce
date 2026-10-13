@@ -377,9 +377,21 @@ public final class MacMediaInterruptionService: MediaInterruptionService {
         if let pendingResumeTask {
             pendingResumeTask.cancel()
             self.pendingResumeTask = nil
-            let canInheritPause = resumeAttemptID != nil
+            var canInheritPause = resumeAttemptID != nil
                 && !resumeCommandIssued
                 && interruptedPlaybackResumeStrategy != nil
+            if canInheritPause,
+               let owner = interruptedPlaybackOwnerForResume,
+               let audibleNow = audibleProcessBundleIDs(),
+               Self.ownerIsAudible(owner, in: audibleNow) {
+                // The user resumed the media themselves during the previous
+                // dictation. It is playing now, so inheriting the old pause
+                // would leave it playing through this dictation; detect afresh.
+                Self.logger.notice(
+                    "Media interruption not inheriting pending-resume pause because \(owner.logValue, privacy: .public) is audible."
+                )
+                canInheritPause = false
+            }
             resumeAttemptID = nil
             resumeCommandIssued = false
             if canInheritPause {
