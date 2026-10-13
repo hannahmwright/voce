@@ -2,6 +2,9 @@ import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 
 const MAX_CODE_ATTEMPTS = 5;
+// lastSeenAt is informational; refreshing it at most hourly avoids a database
+// write on every authenticated request.
+export const SESSION_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_CODES_TO_INVALIDATE = 25;
 
 function normalizeEmail(email: string) {
@@ -186,6 +189,10 @@ export const touchSession = internalMutation({
     if (!session) {
       return;
     }
-    await ctx.db.patch(session._id, { lastSeenAt: Date.now() });
+    const now = Date.now();
+    if (now - session.lastSeenAt < SESSION_TOUCH_INTERVAL_MS) {
+      return;
+    }
+    await ctx.db.patch(session._id, { lastSeenAt: now });
   },
 });

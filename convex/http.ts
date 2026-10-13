@@ -3,6 +3,7 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import Stripe from "stripe";
 import { APP_ACCESS_FEATURE, CLOUD_DICTATION_FEATURE } from "./entitlements";
+import { SESSION_TOUCH_INTERVAL_MS } from "./auth";
 import {
   CloudDictationProviderError,
   createRealtimeTranscriptionSession,
@@ -406,7 +407,9 @@ async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: 
     return null;
   }
 
-  await ctx.runMutation(internal.auth.touchSession, { tokenHash: hash });
+  if (Date.now() - session.lastSeenAt >= SESSION_TOUCH_INTERVAL_MS) {
+    await ctx.runMutation(internal.auth.touchSession, { tokenHash: hash });
+  }
   return email;
 }
 
