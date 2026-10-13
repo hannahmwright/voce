@@ -2160,7 +2160,7 @@ func settingsAppIconView(for bundleID: String, size: CGFloat = 16) -> some View 
 ///
 /// "Use current app" in the per-app override pickers read
 /// `NSWorkspace.frontmostApplication`, but Voce is frontmost while the user
-/// clicks it, so the picker chose Voce itself. Started from ContentView at
+/// clicks it, so the picker chose Voce itself. Started from the app delegate at
 /// launch so the app the user came from is already known.
 @MainActor
 enum ExternalFrontmostAppTracker {

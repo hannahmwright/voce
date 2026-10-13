@@ -86,6 +86,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Track app switches from launch: Settings opened from the menu bar
+        // makes Voce frontmost before any window's onAppear runs.
+        ExternalFrontmostAppTracker.startIfNeeded()
         installWindowObservers()
 
         // Delay slightly so the window is fully created before configuring transparency
