@@ -97,7 +97,6 @@ public enum ProcessRunner {
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProcessExecutionResult, Error>) in
-                state.prepare(continuation: continuation)
                 process.terminationHandler = { _ in
                     // Disable streaming handlers first, then drain remaining bytes.
                     outputPipe?.fileHandleForReading.readabilityHandler = nil
@@ -119,10 +118,17 @@ public enum ProcessRunner {
                     )
                 }
 
-                do {
+                // Stores the continuation and launches the process atomically with
+                // respect to cancellation. If the task was already cancelled (the
+                // cancellation handler runs before this body in that case), the
+                // continuation is resumed with CancellationError and the process
+                // is never launched.
+                let launched = state.launch(continuation: continuation) {
                     try process.run()
-                } catch {
-                    state.fail(error)
+                }
+                if !launched {
+                    outputPipe?.fileHandleForReading.readabilityHandler = nil
+                    errorPipe?.fileHandleForReading.readabilityHandler = nil
                 }
             }
         } onCancel: {
@@ -161,10 +167,35 @@ private final class ProcessRunState: @unchecked Sendable {
         self.process = process
     }
 
-    func prepare(continuation: CheckedContinuation<ProcessExecutionResult, Error>) {
+    /// Stores `continuation` and runs `launchProcess` while holding the lock, so a
+    /// concurrent `cancel()` either observes the stored continuation and running
+    /// process, or happens entirely before and prevents the launch. Every path
+    /// resumes `continuation` exactly once (here, in `finish`, or in `cancel`).
+    /// Returns whether the process was launched.
+    func launch(
+        continuation: CheckedContinuation<ProcessExecutionResult, Error>,
+        launchProcess: () throws -> Void
+    ) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
+        if wasCancelled || hasFinished {
+            hasFinished = true
+            lock.unlock()
+            // Resume outside lock. See withTaskCancellationHandler lock guidance.
+            continuation.resume(throwing: CancellationError())
+            return false
+        }
         self.continuation = continuation
+        do {
+            try launchProcess()
+            lock.unlock()
+            return true
+        } catch {
+            hasFinished = true
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(throwing: error)
+            return false
+        }
     }
 
     func finish(terminationStatus: Int32, standardOutput: Data, standardError: Data) {
@@ -192,19 +223,6 @@ private final class ProcessRunState: @unchecked Sendable {
                 standardError: standardError
             )
         )
-    }
-
-    func fail(_ error: Error) {
-        lock.lock()
-        guard !hasFinished, let continuation else {
-            lock.unlock()
-            return
-        }
-        hasFinished = true
-        self.continuation = nil
-        lock.unlock()
-        // Resume outside lock. See withTaskCancellationHandler lock guidance.
-        continuation.resume(throwing: error)
     }
 
     func cancel() {
