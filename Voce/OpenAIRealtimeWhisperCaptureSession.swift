@@ -207,10 +207,10 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// background tasks (`stop()`, rollover), so never read or write them
     /// without it, and never hold it across an `await`.
     private let stateLock = NSLock()
-    /// Serializes engine setup and teardown (tap install and removal, the
-    /// initial start, stop). A restart after an input device change calls
-    /// `engine.start()` outside it. Lock order: `engineLock` before
-    /// `stateLock`. The audio tap never takes it.
+    /// Serializes every engine call (tap install and removal, start, restart
+    /// after an input device change, stop) so the engine is never used from
+    /// two threads at once. Lock order: `engineLock` before `stateLock`. The
+    /// audio tap never takes it, and the restart path never waits on main.
     private let engineLock = NSLock()
     private let engineConfigurationQueue = DispatchQueue(
         label: "io.voceapp.voce.realtime-capture.engine-configuration"
@@ -755,15 +755,18 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
 
     /// Restarts capture with the new input format after the engine stopped
     /// itself for a configuration change. Per-buffer conversion
-    /// already adapts to a new format. The tap is reinstalled under
-    /// `engineLock`, but `engine.start()` (which can take seconds on
-    /// Bluetooth) runs outside it so `stop()` and `cancel()` never wait on a
-    /// restart; if they tore the engine down meanwhile, it is stopped again.
+    /// already adapts to a new format.
     /// If the input never comes back, capture ends but the session stays
     /// finalizable: `stop()` still delivers what was captured, and a later
     /// configuration change (the device returning) restarts capture.
     private func restartEngineAfterConfigurationChange(generation: UInt64, attempt: Int) {
-        let prepared = engineLock.withLock { () -> Result<AVAudioEngine, Error>? in
+        // Holding `engineLock` across `engine.start()` means `stop()` or
+        // `cancel()` may wait (rarely, only after a device change) for a slow
+        // Bluetooth start, but the engine is never touched from two threads
+        // at once. This runs on `engineConfigurationQueue` and never waits on
+        // the main thread, and the tap never takes the lock, so it cannot
+        // deadlock.
+        let result = engineLock.withLock { () -> Result<Void, Error>? in
             let engine = stateLock.withLock { () -> AVAudioEngine? in
                 guard !hasStopped, engineRestartGeneration == generation else { return nil }
                 return audioEngine
@@ -773,36 +776,23 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             do {
                 _ = try installCaptureTap(on: engine)
                 engine.prepare()
-                return .success(engine)
+                try engine.start()
+                return .success(())
             } catch {
                 engine.inputNode.removeTap(onBus: 0)
+                engine.stop()
                 return .failure(error)
             }
         }
 
         let failure: Error?
-        switch prepared {
+        switch result {
         case .none:
             return
+        case .success:
+            failure = nil
         case .failure(let error):
             failure = error
-        case .success(let engine):
-            var startError: Error?
-            do {
-                try engine.start()
-            } catch {
-                startError = error
-            }
-            let isCurrent = engineLock.withLock { () -> Bool in
-                let isCurrent = stateLock.withLock { !hasStopped && audioEngine === engine }
-                if !isCurrent || startError != nil {
-                    engine.inputNode.removeTap(onBus: 0)
-                    engine.stop()
-                }
-                return isCurrent
-            }
-            guard isCurrent else { return }
-            failure = startError
         }
 
         guard let failure else {
