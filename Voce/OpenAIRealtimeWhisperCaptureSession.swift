@@ -738,7 +738,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // A zero rate or channel count means there is no usable input device;
         // installing a tap with it raises an Objective-C exception.
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw AppleSpeechPreviewError.audioInputUnavailable
+            throw AppleSpeechPreviewError.noInputDevice
         }
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             self?.handleCapturedBuffer(buffer)

@@ -8,7 +8,7 @@ enum AppleSpeechPreviewError: Error, LocalizedError {
     case failedToStartAudioEngine
     case audioWriteFailed(String)
     case missingOutputFile
-    case audioInputUnavailable
+    case noInputDevice
 
     var errorDescription: String? {
         switch self {
@@ -20,8 +20,8 @@ enum AppleSpeechPreviewError: Error, LocalizedError {
             return "Recording failed while writing audio: \(details)"
         case .missingOutputFile:
             return "Recording finished without a captured audio file."
-        case .audioInputUnavailable:
-            return "Recording stopped because the microphone changed or became unavailable."
+        case .noInputDevice:
+            return "No microphone is available."
         }
     }
 }
@@ -94,6 +94,9 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw AppleSpeechPreviewError.noInputDevice
+        }
         let outputURL = Self.makeOutputURL()
 
         let audioFile: AVAudioFile
@@ -259,7 +262,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         // A zero rate or channel count means there is no usable input device;
         // installing a tap with it raises an Objective-C exception.
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw AppleSpeechPreviewError.audioInputUnavailable
+            throw AppleSpeechPreviewError.noInputDevice
         }
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             self?.handleCapturedBuffer(buffer)
