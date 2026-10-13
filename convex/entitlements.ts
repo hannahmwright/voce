@@ -454,10 +454,8 @@ export const recordUsage = internalMutation({
     }
 
     if (isAuditOnlyFeature(feature)) {
-      const entitlement = await entitlementFor(ctx, email, DEFAULT_FEATURE);
-      if (!entitlement.entitled) {
-        return entitlement;
-      }
+      // Audit counters only measure dictation volume and never gate access, so
+      // record them whether or not the user is currently entitled.
       await addUsageSeconds(ctx, email, feature, seconds, now);
       if (feature !== TOTAL_DICTATION_FEATURE) {
         await addUsageSeconds(ctx, email, TOTAL_DICTATION_FEATURE, seconds, now);
