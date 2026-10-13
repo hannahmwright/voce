@@ -31,8 +31,11 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             lexicon: lexicon
         )
         let ranker = LocalCleanupRanker(wordFrequencies: wordFrequencies)
+        // Score against the lexicon-corrected raw text so a correction that
+        // merges words ("open ai" → "OpenAI") is not counted as dropped content.
+        let lexiconCorrectedRaw = applyLexicon(text: normalizedRaw.text, lexicon: lexicon).text
         let best = ranker.bestCandidate(
-            rawText: normalizedRaw.text,
+            rawText: lexiconCorrectedRaw,
             candidates: candidates,
             profile: profile
         )
