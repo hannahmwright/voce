@@ -17,6 +17,9 @@ public enum HistoryStoreError: Error, LocalizedError {
 public actor HistoryStore: HistoryStoreProtocol {
     private var entries: [TranscriptEntry] = []
     private var hasLoaded = false
+    /// Set when an unreadable history file could not be preserved; persisting
+    /// would then destroy it, so writes fail instead.
+    private var isPersistenceBlocked = false
     private var hasPreparedStorageDirectory = false
     private let storageURL: URL
     private let clipboardService: ClipboardService
@@ -36,9 +39,19 @@ public actor HistoryStore: HistoryStoreProtocol {
         guard !hasLoaded else { return }
         hasLoaded = true
         do {
-            entries = try Self.loadEntries(from: storageURL)
+            let report = LossyDecodingReport()
+            entries = try Self.loadEntries(from: storageURL, report: report)
+            if report.skippedValueCount > 0 {
+                // Some entries/fields were unreadable; keep the original file
+                // before the next persist rewrites it without them.
+                isPersistenceBlocked = CorruptFilePreserver.preserve(fileAt: storageURL, moving: false) == nil
+            }
         } catch {
+            // Never let the next append overwrite an unreadable history file.
             entries = []
+            if CorruptFilePreserver.preserve(fileAt: storageURL, moving: true) == nil {
+                isPersistenceBlocked = FileManager.default.fileExists(atPath: storageURL.path)
+            }
         }
     }
 
@@ -123,6 +136,9 @@ public actor HistoryStore: HistoryStoreProtocol {
     }
 
     private func persist() throws {
+        guard !isPersistenceBlocked else {
+            throw HistoryStoreError.persistenceFailed
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = []
         encoder.dateEncodingStrategy = .iso8601
@@ -143,7 +159,7 @@ public actor HistoryStore: HistoryStoreProtocol {
         hasPreparedStorageDirectory = true
     }
 
-    private static func loadEntries(from url: URL) throws -> [TranscriptEntry] {
+    private static func loadEntries(from url: URL, report: LossyDecodingReport) throws -> [TranscriptEntry] {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return []
         }
@@ -151,7 +167,9 @@ public actor HistoryStore: HistoryStoreProtocol {
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode([TranscriptEntry].self, from: data)
+        decoder.attach(report)
+        // Element-by-element so one bad entry does not discard the whole history.
+        return try decoder.decode(LossyDecodableArray<TranscriptEntry>.self, from: data).elements
     }
 
     private static func defaultStorageURL() -> URL {

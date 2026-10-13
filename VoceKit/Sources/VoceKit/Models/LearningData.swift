@@ -29,6 +29,23 @@ public struct LearningData: Sendable, Codable, Equatable {
     }
 
     public static let empty = LearningData()
+
+    private enum CodingKeys: String, CodingKey {
+        case wordFrequencies
+        case corrections
+        case phraseFrequencies
+        case appStats
+    }
+
+    /// Tolerant decoding: a missing or malformed section falls back to empty and
+    /// a bad correction is skipped, instead of discarding all learning data.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        wordFrequencies = container.decodeLenientIfPresent([String: Int].self, forKey: .wordFrequencies, decoder: decoder) ?? [:]
+        corrections = container.decodeLenientLossyArrayIfPresent([Correction].self, forKey: .corrections, decoder: decoder) ?? []
+        phraseFrequencies = container.decodeLenientIfPresent([String: Int].self, forKey: .phraseFrequencies, decoder: decoder) ?? [:]
+        appStats = container.decodeLenientIfPresent([String: AppUsageStats].self, forKey: .appStats, decoder: decoder) ?? [:]
+    }
 }
 
 // MARK: - Correction

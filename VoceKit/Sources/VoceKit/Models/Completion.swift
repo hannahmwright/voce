@@ -68,6 +68,31 @@ public struct AIWorkflow: Sendable, Codable, Equatable, Identifiable {
         self.isEnabled = isEnabled
         self.isBuiltIn = isBuiltIn
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case kind
+        case leadingPhrases
+        case handsFreeFinishHotkey
+        case promptTemplate
+        case isEnabled
+        case isBuiltIn
+    }
+
+    /// Tolerant decoding: identity (`id`, `name`, `kind`) is required, other
+    /// fields fall back to defaults when missing or written in a newer format.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        kind = try container.decode(AIWorkflowKind.self, forKey: .kind)
+        leadingPhrases = container.decodeLenientIfPresent([String].self, forKey: .leadingPhrases, decoder: decoder) ?? []
+        handsFreeFinishHotkey = container.decodeLenientIfPresent(HandsFreeHotkey.self, forKey: .handsFreeFinishHotkey, decoder: decoder)
+        promptTemplate = container.decodeLenientIfPresent(String.self, forKey: .promptTemplate, decoder: decoder)
+        isEnabled = container.decodeLenientIfPresent(Bool.self, forKey: .isEnabled, decoder: decoder) ?? true
+        isBuiltIn = container.decodeLenientIfPresent(Bool.self, forKey: .isBuiltIn, decoder: decoder) ?? false
+    }
 }
 
 extension AIWorkflow {

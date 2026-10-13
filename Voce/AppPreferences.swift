@@ -420,7 +420,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
             handsFreeFinishHotkey = try container.decodeIfPresent(HandsFreeHotkey.self, forKey: .handsFreeFinishHotkey)
             leadingPhraseSelectionEnabled = try container.decodeIfPresent(Bool.self, forKey: .leadingPhraseSelectionEnabled) ?? true
             dictationPolishingEnabled = try container.decodeIfPresent(Bool.self, forKey: .dictationPolishingEnabled) ?? false
-            workflows = try container.decodeIfPresent([AIWorkflow].self, forKey: .workflows) ?? AIWorkflow.builtIns
+            workflows = container.decodeLenientLossyArrayIfPresent([AIWorkflow].self, forKey: .workflows, decoder: decoder) ?? AIWorkflow.builtIns
         }
     }
 
@@ -505,20 +505,26 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        general = try container.decode(General.self, forKey: .general)
-        hotkeys = try container.decode(Hotkeys.self, forKey: .hotkeys)
-        dictation = try container.decode(Dictation.self, forKey: .dictation)
-        insertion = try container.decode(Insertion.self, forKey: .insertion)
-        media = try container.decode(Media.self, forKey: .media)
-        ai = try container.decodeIfPresent(AI.self, forKey: .ai) ?? AI()
-        billing = try container.decodeIfPresent(Billing.self, forKey: .billing) ?? Billing()
-        lexiconEntries = try container.decodeIfPresent([LexiconEntry].self, forKey: .lexiconEntries) ?? []
-        globalStyleProfile = try container.decodeIfPresent(StyleProfile.self, forKey: .globalStyleProfile) ?? AppPreferences.default.globalStyleProfile
-        appStyleProfiles = try container.decodeIfPresent([String: StyleProfile].self, forKey: .appStyleProfiles) ?? [:]
-        appDictationEnginePreferences = try container.decodeIfPresent([String: AppDictationEnginePreference].self, forKey: .appDictationEnginePreferences) ?? [:]
-        appAnchorOverrides = try container.decodeIfPresent([String: AppAnchorOverride].self, forKey: .appAnchorOverrides) ?? [:]
-        snippets = try container.decodeIfPresent([Snippet].self, forKey: .snippets) ?? []
-        voiceCommands = try container.decodeIfPresent([VoiceCommand].self, forKey: .voiceCommands) ?? VoiceCommand.builtIns
+        // Every section decodes leniently: a malformed or future-format section
+        // falls back to its default (and is recorded in the decoder's
+        // LossyDecodingReport) instead of failing the whole file, and list
+        // sections skip individual bad elements, so one bad snippet or workflow
+        // cannot wipe the user's lexicon, snippets and workflows.
+        let defaults = AppPreferences.default
+        general = container.decodeLenientIfPresent(General.self, forKey: .general, decoder: decoder) ?? defaults.general
+        hotkeys = container.decodeLenientIfPresent(Hotkeys.self, forKey: .hotkeys, decoder: decoder) ?? defaults.hotkeys
+        dictation = container.decodeLenientIfPresent(Dictation.self, forKey: .dictation, decoder: decoder) ?? defaults.dictation
+        insertion = container.decodeLenientIfPresent(Insertion.self, forKey: .insertion, decoder: decoder) ?? defaults.insertion
+        media = container.decodeLenientIfPresent(Media.self, forKey: .media, decoder: decoder) ?? defaults.media
+        ai = container.decodeLenientIfPresent(AI.self, forKey: .ai, decoder: decoder) ?? AI()
+        billing = container.decodeLenientIfPresent(Billing.self, forKey: .billing, decoder: decoder) ?? Billing()
+        lexiconEntries = container.decodeLenientLossyArrayIfPresent([LexiconEntry].self, forKey: .lexiconEntries, decoder: decoder) ?? []
+        globalStyleProfile = container.decodeLenientIfPresent(StyleProfile.self, forKey: .globalStyleProfile, decoder: decoder) ?? defaults.globalStyleProfile
+        appStyleProfiles = container.decodeLenientIfPresent([String: StyleProfile].self, forKey: .appStyleProfiles, decoder: decoder) ?? [:]
+        appDictationEnginePreferences = container.decodeLenientIfPresent([String: AppDictationEnginePreference].self, forKey: .appDictationEnginePreferences, decoder: decoder) ?? [:]
+        appAnchorOverrides = container.decodeLenientIfPresent([String: AppAnchorOverride].self, forKey: .appAnchorOverrides, decoder: decoder) ?? [:]
+        snippets = container.decodeLenientLossyArrayIfPresent([Snippet].self, forKey: .snippets, decoder: decoder) ?? []
+        voiceCommands = container.decodeLenientLossyArrayIfPresent([VoiceCommand].self, forKey: .voiceCommands, decoder: decoder) ?? VoiceCommand.builtIns
         scratchPadContent = try container.decodeIfPresent(String.self, forKey: .scratchPadContent) ?? ""
         metricsRecordingSecondsToday = try container.decodeIfPresent(Double.self, forKey: .metricsRecordingSecondsToday) ?? 0
         metricsRecordingSecondsLifetime = try container.decodeIfPresent(Double.self, forKey: .metricsRecordingSecondsLifetime) ?? 0

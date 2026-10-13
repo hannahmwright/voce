@@ -13,6 +13,9 @@ public actor LearningEngine {
     private var data: LearningData
     private let storageURL: URL
     private var isDirty = false
+    /// Set when an unreadable data file could not be preserved; saving would
+    /// then destroy it, so saves are skipped.
+    private let isPersistenceBlocked: Bool
 
     /// Number of times a correction must be seen before auto-promoting to lexicon.
     public static let correctionPromotionThreshold = 3
@@ -40,7 +43,9 @@ public actor LearningEngine {
 
     public init(storageURL: URL? = nil) {
         self.storageURL = storageURL ?? Self.defaultStorageURL()
-        self.data = Self.load(from: self.storageURL)
+        let loaded = Self.load(from: self.storageURL)
+        self.data = loaded.data
+        self.isPersistenceBlocked = loaded.persistenceBlocked
     }
 
     // MARK: - Session Observation
@@ -65,7 +70,7 @@ public actor LearningEngine {
 
     /// Persist data to disk. Call periodically or on app termination.
     public func save() {
-        guard isDirty else { return }
+        guard isDirty, !isPersistenceBlocked else { return }
         Self.persist(data, to: storageURL)
         isDirty = false
     }
@@ -403,14 +408,28 @@ public actor LearningEngine {
         VoceRuntimeConfiguration.applicationSupportDirectory(fileName: "learning-data.json")
     }
 
-    private static func load(from url: URL) -> LearningData {
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode(LearningData.self, from: data)
-        else {
-            return .empty
+    private static func load(from url: URL) -> (data: LearningData, persistenceBlocked: Bool) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return (.empty, false)
         }
-        return decoded
+
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            let report = LossyDecodingReport()
+            decoder.attach(report)
+            let decoded = try decoder.decode(LearningData.self, from: data)
+            if report.skippedValueCount > 0 {
+                // Keep the original before the next save drops the bad parts.
+                let preserved = CorruptFilePreserver.preserve(fileAt: url, moving: false) != nil
+                return (decoded, !preserved)
+            }
+            return (decoded, false)
+        } catch {
+            // Move the unreadable file aside so the next save cannot destroy it.
+            let preserved = CorruptFilePreserver.preserve(fileAt: url, moving: true) != nil
+            return (.empty, !preserved && FileManager.default.fileExists(atPath: url.path))
+        }
     }
 
     private static func persist(_ learningData: LearningData, to url: URL) {
