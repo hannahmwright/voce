@@ -420,6 +420,7 @@ final class DictationController: ObservableObject {
     private var terminationObserver: Any?
     private var hasTornDown = false
     private var inputLostWhileArmingSession: ObjectIdentifier?
+    private var hasAppliedLoadedPreferences = false
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
     private var activeHostedCloudUsageLimitSeconds: TimeInterval?
@@ -619,12 +620,16 @@ final class DictationController: ObservableObject {
     private func persistStateBeforeExit() {
         let learningEngine = learningEngine
         let preferencesStore = preferencesStore
-        let preferencesSnapshot = preferences
+        // Until bootstrap applies the loaded file, `preferences` holds
+        // defaults; saving them would overwrite the user's preferences.
+        let preferencesSnapshot: AppPreferences? = hasAppliedLoadedPreferences ? preferences : nil
         let saved = DispatchSemaphore(value: 0)
         Task.detached(priority: .userInitiated) {
             async let learningSave: Void = learningEngine.save()
-            async let preferencesSave: Void = preferencesStore.save(preferencesSnapshot)
-            _ = await (learningSave, preferencesSave)
+            if let preferencesSnapshot {
+                await preferencesStore.save(preferencesSnapshot)
+            }
+            await learningSave
             saved.signal()
         }
         if saved.wait(timeout: .now() + 2) == .timedOut {
@@ -661,6 +666,7 @@ final class DictationController: ObservableObject {
         }
 
         applyPreferencesLocally(loaded)
+        hasAppliedLoadedPreferences = true
         refreshPermissionStatuses()
         validateEngineConfiguration()
         await rebuildRuntime()
@@ -682,7 +688,10 @@ final class DictationController: ObservableObject {
         scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: previousSubscriberEmail)
 
         Task {
-            await preferencesStore.save(snapshot)
+            // Save the latest value rather than this call's snapshot: the
+            // store's latest-wins sequence is taken when this Task runs, so
+            // an older snapshot must never be written after a newer save.
+            await preferencesStore.save(preferences)
             guard runtimeRebuildNeeded(for: preferences) else { return }
             await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
         }
@@ -706,7 +715,10 @@ final class DictationController: ObservableObject {
         scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: previousSubscriberEmail)
 
         Task {
-            await preferencesStore.save(snapshot)
+            // Save the latest value rather than this call's snapshot: the
+            // store's latest-wins sequence is taken when this Task runs, so
+            // an older snapshot must never be written after a newer save.
+            await preferencesStore.save(preferences)
             await rebuildRuntimeOrDefer(announceImmediateSave: announceImmediateSave)
         }
     }
@@ -740,7 +752,10 @@ final class DictationController: ObservableObject {
         scheduleVoceProEntitlementRefreshIfNeeded(previousEmail: previousSubscriberEmail)
 
         Task {
-            await preferencesStore.save(snapshot)
+            // Save the latest value rather than this call's snapshot: the
+            // store's latest-wins sequence is taken when this Task runs, so
+            // an older snapshot must never be written after a newer save.
+            await preferencesStore.save(preferences)
         }
     }
 
@@ -3947,8 +3962,11 @@ final class DictationController: ObservableObject {
         snapshot.dictation.cloud.directUsageSeconds += max(1, Int(ceil(seconds)))
         preferences = snapshot
 
-        Task { [preferencesStore] in
-            await preferencesStore.save(snapshot)
+        Task {
+            // Save the latest value rather than this call's snapshot: the
+            // store's latest-wins sequence is taken when this Task runs, so
+            // an older snapshot must never be written after a newer save.
+            await preferencesStore.save(preferences)
         }
     }
 
