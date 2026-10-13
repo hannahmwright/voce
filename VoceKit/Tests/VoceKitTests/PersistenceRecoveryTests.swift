@@ -154,6 +154,47 @@ func learningDataLenientDecoding() async throws {
     #expect(CorruptFilePreserver.preservedCopies(of: url).count == 1)
 }
 
+// MARK: - Latest-wins saves
+
+@Test("Latest-wins sequencer drops snapshots older than one already written")
+func latestWinsSequencerDropsStaleSnapshots() {
+    let sequencer = LatestWinsSequencer()
+    let first = sequencer.nextSequence()
+    let second = sequencer.nextSequence()
+    let third = sequencer.nextSequence()
+
+    // Writes arrive out of order: second, first, third.
+    #expect(sequencer.claimWrite(second))
+    #expect(sequencer.claimWrite(first) == false)
+    #expect(sequencer.claimWrite(third))
+    #expect(sequencer.claimWrite(third) == false)
+}
+
+@Test("Latest-wins sequencer keeps the newest snapshot under concurrent writers")
+func latestWinsSequencerConcurrentWriters() async {
+    actor File {
+        var contents: UInt64 = 0
+        let sequencer: LatestWinsSequencer
+        init(sequencer: LatestWinsSequencer) { self.sequencer = sequencer }
+        func write(_ value: UInt64) {
+            guard sequencer.claimWrite(value) else { return }
+            contents = value
+        }
+    }
+
+    let sequencer = LatestWinsSequencer()
+    let file = File(sequencer: sequencer)
+    let sequences = (0..<200).map { _ in sequencer.nextSequence() }
+
+    await withTaskGroup(of: Void.self) { group in
+        for sequence in sequences.shuffled() {
+            group.addTask { await file.write(sequence) }
+        }
+    }
+
+    #expect(await file.contents == sequences.last)
+}
+
 // MARK: - Lenient model decoding
 
 @Test("Style profiles with unknown option values decode with defaults")

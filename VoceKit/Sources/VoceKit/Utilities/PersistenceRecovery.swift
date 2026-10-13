@@ -118,6 +118,42 @@ extension KeyedDecodingContainer {
     }
 }
 
+// MARK: - Latest-wins saves
+
+/// Orders full-snapshot saves so an older snapshot can never overwrite a newer one.
+///
+/// Take a sequence number synchronously when the snapshot is captured (in
+/// caller order), then call ``claimWrite(_:)`` right before writing: it
+/// returns `false` for any snapshot older than one already written.
+public final class LatestWinsSequencer: Sendable {
+    private struct State: Sendable {
+        var issued: UInt64 = 0
+        var written: UInt64 = 0
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    public init() {}
+
+    /// Issues the next sequence number. Call synchronously in caller order.
+    public func nextSequence() -> UInt64 {
+        state.withLock { state in
+            state.issued += 1
+            return state.issued
+        }
+    }
+
+    /// Returns `true` and records `sequence` as written when it is newer than
+    /// every snapshot written so far; `false` when the snapshot is stale.
+    public func claimWrite(_ sequence: UInt64) -> Bool {
+        state.withLock { state in
+            guard sequence > state.written else { return false }
+            state.written = sequence
+            return true
+        }
+    }
+}
+
 // MARK: - Corrupt file preservation
 
 /// Moves or copies an unreadable persisted file aside so it is never

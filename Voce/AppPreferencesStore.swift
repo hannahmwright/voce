@@ -8,6 +8,8 @@ actor AppPreferencesStore {
     /// Set when an unreadable preferences file could not be moved or copied
     /// aside; saving would destroy it, so saves are skipped for this run.
     private var isPersistenceBlocked = false
+    /// Orders snapshot saves; sequence numbers are taken synchronously by callers.
+    private nonisolated let saveSequencer = LatestWinsSequencer()
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "AppPreferencesStore")
     private static let legacyModelCleanupMarkerName = ".legacy-model-cleanup-v2"
 
@@ -53,7 +55,24 @@ actor AppPreferencesStore {
         }
     }
 
-    func save(_ preferences: AppPreferences) {
+    /// Saves a full preferences snapshot, latest-wins.
+    ///
+    /// Callers fire saves from independent `Task`s, which can reach this actor
+    /// out of order. The sequence number is taken synchronously on the
+    /// caller's executor (`nonisolated(nonsending)`), i.e. in the order the
+    /// main-actor tasks run, before hopping to the actor; the actor then drops
+    /// any snapshot older than one it has already written, so an older
+    /// snapshot can never overwrite a newer one.
+    nonisolated(nonsending) func save(_ preferences: AppPreferences) async {
+        let sequence = saveSequencer.nextSequence()
+        await write(preferences, sequence: sequence)
+    }
+
+    private func write(_ preferences: AppPreferences, sequence: UInt64) {
+        guard saveSequencer.claimWrite(sequence) else {
+            Self.logger.notice("Skipped stale preferences snapshot \(sequence, privacy: .public)")
+            return
+        }
         guard !isPersistenceBlocked else {
             Self.logger.error("Preferences save skipped: unreadable preferences file could not be preserved.")
             return
