@@ -200,8 +200,41 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             edits.append(TranscriptEdit(kind: .fillerRemoval, from: "like", to: ""))
         }
 
+        if !removed.isEmpty {
+            updated = tidyPunctuationAfterRemoval(updated)
+        }
         updated = collapseWhitespace(updated)
         return (updated, removed, edits)
+    }
+
+    /// Repairs punctuation left orphaned by filler removal:
+    /// "So, um, I think" → "So, , I think" → "So, I think".
+    private static let orphanPunctuationRules: [(regex: NSRegularExpression, template: String)] = {
+        let specs: [(String, String)] = [
+            // Space before punctuation: "So , I" → "So, I" (not ".net", ":)")
+            (#"[ \t]+([,.!?;:])(?=\s|[,.!?;:]|$)"#, "$1"),
+            // Repeated commas: "So,, I" → "So, I"
+            (#",(?:[ \t]*,)+"#, ","),
+            // Comma before terminal punctuation: "think,." → "think."
+            (#",[ \t]*([.!?;:])"#, "$1"),
+            // Comma at the start of the text: ", I think" → "I think"
+            (#"^[ \t]*[,;:][ \t]*"#, ""),
+            // Comma right after a sentence end: "Yes., okay" → "Yes. okay"
+            (#"([.!?])[ \t]*,[ \t]*"#, "$1 "),
+        ]
+        return specs.compactMap { pattern, template in
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines]) else { return nil }
+            return (regex, template)
+        }
+    }()
+
+    private func tidyPunctuationAfterRemoval(_ text: String) -> String {
+        var updated = text
+        for rule in Self.orphanPunctuationRules {
+            let range = NSRange(updated.startIndex..., in: updated)
+            updated = rule.regex.stringByReplacingMatches(in: updated, range: range, withTemplate: rule.template)
+        }
+        return updated
     }
 
     private func removeInterjectionalLike(from text: String) -> (text: String, count: Int) {

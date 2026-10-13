@@ -155,7 +155,7 @@ public struct LocalCleanupRanker: Sendable {
         if text.contains("  ") {
             score -= 0.2
         }
-        if text.contains(",.") || text.contains("..") {
+        if Self.matches(Self.orphanCommaRegex, in: text) || text.contains("..") {
             score -= 0.2
         }
 
@@ -244,6 +244,9 @@ public struct LocalCleanupRanker: Sendable {
 
     private static let leadingPunctuationRegex = try? NSRegularExpression(pattern: #"^[\s]*[,.!?;:]"#)
     private static let interjectionalLikeRegex = try? NSRegularExpression(pattern: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#)
+    /// A comma followed (after optional spaces) by another comma or terminal
+    /// punctuation: ", ," or ",." — typical debris of a bad filler removal.
+    private static let orphanCommaRegex = try? NSRegularExpression(pattern: #",[ \t]*[,.!?;:]"#)
 
     private static func matches(_ regex: NSRegularExpression?, in text: String) -> Bool {
         guard let regex else { return false }
