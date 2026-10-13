@@ -581,6 +581,7 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
     mutating func normalize() {
         migrateCustomInsertTextCommandsToSnippets()
+        voiceCommands = VoiceCommand.mergingBuiltIns(into: voiceCommands)
 
         insertion.orderedMethods = Self.reliableInsertionOrder
         if !hotkeys.optionPressToTalkEnabled && hotkeys.handsFreeGlobalHotkey == nil {
