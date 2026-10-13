@@ -1529,7 +1529,8 @@ final class DictationController: ObservableObject {
     private func makeRealtimeWhisperCaptureSession(
         onPartialText: @escaping @Sendable (String) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void,
-        onAudioLevel: @escaping @Sendable (Double) -> Void
+        onAudioLevel: @escaping @Sendable (Double) -> Void,
+        onInputLost: @escaping @Sendable (OpenAIRealtimeWhisperCaptureSession) -> Void
     ) throws -> OpenAIRealtimeWhisperCaptureSession {
         let localeIdentifier = preferences.dictation.localeIdentifier
         let transcriptionHints = preferences.visibleLexiconEntries
@@ -1595,7 +1596,8 @@ final class DictationController: ObservableObject {
             transcriptionHints: transcriptionHints,
             onPartialText: onPartialText,
             onTerminalError: onTerminalError,
-            onAudioLevel: onAudioLevel
+            onAudioLevel: onAudioLevel,
+            onInputLost: onInputLost
         )
     }
 
@@ -1936,6 +1938,11 @@ final class DictationController: ObservableObject {
                                     level: level
                                 )
                             }
+                        },
+                        onInputLost: { [weak controller = self] session in
+                            Task { @MainActor in
+                                controller?.handleCaptureInputLost(session)
+                            }
                         }
                     )
                     activeRealtimeWhisperSession?.cancel()
@@ -1961,6 +1968,11 @@ final class DictationController: ObservableObject {
                                     startTaskID: startTaskID,
                                     level: level
                                 )
+                            }
+                        },
+                        onInputLost: { [weak controller = self] session in
+                            Task { @MainActor in
+                                controller?.handleCaptureInputLost(session)
                             }
                         }
                     )
@@ -2065,6 +2077,16 @@ final class DictationController: ObservableObject {
             overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
         }
         overlay.updateAudioLevel(level)
+    }
+
+    /// The capture session lost its microphone and could not restart it.
+    /// Finalize what was captured instead of leaving the overlay listening.
+    private func handleCaptureInputLost(_ session: AnyObject) {
+        guard isRecording,
+              session === activeRealtimeWhisperSession || session === activePreviewSession
+        else { return }
+        status = "Microphone disconnected — transcribing what was captured."
+        stopActiveRecording()
     }
 
     private func handleStreamingFailure(_ error: Error) {

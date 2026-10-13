@@ -214,6 +214,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private let onPartialText: @Sendable (String) -> Void
     private let onTerminalError: @Sendable (Error) -> Void
     private let onAudioLevel: @Sendable (Double) -> Void
+    private let onInputLost: @Sendable (OpenAIRealtimeWhisperCaptureSession) -> Void
     /// Guards every mutable property below. Callers arrive from the main
     /// actor (`cancel()`), the audio tap thread, URLSession callbacks and
     /// background tasks (`stop()`, rollover), so never read or write them
@@ -232,6 +233,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private var engineConfigurationObserver: NSObjectProtocol?
     /// Bumped per configuration change so stale restart retries stop.
     private var engineRestartGeneration: UInt64 = 0
+    private var didReportInputLost = false
+    private var consecutiveConversionFailures = 0
     private var capturedFrameCount: AVAudioFramePosition = 0
     /// Captured audio duration, accumulated per buffer so it stays correct
     /// even if the input sample rate changes mid-dictation. Raw audio is not
@@ -303,7 +306,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         transcriptionHints: [LexiconEntry],
         onPartialText: @escaping @Sendable (String) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void = { _ in },
-        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in }
+        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in },
+        onInputLost: @escaping @Sendable (OpenAIRealtimeWhisperCaptureSession) -> Void = { _ in }
     ) {
         self.session = session
         self.authTokenProvider = authTokenProvider
@@ -313,6 +317,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         self.onPartialText = onPartialText
         self.onTerminalError = onTerminalError
         self.onAudioLevel = onAudioLevel
+        self.onInputLost = onInputLost
     }
 
     func start() async throws {
@@ -489,8 +494,24 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             )
         }
         guard stateLock.withLock({ !hasStopped }) else { return }
-        guard let conversion = Self.convertToRealtimePCMData(buffer, using: pcmConverter),
-              !conversion.data.isEmpty else { return }
+        guard let converted = pcmConverter.process(buffer) else {
+            let failures = stateLock.withLock { () -> Int in
+                consecutiveConversionFailures += 1
+                return consecutiveConversionFailures
+            }
+            if failures == Self.inputLostConversionFailureLimit {
+                Self.logger.error(
+                    "Realtime capture cannot convert \(buffer.format.sampleRate, privacy: .public)Hz input; treating the microphone as lost"
+                )
+                notifyInputLost()
+            }
+            return
+        }
+        stateLock.withLock { consecutiveConversionFailures = 0 }
+        guard let conversion = Self.realtimePCMConversion(
+            from: converted,
+            inputFrameCount: Int(buffer.frameLength)
+        ), !conversion.data.isEmpty else { return }
         stateLock.withLock {
             // Yield under the lock so batches stay in capture order and
             // `stop()` can flush the remainder before finishing the stream.
@@ -758,6 +779,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// Bluetooth profile switch can report no input format for more than a
     /// second, so the attempts span about five seconds.
     static let engineRestartDelays: [TimeInterval] = [0, 0.25, 0.5, 1, 1.5, 2]
+    /// About half a second of mic buffers that could not be converted.
+    static let inputLostConversionFailureLimit = 25
 
     /// Called on AVAudioEngine's notifying thread: only bumps the generation
     /// (superseding retries for an earlier change) and hops to the queue.
@@ -829,10 +852,26 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             Self.logger.error(
                 "Realtime capture input lost after audio configuration change; stopping will finalize the audio captured so far"
             )
+            notifyInputLost()
             return
         }
         engineConfigurationQueue.asyncAfter(deadline: .now() + Self.engineRestartDelays[nextAttempt]) { [weak self] in
             self?.restartEngineAfterConfigurationChange(generation: generation, attempt: nextAttempt)
+        }
+    }
+
+    /// Tells the controller, once, that capture ended because the microphone
+    /// was lost, so it can finalize what was captured instead of leaving the
+    /// overlay listening (and the timer running) until the user stops.
+    private func notifyInputLost() {
+        let shouldNotify = stateLock.withLock { () -> Bool in
+            guard !hasStopped, !didReportInputLost else { return false }
+            didReportInputLost = true
+            return true
+        }
+        guard shouldNotify else { return }
+        DispatchQueue.main.async {
+            self.onInputLost(self)
         }
     }
 

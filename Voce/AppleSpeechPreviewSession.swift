@@ -39,6 +39,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     private let onPartialText: @Sendable (String) -> Void
     private let onTerminalError: @Sendable (Error) -> Void
     private let onAudioLevel: @Sendable (Double) -> Void
+    private let onInputLost: @Sendable (AppleSpeechPreviewSession) -> Void
     private let localeIdentifier: String
     private let previewTranscriptionEnabled: Bool
     private let stateLock = NSLock()
@@ -58,7 +59,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     /// Converts tap buffers to the capture file's format after an input
     /// device change, so the file and recognition request stay consistent.
     private var fileFormatConverter: StreamingPCMConverter?
-    private var didLogConversionFailure = false
+    private var consecutiveConversionFailures = 0
+    private var didReportInputLost = false
     private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -74,13 +76,15 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         previewTranscriptionEnabled: Bool = false,
         onPartialText: @escaping @Sendable (String) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void = { _ in },
-        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in }
+        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in },
+        onInputLost: @escaping @Sendable (AppleSpeechPreviewSession) -> Void = { _ in }
     ) {
         self.localeIdentifier = localeIdentifier
         self.previewTranscriptionEnabled = previewTranscriptionEnabled
         self.onPartialText = onPartialText
         self.onTerminalError = onTerminalError
         self.onAudioLevel = onAudioLevel
+        self.onInputLost = onInputLost
     }
 
     func start() async throws {
@@ -218,18 +222,21 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
         if let converter {
             guard let converted = converter.process(buffer) else {
                 // Drop this buffer rather than end the dictation and lose
-                // everything captured so far.
-                let shouldLog = stateLock.withLock { () -> Bool in
-                    defer { didLogConversionFailure = true }
-                    return !didLogConversionFailure
+                // everything captured so far; if conversion keeps failing,
+                // report the microphone as lost so the controller finalizes.
+                let failures = stateLock.withLock { () -> Int in
+                    consecutiveConversionFailures += 1
+                    return consecutiveConversionFailures
                 }
-                if shouldLog {
+                if failures == Self.inputLostConversionFailureLimit {
                     Self.logger.error(
-                        "Preview capture could not convert \(buffer.format.sampleRate, privacy: .public)Hz input to the capture file format"
+                        "Preview capture cannot convert \(buffer.format.sampleRate, privacy: .public)Hz input to the capture file format; treating the microphone as lost"
                     )
+                    notifyInputLost()
                 }
                 return
             }
+            stateLock.withLock { consecutiveConversionFailures = 0 }
             fileBuffers = converted
         } else {
             fileBuffers = [buffer]
@@ -273,6 +280,8 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
     /// Bluetooth profile switch can report no input format for more than a
     /// second, so the attempts span about five seconds.
     static let engineRestartDelays: [TimeInterval] = [0, 0.25, 0.5, 1, 1.5, 2]
+    /// About half a second of mic buffers that could not be converted.
+    static let inputLostConversionFailureLimit = 25
 
     /// Called on AVAudioEngine's notifying thread: only bumps the generation
     /// (superseding retries for an earlier change) and hops to the queue.
@@ -344,6 +353,7 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             Self.logger.error(
                 "Preview capture input lost after audio configuration change; stopping will finalize the audio captured so far"
             )
+            notifyInputLost()
             return
         }
         engineConfigurationQueue.asyncAfter(deadline: .now() + Self.engineRestartDelays[nextAttempt]) { [weak self] in
@@ -369,6 +379,21 @@ final class AppleSpeechPreviewSession: @unchecked Sendable {
             Self.logger.error(
                 "Preview capture could not write converted tail audio: \(error.localizedDescription, privacy: .public)"
             )
+        }
+    }
+
+    /// Tells the controller, once, that capture ended because the microphone
+    /// was lost, so it can finalize what was captured instead of leaving the
+    /// overlay listening (and the timer running) until the user stops.
+    private func notifyInputLost() {
+        let shouldNotify = stateLock.withLock { () -> Bool in
+            guard !hasStopped, !didReportInputLost else { return false }
+            didReportInputLost = true
+            return true
+        }
+        guard shouldNotify else { return }
+        DispatchQueue.main.async {
+            self.onInputLost(self)
         }
     }
 
