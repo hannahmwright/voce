@@ -19,7 +19,12 @@ struct GeneralSettingsSection: View {
                         help: "Shown in the Home greeting. Defaults to your Mac name."
                     )
 
-                    TextField("Your name", text: displayNameBinding)
+                    // Bound to the raw value so spaces and clearing work; the
+                    // Mac name the greeting falls back to shows as placeholder.
+                    TextField(
+                        macOSFirstName.isEmpty ? "Your name" : macOSFirstName,
+                        text: $preferences.general.userName
+                    )
                         .textFieldStyle(.plain)
                         .settingsInputChrome()
                 }
@@ -215,18 +220,6 @@ struct GeneralSettingsSection: View {
                 isTypingSpeedTestVisible = false
             }
         }
-    }
-
-    private var displayNameBinding: Binding<String> {
-        Binding(
-            get: {
-                let current = preferences.general.userName.trimmingCharacters(in: .whitespacesAndNewlines)
-                return current.isEmpty ? macOSFirstName : current
-            },
-            set: { newValue in
-                preferences.general.userName = newValue
-            }
-        )
     }
 
     private var currentVersionText: String {
