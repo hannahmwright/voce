@@ -77,9 +77,11 @@ export class CloudDictationProviderError extends Error {
 const OPENAI_BASE_URL = "https://api.openai.com";
 // A realtime client secret is only needed to open a WebSocket; established
 // sessions keep running after it expires and long dictations mint a fresh
-// secret for each rollover connection. Keep this comfortably above the app's
-// 5-minute cache refresh lead time so warm-up refreshes do not spin.
-const REALTIME_CLIENT_SECRET_TTL_SECONDS = 10 * 60;
+// secret for each rollover connection. Shipped app builds judge freshness from
+// the absolute expiresAt with a 5-minute lead, so the lifetime must stay far
+// above that (and above plausible Mac clock skew) or their warm-up refresh
+// loops and cached secrets break. Do not shorten without an app-side change.
+const REALTIME_CLIENT_SECRET_TTL_SECONDS = 60 * 60;
 
 function openAIAPIKey() {
   const key = process.env.VOCE_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
