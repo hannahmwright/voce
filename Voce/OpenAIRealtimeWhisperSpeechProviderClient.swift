@@ -34,7 +34,7 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
     func transcribe(audioURL: URL, localeIdentifier: String, hints: [String]) async throws -> RawTranscript {
         let clock = ContinuousClock()
         let startedAt = clock.now
-        let locale = Self.effectiveLanguageCode(from: hints.first ?? localeIdentifier)
+        let locale = Self.languageCode(fromHints: hints, fallbackLocaleIdentifier: localeIdentifier)
         let transcript = try await runRealtimeTranscription(
             audioURL: audioURL,
             locale: locale,
@@ -101,9 +101,8 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
             try await sendSessionUpdate(socket: socket, locale: locale, prompt: prompt)
             try await streamAudioFile(audioURL, to: socket)
             try await sendJSON(["type": "input_audio_buffer.commit"], to: socket)
-            return try await withTimeout(seconds: 90) {
-                try await receiveTask.value
-            }
+            // On timeout the deferred socket cancel ends the receive task.
+            return try await Self.value(of: receiveTask, timeoutSeconds: 90)
         } catch {
             receiveTask.cancel()
             throw error
@@ -205,6 +204,40 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
                 to: socket
             )
         }
+
+        // Each chunk above leaves the converter waiting for more input, so its
+        // resampler still holds the tail of the audio. Signal end of input and
+        // send what it drains, or the final words are never transcribed.
+        while true {
+            guard let targetBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: 4_096) else {
+                throw CloudDictationError.invalidAudioFile
+            }
+            var conversionError: NSError?
+            let status = converter.convert(to: targetBuffer, error: &conversionError) { _, outStatus in
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            if let conversionError {
+                throw CloudDictationError.providerError(conversionError.localizedDescription)
+            }
+            guard status != .error else {
+                throw CloudDictationError.invalidAudioFile
+            }
+            if targetBuffer.frameLength > 0,
+               let data = Self.pcmData(from: targetBuffer),
+               !data.isEmpty {
+                try await sendJSON(
+                    [
+                        "type": "input_audio_buffer.append",
+                        "audio": data.base64EncodedString()
+                    ],
+                    to: socket
+                )
+            }
+            if status == .endOfStream || targetBuffer.frameLength == 0 {
+                break
+            }
+        }
     }
 
     private func receiveTranscript(from socket: URLSessionWebSocketTask) async throws -> String {
@@ -253,24 +286,28 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
         try await socket.send(.string(string))
     }
 
-    private func withTimeout<T: Sendable>(
-        seconds: TimeInterval,
-        operation: @escaping @Sendable () async throws -> T
+    /// Returns `task`'s value or throws `timedOut`. A task-group race cannot
+    /// time out here: the group waits for every child, and awaiting
+    /// `task.value` ignores cancellation while `socket.receive()` is pending.
+    /// The losing waiter is an unstructured task that resumes a one-shot
+    /// continuation as a no-op (the pattern from the capture session's
+    /// `wait(for:timeoutSeconds:)`); the caller cancels the socket to end it.
+    static func value<T: Sendable>(
+        of task: Task<T, Error>,
+        timeoutSeconds: TimeInterval
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
+        let once = OneShotResultContinuation<T>()
+        let result = await withCheckedContinuation { continuation in
+            once.set(continuation)
+            Task {
+                once.resume(await task.result)
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                throw CloudDictationError.timedOut
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                once.resume(.failure(CloudDictationError.timedOut))
             }
-            guard let value = try await group.next() else {
-                throw CloudDictationError.timedOut
-            }
-            group.cancelAll()
-            return value
         }
+        return try result.get()
     }
 
     private static func pcmData(from buffer: AVAudioPCMBuffer) -> Data? {
@@ -287,14 +324,51 @@ struct OpenAIRealtimeWhisperSpeechProviderClient: CloudSpeechProviderClient {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func effectiveLanguageCode(from localeIdentifier: String) -> String {
-        let components = localeIdentifier.split(separator: "-")
-        return components.first.map(String.init) ?? "en"
+    /// Uses the first hint that is actually a language or locale code (hints
+    /// can carry other text), then the configured locale.
+    static func languageCode(fromHints hints: [String], fallbackLocaleIdentifier: String) -> String {
+        for hint in hints {
+            if let code = validLanguageCode(from: hint) {
+                return code
+            }
+        }
+        return validLanguageCode(from: fallbackLocaleIdentifier) ?? "en"
+    }
+
+    private static func validLanguageCode(from identifier: String) -> String? {
+        let primary = identifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .first
+            .map { String($0).lowercased() } ?? ""
+        guard (2...3).contains(primary.count),
+              primary.allSatisfy({ $0.isASCII && $0.isLetter }),
+              Locale.LanguageCode(primary).isISOLanguage else {
+            return nil
+        }
+        return primary
     }
 
     private static func seconds(from duration: Duration) -> Double {
         Double(duration.components.seconds)
             + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+    }
+}
+
+private final class OneShotResultContinuation<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Result<T, Error>, Never>?
+
+    func set(_ continuation: CheckedContinuation<Result<T, Error>, Never>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func resume(_ value: Result<T, Error>) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Result<T, Error>, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: value)
     }
 }
 

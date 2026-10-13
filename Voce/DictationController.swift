@@ -419,6 +419,7 @@ final class DictationController: ObservableObject {
     private var captureReadyOverlayStartTaskID: UUID?
     private var terminationObserver: Any?
     private var hasTornDown = false
+    private var inputLostWhileArmingSession: ObjectIdentifier?
     private var overlayPersistenceBundleIdentifier: String?
     private var activeFreeUsageLimitSeconds: TimeInterval?
     private var activeHostedCloudUsageLimitSeconds: TimeInterval?
@@ -1724,7 +1725,8 @@ final class DictationController: ObservableObject {
     private func makeRealtimeWhisperCaptureSession(
         onPartialText: @escaping @Sendable (String) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void,
-        onAudioLevel: @escaping @Sendable (Double) -> Void
+        onAudioLevel: @escaping @Sendable (Double) -> Void,
+        onInputLost: @escaping @Sendable (OpenAIRealtimeWhisperCaptureSession) -> Void
     ) throws -> OpenAIRealtimeWhisperCaptureSession {
         let localeIdentifier = preferences.dictation.localeIdentifier
         let transcriptionHints = preferences.visibleLexiconEntries
@@ -1790,7 +1792,8 @@ final class DictationController: ObservableObject {
             transcriptionHints: transcriptionHints,
             onPartialText: onPartialText,
             onTerminalError: onTerminalError,
-            onAudioLevel: onAudioLevel
+            onAudioLevel: onAudioLevel,
+            onInputLost: onInputLost
         )
     }
 
@@ -2077,6 +2080,7 @@ final class DictationController: ObservableObject {
 
         cancelPendingOverlayDismissal()
         clipboardRecoveryPrompt.hide()
+        inputLostWhileArmingSession = nil
         status = "Checking microphone..."
         lastError = ""
         latestDictationSequence &+= 1
@@ -2195,6 +2199,11 @@ final class DictationController: ObservableObject {
                                     level: level
                                 )
                             }
+                        },
+                        onInputLost: { [weak controller = self] session in
+                            Task { @MainActor in
+                                controller?.handleCaptureInputLost(session)
+                            }
                         }
                     )
                     activeRealtimeWhisperSession?.cancel()
@@ -2224,6 +2233,11 @@ final class DictationController: ObservableObject {
                                     startTaskID: startTaskID,
                                     level: level
                                 )
+                            }
+                        },
+                        onInputLost: { [weak controller = self] session in
+                            Task { @MainActor in
+                                controller?.handleCaptureInputLost(session)
                             }
                         }
                     )
@@ -2276,6 +2290,7 @@ final class DictationController: ObservableObject {
                     overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
                     captureReadyOverlayStartTaskID = startTaskID
                 }
+                stopIfInputLostWhileArming()
             } catch {
                 // A stop that landed while arming is waiting for this task and
                 // leaves the shared state to it; a newer dictation owns that
@@ -2372,6 +2387,30 @@ final class DictationController: ObservableObject {
             overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
         }
         overlay.updateAudioLevel(level)
+    }
+
+    /// The capture session lost its microphone and could not restart it.
+    /// Finalize what was captured instead of leaving the overlay listening.
+    private func handleCaptureInputLost(_ session: AnyObject) {
+        guard session === activeRealtimeWhisperSession || session === activePreviewSession
+        else { return }
+        guard isRecording else {
+            // Still arming: the start task finalizes once it commits, since
+            // the session reports the loss only once.
+            inputLostWhileArmingSession = ObjectIdentifier(session)
+            return
+        }
+        status = "Microphone disconnected — transcribing what was captured."
+        stopActiveRecording()
+    }
+
+    private func stopIfInputLostWhileArming() {
+        guard let lostSession = inputLostWhileArmingSession else { return }
+        inputLostWhileArmingSession = nil
+        let activeSession: AnyObject? = activeRealtimeWhisperSession ?? activePreviewSession
+        guard let activeSession, ObjectIdentifier(activeSession) == lostSession else { return }
+        status = "Microphone disconnected — transcribing what was captured."
+        stopActiveRecording()
     }
 
     private func handleStreamingFailure(_ error: Error, dictationSequence failingSequence: UInt64) {
@@ -2618,7 +2657,6 @@ final class DictationController: ObservableObject {
 
                 if let realtimeSession {
                     let stopResult = try await realtimeSession.stop()
-                    defer { try? FileManager.default.removeItem(at: stopResult.captureURL) }
                     captureDurationMS = stopResult.rawTranscript.durationMS
                     let stopElapsed = stopBeganAt.duration(to: clock.now)
                     let stopElapsedSeconds = Double(stopElapsed.components.seconds)
