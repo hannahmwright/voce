@@ -868,14 +868,52 @@ final class HotkeyCaptureInterruptionObserver {
     }
 }
 
+/// The event-monitor plumbing every capture coordinator shares: local key-down
+/// and flags-changed monitors plus the interruption observer, installed and
+/// torn down together. Each coordinator keeps its own capture rules.
+@MainActor
+final class HotkeyCaptureEventMonitors {
+    private var keyMonitor: Any?
+    private var flagsMonitor: Any?
+    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
+
+    func install(
+        keyDown: @escaping (NSEvent) -> NSEvent?,
+        flagsChanged: ((NSEvent) -> NSEvent?)? = nil,
+        onInterrupt: @escaping @MainActor () -> Void
+    ) {
+        remove()
+
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: keyDown)
+
+        if let flagsChanged {
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged, handler: flagsChanged)
+        }
+
+        interruptionObserver.install(onInterrupt: onInterrupt)
+    }
+
+    func remove() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+
+        if let flagsMonitor {
+            NSEvent.removeMonitor(flagsMonitor)
+            self.flagsMonitor = nil
+        }
+
+        interruptionObserver.remove()
+    }
+}
+
 @MainActor
 final class HotkeyCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
     @Published var helperText: String?
 
-    private var keyMonitor: Any?
-    private var flagsMonitor: Any?
-    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
+    private let monitors = HotkeyCaptureEventMonitors()
     private var allowModifierCapture = true
 
     func startCapture(
@@ -889,33 +927,23 @@ final class HotkeyCaptureCoordinator: ObservableObject {
             ? "Press a single key or modifier. Esc cancels."
             : "Press a single key. Esc cancels."
 
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            return self.handleKeyDown(event, onCapture: onCapture)
-        }
-
-        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            guard let self else { return event }
-            return self.handleFlagsChanged(event, onCapture: onCapture)
-        }
-
-        interruptionObserver.install { [weak self] in
-            self?.stopCapture()
-        }
+        monitors.install(
+            keyDown: { [weak self] event in
+                guard let self else { return event }
+                return self.handleKeyDown(event, onCapture: onCapture)
+            },
+            flagsChanged: { [weak self] event in
+                guard let self else { return event }
+                return self.handleFlagsChanged(event, onCapture: onCapture)
+            },
+            onInterrupt: { [weak self] in
+                self?.stopCapture()
+            }
+        )
     }
 
     func stopCapture(clearHelperText: Bool = true) {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
-
-        if let flagsMonitor {
-            NSEvent.removeMonitor(flagsMonitor)
-            self.flagsMonitor = nil
-        }
-
-        interruptionObserver.remove()
+        monitors.remove()
 
         isCapturing = false
         if clearHelperText {
@@ -987,31 +1015,26 @@ final class KeyboardShortcutCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
     @Published var helperText: String?
 
-    private var keyMonitor: Any?
-    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
+    private let monitors = HotkeyCaptureEventMonitors()
 
     func startCapture(onCapture: @escaping (VoceKeyboardShortcut) -> Void) {
         stopCapture(clearHelperText: false)
         isCapturing = true
         helperText = "Press a key combination. Esc cancels."
 
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            return self.handleKeyDown(event, onCapture: onCapture)
-        }
-
-        interruptionObserver.install { [weak self] in
-            self?.stopCapture()
-        }
+        monitors.install(
+            keyDown: { [weak self] event in
+                guard let self else { return event }
+                return self.handleKeyDown(event, onCapture: onCapture)
+            },
+            onInterrupt: { [weak self] in
+                self?.stopCapture()
+            }
+        )
     }
 
     func stopCapture(clearHelperText: Bool = true) {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
-
-        interruptionObserver.remove()
+        monitors.remove()
 
         isCapturing = false
         if clearHelperText {
@@ -1046,9 +1069,7 @@ final class HandsFreeToggleHotkeyCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
     @Published var helperText: String?
 
-    private var keyMonitor: Any?
-    private var flagsMonitor: Any?
-    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
+    private let monitors = HotkeyCaptureEventMonitors()
     private var allowModifierCapture = true
     private var pendingHotkey: HandsFreeHotkey?
     private var pendingCommitTask: Task<Void, Never>?
@@ -1065,33 +1086,23 @@ final class HandsFreeToggleHotkeyCaptureCoordinator: ObservableObject {
             ? "Press a key or modifier. Tap twice quickly for x2."
             : "Press a single key. Tap twice quickly for x2."
 
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            return self.handleKeyDown(event, onCapture: onCapture)
-        }
-
-        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            guard let self else { return event }
-            return self.handleFlagsChanged(event, onCapture: onCapture)
-        }
-
-        interruptionObserver.install { [weak self] in
-            self?.stopCapture()
-        }
+        monitors.install(
+            keyDown: { [weak self] event in
+                guard let self else { return event }
+                return self.handleKeyDown(event, onCapture: onCapture)
+            },
+            flagsChanged: { [weak self] event in
+                guard let self else { return event }
+                return self.handleFlagsChanged(event, onCapture: onCapture)
+            },
+            onInterrupt: { [weak self] in
+                self?.stopCapture()
+            }
+        )
     }
 
     func stopCapture(clearHelperText: Bool = true) {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
-
-        if let flagsMonitor {
-            NSEvent.removeMonitor(flagsMonitor)
-            self.flagsMonitor = nil
-        }
-
-        interruptionObserver.remove()
+        monitors.remove()
 
         pendingCommitTask?.cancel()
         pendingCommitTask = nil
@@ -1204,9 +1215,7 @@ final class PressToTalkHotkeyCaptureCoordinator: ObservableObject {
     @Published var isCapturing = false
     @Published var helperText: String?
 
-    private var keyMonitor: Any?
-    private var flagsMonitor: Any?
-    private let interruptionObserver = HotkeyCaptureInterruptionObserver()
+    private let monitors = HotkeyCaptureEventMonitors()
     private var pendingHotkey: PressToTalkHotkey?
 
     func startCapture(onCapture: @escaping (PressToTalkHotkey) -> Void) {
@@ -1215,33 +1224,23 @@ final class PressToTalkHotkeyCaptureCoordinator: ObservableObject {
         pendingHotkey = nil
         helperText = "Hold one or more modifier keys together, then release to save. Esc cancels."
 
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
-            return self.handleKeyDown(event)
-        }
-
-        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            guard let self else { return event }
-            return self.handleFlagsChanged(event, onCapture: onCapture)
-        }
-
-        interruptionObserver.install { [weak self] in
-            self?.stopCapture()
-        }
+        monitors.install(
+            keyDown: { [weak self] event in
+                guard let self else { return event }
+                return self.handleKeyDown(event)
+            },
+            flagsChanged: { [weak self] event in
+                guard let self else { return event }
+                return self.handleFlagsChanged(event, onCapture: onCapture)
+            },
+            onInterrupt: { [weak self] in
+                self?.stopCapture()
+            }
+        )
     }
 
     func stopCapture(clearHelperText: Bool = true) {
-        if let keyMonitor {
-            NSEvent.removeMonitor(keyMonitor)
-            self.keyMonitor = nil
-        }
-
-        if let flagsMonitor {
-            NSEvent.removeMonitor(flagsMonitor)
-            self.flagsMonitor = nil
-        }
-
-        interruptionObserver.remove()
+        monitors.remove()
 
         pendingHotkey = nil
         isCapturing = false
@@ -1299,7 +1298,12 @@ struct PressToTalkHotkeyRecorderField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
             HStack(spacing: VoceDesign.sm) {
-                Button {
+                HotkeyRecorderFieldButton(
+                    idleSystemImage: "mic.badge.plus",
+                    title: fieldTitle,
+                    accessibilityLabel: "Hold-to-talk hotkey",
+                    isCapturing: coordinator.isCapturing
+                ) {
                     if coordinator.isCapturing {
                         coordinator.stopCapture()
                     } else {
@@ -1307,30 +1311,7 @@ struct PressToTalkHotkeyRecorderField: View {
                             hotkey = capturedHotkey
                         }
                     }
-                } label: {
-                    HStack(spacing: VoceDesign.sm) {
-                        Image(systemName: coordinator.isCapturing ? "keyboard.badge.ellipsis" : "mic.badge.plus")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
-
-                        Rectangle()
-                            .fill(VoceDesign.border.opacity(0.95))
-                            .frame(width: 1, height: 18)
-
-                        Text(fieldTitle)
-                            .font(VoceDesign.callout())
-                            .foregroundStyle(VoceDesign.textPrimary)
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, VoceDesign.md)
-                    .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Hold-to-talk hotkey")
-                .accessibilityValue(fieldTitle)
 
                 Button("Reset") {
                     hotkey = .default
@@ -1347,15 +1328,10 @@ struct PressToTalkHotkeyRecorderField: View {
             }
 
             if let helperText = coordinator.helperText {
-                Text(helperText)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
+                HotkeyRecorderHelperText(text: helperText)
             }
         }
-        .onDisappear {
-            coordinator.stopCapture()
-        }
-        .stopsHotkeyCaptureWhenTabInactive {
+        .endsHotkeyCaptureWhenHidden {
             coordinator.stopCapture()
         }
     }
@@ -1377,7 +1353,12 @@ struct HotkeyRecorderField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
             HStack(spacing: VoceDesign.sm) {
-                Button {
+                HotkeyRecorderFieldButton(
+                    idleSystemImage: "keyboard",
+                    title: fieldTitle,
+                    accessibilityLabel: "Global hands-free hotkey",
+                    isCapturing: coordinator.isCapturing
+                ) {
                     if coordinator.isCapturing {
                         coordinator.stopCapture()
                     } else {
@@ -1385,30 +1366,7 @@ struct HotkeyRecorderField: View {
                             hotkey = capturedHotkey
                         }
                     }
-                } label: {
-                    HStack(spacing: VoceDesign.sm) {
-                        Image(systemName: coordinator.isCapturing ? "keyboard.badge.ellipsis" : "keyboard")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
-
-                        Rectangle()
-                            .fill(VoceDesign.border.opacity(0.95))
-                            .frame(width: 1, height: 18)
-
-                        Text(fieldTitle)
-                            .font(VoceDesign.callout())
-                            .foregroundStyle(VoceDesign.textPrimary)
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, VoceDesign.md)
-                    .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Global hands-free hotkey")
-                .accessibilityValue(fieldTitle)
 
                 Button("Reset") {
                     hotkey = nil
@@ -1421,15 +1379,10 @@ struct HotkeyRecorderField: View {
             }
 
             if let helperText = coordinator.helperText {
-                Text(helperText)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
+                HotkeyRecorderHelperText(text: helperText)
             }
         }
-        .onDisappear {
-            coordinator.stopCapture()
-        }
-        .stopsHotkeyCaptureWhenTabInactive {
+        .endsHotkeyCaptureWhenHidden {
             coordinator.stopCapture()
         }
     }
@@ -1456,7 +1409,12 @@ struct KeyboardShortcutRecorderField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
             HStack(spacing: VoceDesign.sm) {
-                Button {
+                HotkeyRecorderFieldButton(
+                    idleSystemImage: "keyboard",
+                    title: fieldTitle,
+                    accessibilityLabel: accessibilityLabel,
+                    isCapturing: coordinator.isCapturing
+                ) {
                     if coordinator.isCapturing {
                         coordinator.stopCapture()
                     } else {
@@ -1464,30 +1422,7 @@ struct KeyboardShortcutRecorderField: View {
                             shortcut = capturedShortcut
                         }
                     }
-                } label: {
-                    HStack(spacing: VoceDesign.sm) {
-                        Image(systemName: coordinator.isCapturing ? "keyboard.badge.ellipsis" : "keyboard")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
-
-                        Rectangle()
-                            .fill(VoceDesign.border.opacity(0.95))
-                            .frame(width: 1, height: 18)
-
-                        Text(fieldTitle)
-                            .font(VoceDesign.callout())
-                            .foregroundStyle(VoceDesign.textPrimary)
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, VoceDesign.md)
-                    .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(accessibilityLabel)
-                .accessibilityValue(fieldTitle)
 
                 Button("Clear") {
                     shortcut = .disabledSentinel
@@ -1518,15 +1453,10 @@ struct KeyboardShortcutRecorderField: View {
             }
 
             if let helperText = coordinator.helperText {
-                Text(helperText)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
+                HotkeyRecorderHelperText(text: helperText)
             }
         }
-        .onDisappear {
-            coordinator.stopCapture()
-        }
-        .stopsHotkeyCaptureWhenTabInactive {
+        .endsHotkeyCaptureWhenHidden {
             coordinator.stopCapture()
         }
     }
@@ -1551,7 +1481,12 @@ struct HandsFreeToggleHotkeyRecorderField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: VoceDesign.xs) {
             HStack(spacing: VoceDesign.sm) {
-                Button {
+                HotkeyRecorderFieldButton(
+                    idleSystemImage: "keyboard",
+                    title: fieldTitle,
+                    accessibilityLabel: "Global hands-free hotkey",
+                    isCapturing: coordinator.isCapturing
+                ) {
                     if coordinator.isCapturing {
                         coordinator.stopCapture()
                     } else {
@@ -1559,30 +1494,7 @@ struct HandsFreeToggleHotkeyRecorderField: View {
                             hotkey = capturedHotkey
                         }
                     }
-                } label: {
-                    HStack(spacing: VoceDesign.sm) {
-                        Image(systemName: coordinator.isCapturing ? "keyboard.badge.ellipsis" : "keyboard")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(coordinator.isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
-
-                        Rectangle()
-                            .fill(VoceDesign.border.opacity(0.95))
-                            .frame(width: 1, height: 18)
-
-                        Text(fieldTitle)
-                            .font(VoceDesign.callout())
-                            .foregroundStyle(VoceDesign.textPrimary)
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, VoceDesign.md)
-                    .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .hotkeyRecorderChrome(isCapturing: coordinator.isCapturing)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Global hands-free hotkey")
-                .accessibilityValue(fieldTitle)
 
                 Button("Reset") {
                     hotkey = nil
@@ -1595,15 +1507,10 @@ struct HandsFreeToggleHotkeyRecorderField: View {
             }
 
             if let helperText = coordinator.helperText {
-                Text(helperText)
-                    .font(VoceDesign.caption())
-                    .foregroundStyle(VoceDesign.textSecondary)
+                HotkeyRecorderHelperText(text: helperText)
             }
         }
-        .onDisappear {
-            coordinator.stopCapture()
-        }
-        .stopsHotkeyCaptureWhenTabInactive {
+        .endsHotkeyCaptureWhenHidden {
             coordinator.stopCapture()
         }
         .onAppear {
@@ -1685,24 +1592,76 @@ private extension View {
     }
 }
 
-/// Tabs are hidden rather than removed, so `onDisappear` doesn't end a capture
-/// when the user switches away; this does.
-private struct StopHotkeyCaptureWhenTabInactiveModifier: ViewModifier {
+/// The recorder button shared by all hotkey fields: an icon, a divider, the
+/// current value (or capture prompt), in the shared recorder chrome.
+private struct HotkeyRecorderFieldButton: View {
+    let idleSystemImage: String
+    let title: String
+    let accessibilityLabel: String
+    let isCapturing: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: VoceDesign.sm) {
+                Image(systemName: isCapturing ? "keyboard.badge.ellipsis" : idleSystemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(isCapturing ? VoceDesign.accent : VoceDesign.textSecondary)
+
+                Rectangle()
+                    .fill(VoceDesign.border.opacity(0.95))
+                    .frame(width: 1, height: 18)
+
+                Text(title)
+                    .font(VoceDesign.callout())
+                    .foregroundStyle(VoceDesign.textPrimary)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, VoceDesign.md)
+            .padding(.vertical, VoceDesign.sm + VoceDesign.xxs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .hotkeyRecorderChrome(isCapturing: isCapturing)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(title)
+    }
+}
+
+private struct HotkeyRecorderHelperText: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(VoceDesign.caption())
+            .foregroundStyle(VoceDesign.textSecondary)
+    }
+}
+
+/// Ends a capture when the recorder goes away or its tab is hidden. Tabs are
+/// hidden rather than removed, so `onDisappear` alone doesn't fire when the
+/// user switches away.
+private struct EndHotkeyCaptureWhenHiddenModifier: ViewModifier {
     @Environment(\.voceTabIsActive) private var tabIsActive
     let stopCapture: () -> Void
 
     func body(content: Content) -> some View {
-        content.onChange(of: tabIsActive) { _, isActive in
-            if !isActive {
+        content
+            .onDisappear {
                 stopCapture()
             }
-        }
+            .onChange(of: tabIsActive) { _, isActive in
+                if !isActive {
+                    stopCapture()
+                }
+            }
     }
 }
 
 private extension View {
-    func stopsHotkeyCaptureWhenTabInactive(_ stopCapture: @escaping () -> Void) -> some View {
-        modifier(StopHotkeyCaptureWhenTabInactiveModifier(stopCapture: stopCapture))
+    func endsHotkeyCaptureWhenHidden(_ stopCapture: @escaping () -> Void) -> some View {
+        modifier(EndHotkeyCaptureWhenHiddenModifier(stopCapture: stopCapture))
     }
 }
 
