@@ -245,7 +245,7 @@ enum VoceProEntitlementError: LocalizedError {
         case .tooManyCodeRequests:
             return "Too many code requests. Try again later."
         case .tooManyIncorrectCodes:
-            return "Too many incorrect codes. Request a new code."
+            return "Too many incorrect codes. Request a new code or try again later."
         }
     }
 }

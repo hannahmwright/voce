@@ -4,6 +4,10 @@ import type { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 
 const MAX_CODE_ATTEMPTS = 5;
+// Failed verifications per email per hour, independent of how many codes are
+// issued. This is the brute-force bound: requesting new codes does not reset it.
+const MAX_VERIFY_FAILURES_PER_HOUR = 10;
+const VERIFY_FAILURE_WINDOW_MS = 60 * 60 * 1000;
 // lastSeenAt is informational; refreshing it at most hourly avoids a database
 // write on every authenticated request.
 export const SESSION_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
@@ -96,6 +100,42 @@ async function usableCodesNewestFirst(ctx: MutationCtx, email: string, now: numb
   return recentCodes.filter((code) => isUsableCode(code, now));
 }
 
+function verifyFailureKey(email: string) {
+  return `auth-verify-failures:email:${email}`;
+}
+
+async function rateLimitRow(ctx: MutationCtx, key: string) {
+  return await ctx.db
+    .query("rateLimits")
+    .withIndex("by_key", (q) => q.eq("key", key))
+    .unique();
+}
+
+async function verifyFailuresExhausted(ctx: MutationCtx, email: string, now: number) {
+  const row = await rateLimitRow(ctx, verifyFailureKey(email));
+  return (
+    row !== null &&
+    now - row.windowStartedAt < VERIFY_FAILURE_WINDOW_MS &&
+    row.count >= MAX_VERIFY_FAILURES_PER_HOUR
+  );
+}
+
+// Returns the failure count in the current window after recording this one.
+async function recordVerifyFailure(ctx: MutationCtx, email: string, now: number) {
+  const key = verifyFailureKey(email);
+  const row = await rateLimitRow(ctx, key);
+  if (!row) {
+    await ctx.db.insert("rateLimits", { key, windowStartedAt: now, count: 1 });
+    return 1;
+  }
+  if (now - row.windowStartedAt >= VERIFY_FAILURE_WINDOW_MS) {
+    await ctx.db.patch(row._id, { windowStartedAt: now, count: 1 });
+    return 1;
+  }
+  await ctx.db.patch(row._id, { count: row.count + 1 });
+  return row.count + 1;
+}
+
 export const createEmailCode = internalMutation({
   args: {
     email: v.string(),
@@ -136,6 +176,9 @@ export const consumeEmailCode = internalMutation({
   handler: async (ctx, args): Promise<{ ok: boolean; locked: boolean }> => {
     const email = normalizeEmail(args.email);
     const now = Date.now();
+    if (await verifyFailuresExhausted(ctx, email, now)) {
+      return { ok: false, locked: true };
+    }
     const candidates = (await usableCodesNewestFirst(ctx, email, now)).slice(0, MAX_ACTIVE_CODES);
     if (candidates.length === 0) {
       return { ok: false, locked: false };
@@ -162,7 +205,11 @@ export const consumeEmailCode = internalMutation({
       for (const code of candidates) {
         await ctx.db.patch(code._id, { attempts });
       }
-      return { ok: false, locked: attempts >= MAX_CODE_ATTEMPTS };
+      const hourlyFailures = await recordVerifyFailure(ctx, email, now);
+      return {
+        ok: false,
+        locked: attempts >= MAX_CODE_ATTEMPTS || hourlyFailures >= MAX_VERIFY_FAILURES_PER_HOUR,
+      };
     }
 
     await ctx.db.patch(match._id, {

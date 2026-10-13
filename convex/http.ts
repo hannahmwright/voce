@@ -22,6 +22,9 @@ const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 // Per-email limits only: no client IP header is documented as set by the
 // Convex edge, and forwarded-IP headers can be forged by clients.
 const AUTH_START_LIMIT_PER_EMAIL = 10;
+// Deployment-wide ceiling on access-code emails, to contain abuse spread
+// across many addresses. Hitting it is logged with console.error for alerting.
+const AUTH_START_GLOBAL_LIMIT_PER_HOUR = 2000;
 const SUPPORT_LIMIT_PER_EMAIL = 5;
 // Request size limits. A 60-minute dictation is roughly 10k words (~60k
 // characters), and OpenAI's transcription endpoint accepts files up to 25 MB.
@@ -754,6 +757,21 @@ http.route({
       return limited;
     }
 
+    const globallyLimited = await rateLimited(
+      ctx,
+      [{ key: "auth-start:global", limit: AUTH_START_GLOBAL_LIMIT_PER_HOUR }],
+      {
+        error: "Too many code requests. Try again later.",
+        code: "too_many_code_requests",
+      },
+    );
+    if (globallyLimited) {
+      console.error("ALERT: global /auth/start hourly ceiling reached", {
+        limit: AUTH_START_GLOBAL_LIMIT_PER_HOUR,
+      });
+      return globallyLimited;
+    }
+
     const code = randomDigits(6);
     const hash = await codeHash(email, code);
     await ctx.runMutation(internal.auth.createEmailCode, {
@@ -803,7 +821,7 @@ http.route({
       if (verification.locked) {
         return jsonResponse(
           {
-            error: "Too many incorrect codes. Request a new code.",
+            error: "Too many incorrect codes. Request a new code or try again later.",
             code: "too_many_incorrect_codes",
           },
           429,
