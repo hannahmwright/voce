@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as cloudDictation from "../cloudDictation.js";
+import type * as crons from "../crons.js";
 import type * as entitlements from "../entitlements.js";
 import type * as http from "../http.js";
 import type * as stripe from "../stripe.js";
@@ -23,6 +24,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   cloudDictation: typeof cloudDictation;
+  crons: typeof crons;
   entitlements: typeof entitlements;
   http: typeof http;
   stripe: typeof stripe;

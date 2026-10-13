@@ -75,6 +75,13 @@ export class CloudDictationProviderError extends Error {
 }
 
 const OPENAI_BASE_URL = "https://api.openai.com";
+// A realtime client secret is only needed to open a WebSocket; established
+// sessions keep running after it expires and long dictations mint a fresh
+// secret for each rollover connection. Shipped app builds judge freshness from
+// the absolute expiresAt with a 5-minute lead, so the lifetime must stay far
+// above that (and above plausible Mac clock skew) or their warm-up refresh
+// loops and cached secrets break. Do not shorten without an app-side change.
+const REALTIME_CLIENT_SECRET_TTL_SECONDS = 60 * 60;
 
 function openAIAPIKey() {
   const key = process.env.VOCE_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY;
@@ -92,7 +99,24 @@ function transcriptionModel() {
 }
 
 function realtimeTranscriptionModel() {
-  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? "gpt-live-transcribe";
+  return process.env.VOCE_OPENAI_REALTIME_TRANSCRIPTION_MODEL ?? DEFAULT_REALTIME_TRANSCRIPTION_MODEL;
+}
+
+// The Mac app requests the default realtime model unless a developer overrides it,
+// so only the default and the server-configured model may be requested.
+const DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-live-transcribe";
+
+function resolvedRealtimeTranscriptionModel(requestedModel: string | undefined) {
+  const serverModel = realtimeTranscriptionModel();
+  const model = requestedModel?.trim();
+  if (!model) {
+    return serverModel;
+  }
+  if (model === serverModel || model === DEFAULT_REALTIME_TRANSCRIPTION_MODEL) {
+    return model;
+  }
+  console.warn("ignoring unsupported realtime transcription model", { requestedModel: model });
+  return serverModel;
 }
 
 function refinementModel() {
@@ -448,11 +472,11 @@ export async function createRealtimeTranscriptionSession(args: {
   hints: string[];
   model?: string;
 }) {
-  const model = args.model?.trim() || realtimeTranscriptionModel();
+  const model = resolvedRealtimeTranscriptionModel(args.model);
   const response = await openAIRealtimeTranscriptionSessionRequest({
     expires_after: {
       anchor: "created_at",
-      seconds: 7200,
+      seconds: REALTIME_CLIENT_SECRET_TTL_SECONDS,
     },
     session: {
       type: "transcription",
@@ -484,9 +508,17 @@ export async function createRealtimeTranscriptionSession(args: {
     );
   }
 
+  // Relative lifetime lets the app compute expiry on its own clock, so a skewed
+  // Mac clock cannot make a short-lived secret look already expired.
+  const expiresInSeconds =
+    typeof response.expires_at === "number"
+      ? Math.max(0, response.expires_at - Math.floor(Date.now() / 1000))
+      : REALTIME_CLIENT_SECRET_TTL_SECONDS;
+
   return {
     clientSecret: value,
     expiresAt: response.expires_at,
+    expiresInSeconds,
   };
 }
 

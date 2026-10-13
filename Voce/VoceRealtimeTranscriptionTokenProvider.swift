@@ -134,7 +134,7 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
             }
             return RealtimeTranscriptionClientSecretCache.CachedSecret(
                 value: value,
-                expiresAt: payload.expiresAt
+                expiresAt: Self.localExpiresAt(for: payload)
             )
         } catch let error as CloudDictationError {
             throw error
@@ -144,6 +144,17 @@ struct VoceRealtimeTranscriptionTokenProvider: Sendable {
             }
             throw CloudDictationError.networkUnavailable
         }
+    }
+
+    /// Client secrets are short-lived, so express their expiry on this Mac's
+    /// clock when the server reports a relative lifetime. That keeps the cache
+    /// and warm-up refresh correct even if the system clock is skewed. Older
+    /// servers only return OpenAI's absolute `expiresAt`, which is used as-is.
+    private static func localExpiresAt(for payload: RealtimeSessionResponse) -> Int? {
+        if let expiresInSeconds = payload.expiresInSeconds, expiresInSeconds >= 0 {
+            return Int(Date().timeIntervalSince1970) + expiresInSeconds
+        }
+        return payload.expiresAt
     }
 
     private func cloudError(status: Int, data: Data) -> CloudDictationError {
@@ -202,6 +213,11 @@ private actor RealtimeTranscriptionClientSecretCache {
         }
     }
 
+    // Must stay in step with DictationController's warm-up refresh lead time:
+    // if the cache considered a secret fresh past the point where the warm-up
+    // task refreshes it, that task would receive the same secret back and
+    // reschedule itself immediately. The server mints secrets that live well
+    // beyond this lead time.
     private static let refreshLeadTime: TimeInterval = 5 * 60
 
     private var cachedSecrets: [Key: CachedSecret] = [:]
@@ -259,6 +275,7 @@ private struct RealtimeSessionRequest: Encodable {
 private struct RealtimeSessionResponse: Decodable {
     var clientSecret: String
     var expiresAt: Int?
+    var expiresInSeconds: Int?
 }
 
 private struct RealtimeErrorResponse: Decodable {

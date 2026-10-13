@@ -221,6 +221,8 @@ enum VoceProEntitlementError: LocalizedError {
     case checkoutUnavailable
     case portalUnavailable
     case verificationFailed
+    case tooManyCodeRequests
+    case tooManyIncorrectCodes
 
     var errorDescription: String? {
         switch self {
@@ -240,6 +242,10 @@ enum VoceProEntitlementError: LocalizedError {
             return "Could not open subscription settings."
         case .verificationFailed:
             return "Could not verify that code."
+        case .tooManyCodeRequests:
+            return "Too many code requests. Try again later."
+        case .tooManyIncorrectCodes:
+            return "Too many incorrect codes. Request a new code or try again later."
         }
     }
 }
@@ -306,6 +312,9 @@ actor VoceProEntitlementService {
         if httpResponse.statusCode == 400 {
             throw VoceProEntitlementError.invalidEmail
         }
+        if httpResponse.statusCode == 429 {
+            throw VoceProEntitlementError.tooManyCodeRequests
+        }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw VoceProEntitlementError.accessCodeUnavailable
         }
@@ -320,6 +329,9 @@ actor VoceProEntitlementService {
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw VoceProEntitlementError.invalidResponse
+        }
+        if httpResponse.statusCode == 429 {
+            throw VoceProEntitlementError.tooManyIncorrectCodes
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw VoceProEntitlementError.verificationFailed
