@@ -188,13 +188,7 @@ public actor SessionCoordinator {
     ) async throws -> FinalizedTranscript {
         let clock = ContinuousClock()
         let startedAt = clock.now
-        var rawTranscript = raw
-
-        let snippetStartedAt = clock.now
-        rawTranscript.text = await snippetService.apply(to: rawTranscript.text, appContext: active.appContext)
-        Self.logger.notice(
-            "Snippet expansion finished in \(self.secondsSince(snippetStartedAt, clock: clock), format: .fixed(precision: 2))s"
-        )
+        let rawTranscript = raw
 
         let profileStartedAt = clock.now
         let profile = if let styleOverride {
@@ -229,9 +223,18 @@ public actor SessionCoordinator {
 
         // Apply voice commands (punctuation, whitespace, "delete that", custom) after cleanup.
         let voiceCommandsStartedAt = clock.now
-        let finalText = voiceCommandService.apply(to: cleanupResult.transcript.text)
+        let commandedText = voiceCommandService.apply(to: cleanupResult.transcript.text)
         Self.logger.notice(
             "Voice command transform finished in \(self.secondsSince(voiceCommandsStartedAt, clock: clock), format: .fixed(precision: 2))s"
+        )
+
+        // Expand snippets last so expansions are inserted verbatim: cleanup would
+        // otherwise flatten multi-line expansions, strip "fillers" inside them,
+        // apply lexicon/voice commands to them, or let the ranker reject them.
+        let snippetStartedAt = clock.now
+        let finalText = await snippetService.apply(to: commandedText, appContext: active.appContext)
+        Self.logger.notice(
+            "Snippet expansion finished in \(self.secondsSince(snippetStartedAt, clock: clock), format: .fixed(precision: 2))s"
         )
 
         Self.logger.notice(

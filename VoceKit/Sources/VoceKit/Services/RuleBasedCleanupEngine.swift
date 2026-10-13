@@ -87,7 +87,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         var dict: [String: NSRegularExpression] = [:]
         for filler in fillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
-            let pattern = "(?i)(?:\\s|^)\(escaped)(?=\\s|[,.!?]|$)"
+            let pattern = "(?im)(?:[^\\S\\n]|^)\(escaped)(?=\\s|[,.!?]|$)"
             if let regex = try? NSRegularExpression(pattern: pattern) {
                 dict[filler] = regex
             }
@@ -113,14 +113,14 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         let basicallySafe = "(?:the|a|an|it|what)"
 
         let specs: [(String, String)] = [
-            ("you know", "(?i)(?:\\s|^)you know(?!\\s+\(youKnowSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("you know", "(?im)(?:[^\\S\\n]|^)you know(?!\\s+\(youKnowSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
             // Preserve meaning-bearing phrases such as "that's what I mean" and
             // "you know what I mean" by refusing to treat "I mean" as filler
             // when it is preceded by "what ".
-            ("i mean", "(?i)(?:\\s|^)(?<!what\\s)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("sort of", "(?i)(?:\\s|^)sort of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("kind of", "(?i)(?:\\s|^)kind of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("basically", "(?i)(?:\\s|^)basically(?!\\s+\(basicallySafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("i mean", "(?im)(?:[^\\S\\n]|^)(?<!what\\s)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("sort of", "(?im)(?:[^\\S\\n]|^)sort of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("kind of", "(?im)(?:[^\\S\\n]|^)kind of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("basically", "(?im)(?:[^\\S\\n]|^)basically(?!\\s+\(basicallySafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
         ]
 
         var dict: [String: NSRegularExpression] = [:]
@@ -147,9 +147,10 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         }
     }()
 
-    private static let whitespaceRegex: NSRegularExpression = {
-        try! NSRegularExpression(pattern: "\\s+")
-    }()
+    /// Runs of horizontal whitespace (line breaks are preserved).
+    private static let whitespaceRegex = try? NSRegularExpression(pattern: "[^\\S\\n]+")
+    /// Spaces hugging a line break: "a \n b" → "a\nb".
+    private static let spacesAroundNewlineRegex = try? NSRegularExpression(pattern: " *\\n *")
 
     // MARK: - Filler Removal
 
@@ -470,8 +471,21 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
     }
 
     private func collapseWhitespace(_ text: String) -> String {
-        let range = NSRange(text.startIndex..., in: text)
-        let collapsed = Self.whitespaceRegex.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
+        var collapsed = text
+        if let regex = Self.whitespaceRegex {
+            collapsed = regex.stringByReplacingMatches(
+                in: collapsed,
+                range: NSRange(collapsed.startIndex..., in: collapsed),
+                withTemplate: " "
+            )
+        }
+        if let regex = Self.spacesAroundNewlineRegex {
+            collapsed = regex.stringByReplacingMatches(
+                in: collapsed,
+                range: NSRange(collapsed.startIndex..., in: collapsed),
+                withTemplate: "\n"
+            )
+        }
         return collapsed.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
