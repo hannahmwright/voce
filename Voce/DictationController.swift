@@ -1232,6 +1232,8 @@ final class DictationController: ObservableObject {
     func refreshHistory() async {
         let all = await historyStore.recent(limit: 500)
         metricEntries = all
+        // Before recentEntries publishes, so Home renders with fresh aggregates.
+        rebuildHistoryMetrics()
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
     }
@@ -3711,22 +3713,65 @@ final class DictationController: ObservableObject {
         return firstName.isEmpty ? "there" : firstName
     }
 
-    var totalWordsDictated: Int {
-        metricEntries
-            .reduce(0) { total, entry in
-                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
-                return total + text.split(whereSeparator: \.isWhitespace).count
+    /// Aggregates over `metricEntries`, rebuilt once per history reload instead
+    /// of being recomputed (splitting up to 500 transcripts into words) several
+    /// times per Home render. Not @Published: `refreshHistory()` rebuilds it
+    /// right before publishing `recentEntries`, which is what views observe.
+    private struct HistoryMetricsCache {
+        var wordCountByEntryID: [UUID: Int] = [:]
+        var entryWordCounts: [(createdAt: Date, words: Int)] = []
+        var totalWords = 0
+        var dailyUsageActivity: [DailyUsageActivityDay] = []
+    }
+
+    private var historyMetrics = HistoryMetricsCache()
+
+    private func rebuildHistoryMetrics() {
+        var cache = HistoryMetricsCache()
+        cache.wordCountByEntryID.reserveCapacity(metricEntries.count)
+        cache.entryWordCounts.reserveCapacity(metricEntries.count)
+
+        let calendar = Calendar.current
+        var dailyWords: [Date: (words: Int, sessions: Int)] = [:]
+
+        for entry in metricEntries {
+            let words = wordCount(for: entry)
+            cache.wordCountByEntryID[entry.id] = words
+            cache.entryWordCounts.append((entry.createdAt, words))
+            cache.totalWords += words
+
+            let day = calendar.startOfDay(for: entry.createdAt)
+            let current = dailyWords[day] ?? (0, 0)
+            dailyWords[day] = (current.words + words, current.sessions + 1)
+        }
+
+        cache.dailyUsageActivity = dailyWords
+            .map { day, stats in
+                DailyUsageActivityDay(day: day, wordCount: stats.words, sessionCount: stats.sessions)
             }
+            .sorted { $0.day < $1.day }
+
+        historyMetrics = cache
+    }
+
+    /// Word count used by every usage metric: what the user dictated, i.e. the
+    /// AI source text for AI entries, otherwise the cleaned (or raw) text.
+    func metricWordCount(for entry: TranscriptEntry) -> Int {
+        historyMetrics.wordCountByEntryID[entry.id] ?? wordCount(for: entry)
+    }
+
+    // All-time, today, and timed totals now count AI entries by their source
+    // text, matching the weekly and daily-activity metrics. They previously
+    // counted the AI output instead.
+    var totalWordsDictated: Int {
+        historyMetrics.totalWords
     }
 
     var wordsDictatedToday: Int {
         let calendar = Calendar.current
-        return metricEntries
+        return historyMetrics.entryWordCounts
             .filter { calendar.isDateInToday($0.createdAt) }
-            .reduce(0) { total, entry in
-                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
-                return total + text.split(whereSeparator: \.isWhitespace).count
-            }
+            .reduce(0) { $0 + $1.words }
     }
 
     private var timedWordsDictated: Int {
@@ -3734,12 +3779,9 @@ final class DictationController: ObservableObject {
             return 0
         }
 
-        return metricEntries
+        return historyMetrics.entryWordCounts
             .filter { $0.createdAt >= trackingStartedAt }
-            .reduce(0) { total, entry in
-                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
-                return total + text.split(whereSeparator: \.isWhitespace).count
-            }
+            .reduce(0) { $0 + $1.words }
     }
 
     var wordsPerMinute: Int {
@@ -3755,20 +3797,7 @@ final class DictationController: ObservableObject {
     }
 
     var dailyUsageActivity: [DailyUsageActivityDay] {
-        let calendar = Calendar.current
-        let grouped = Dictionary(grouping: metricEntries) { entry in
-            calendar.startOfDay(for: entry.createdAt)
-        }
-
-        return grouped
-            .map { day, entries in
-                DailyUsageActivityDay(
-                    day: day,
-                    wordCount: entries.reduce(0) { $0 + wordCount(for: $1) },
-                    sessionCount: entries.count
-                )
-            }
-            .sorted { $0.day < $1.day }
+        historyMetrics.dailyUsageActivity
     }
 
     var daysUsed: Int {

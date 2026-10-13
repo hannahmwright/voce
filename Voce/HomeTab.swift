@@ -9,8 +9,6 @@ struct HomeTab: View {
     let isActive: Bool
     let onOpenTapToTalkSettings: () -> Void
     @State private var expandedIDs: Set<UUID> = []
-    @State private var hoveredID: UUID?
-    @State private var hoveredActivityCellID: String?
     @State private var activityMonthOffset = 0
     @State private var currentTime = Date()
     @State private var showErrorBanner = false
@@ -622,31 +620,17 @@ struct HomeTab: View {
                     spacing: activityHeatmapSpacing
                 ) {
                     ForEach(cells) { cell in
-                        let isHovered = hoveredActivityCellID == cell.id
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(
-                                activityHeatmapColor(
-                                    for: cell.level,
-                                    isFuture: cell.isFuture,
-                                    isInDisplayedMonth: cell.isInDisplayedMonth
-                                )
-                            )
-                            .frame(width: activityHeatmapCellSize, height: activityHeatmapCellSize)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                    .stroke(
-                                        isHovered
-                                            ? VoceDesign.textPrimary.opacity(0.78)
-                                            : activityHeatmapBorderColor(for: cell),
-                                        lineWidth: isHovered ? 1.2 : VoceDesign.borderThin
-                                    )
-                            )
-                            .contentShape(Rectangle())
-                            .onHover { isHovering in
-                                hoveredActivityCellID = isHovering ? cell.id : nil
-                            }
-                            .help(activityTooltip(for: cell))
-                            .accessibilityLabel(activityAccessibilityLabel(for: cell))
+                        HomeActivityHeatmapCellView(
+                            fill: activityHeatmapColor(
+                                for: cell.level,
+                                isFuture: cell.isFuture,
+                                isInDisplayedMonth: cell.isInDisplayedMonth
+                            ),
+                            border: activityHeatmapBorderColor(for: cell),
+                            size: activityHeatmapCellSize,
+                            tooltip: activityTooltip(for: cell),
+                            accessibilityLabel: activityAccessibilityLabel(for: cell)
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -764,7 +748,6 @@ struct HomeTab: View {
 
     private func shiftActivityMonth(by offset: Int) {
         activityMonthOffset = min(0, activityMonthOffset + offset)
-        hoveredActivityCellID = nil
     }
 
     private func activityMonthButton(
@@ -840,7 +823,7 @@ struct HomeTab: View {
 
     private var metricsDashboard: HomeMetricsDashboard {
         let entries = entriesInCurrentWeek
-        let weeklyWordCount = entries.reduce(0) { $0 + metricWordCount(for: $1) }
+        let weeklyWordCount = entries.reduce(0) { $0 + controller.metricWordCount(for: $1) }
         let typingWPM = max(controller.preferences.metricsBestTypingWordsPerMinute, 40)
         let dictationWPM = max(Double(controller.wordsPerMinute), 125)
         let weeklyTypedMinutes = estimatedTypedMinutes(wordCount: weeklyWordCount, typingWPM: typingWPM)
@@ -876,14 +859,15 @@ struct HomeTab: View {
             !entry.appBundleID.isEmpty && entry.appBundleID != "unknown"
         }
         let grouped = Dictionary(grouping: entries, by: \.appBundleID)
-        let appStats = grouped.map { bundleID, entries in
-            let words = entries.reduce(0) { $0 + metricWordCount(for: $1) }
-            return (bundleID: bundleID, words: words)
+        let appStats = grouped.compactMap { bundleID, entries -> (bundleID: String, words: Int, name: String)? in
+            let words = entries.reduce(0) { $0 + controller.metricWordCount(for: $1) }
+            guard words > 0 else { return nil }
+            // Resolve the name once per app, not inside the sort comparator.
+            return (bundleID: bundleID, words: words, name: appName(for: bundleID))
         }
-        .filter { $0.words > 0 }
         .sorted {
             if $0.words == $1.words {
-                return appName(for: $0.bundleID).localizedCaseInsensitiveCompare(appName(for: $1.bundleID)) == .orderedAscending
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
             return $0.words > $1.words
         }
@@ -894,23 +878,11 @@ struct HomeTab: View {
             HomeTopAppMetric(
                 rank: index + 1,
                 bundleID: stat.bundleID,
-                name: appName(for: stat.bundleID),
+                name: stat.name,
                 wordCount: stat.words,
                 share: Double(stat.words) / Double(totalWords)
             )
         }
-    }
-
-    private func metricWordCount(for entry: TranscriptEntry) -> Int {
-        let text: String
-        if entry.aiWorkflowName != nil,
-           let sourceText = entry.sourceText,
-           !sourceText.isEmpty {
-            text = sourceText
-        } else {
-            text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
-        }
-        return text.split(whereSeparator: \.isWhitespace).count
     }
 
     private func estimatedSavedMinutes(wordCount: Int, typingWPM: Double, dictationWPM: Double) -> Double {
@@ -1016,9 +988,13 @@ struct HomeTab: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// Each day rendered as its own "table" — header + divider-separated rows
+    /// Each day rendered as its own "table" — header + divider-separated rows.
+    /// A Group rather than a VStack so the header, dividers and rows become
+    /// individual children of the history LazyVStack and load lazily; a busy
+    /// Today group no longer builds every row up front.
+    @ViewBuilder
     private func dayTable(_ group: HomeDayGroup, layout: HomeLayout) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Group {
             // Day header
             Text(group.label.uppercased())
                 .font(VoceDesign.font(size: 11, weight: .semibold))
@@ -1047,7 +1023,41 @@ struct HomeTab: View {
         let isExpanded = expandedIDs.contains(entry.id)
         let showsAISections = (entry.sourceText?.isEmpty == false) && entry.aiWorkflowName != nil
 
-        return HStack(alignment: .top, spacing: VoceDesign.lg) {
+        return HomeEntryHoverContainer { isHovered in
+            entryRowContent(entry, layout: layout, isExpanded: isExpanded, isHovered: isHovered)
+        }
+        .onTapGesture { copyEntry(entry) }
+        .contextMenu {
+            if showsAISections {
+                Button { copyEntryTranscript(entry) } label: {
+                    Label("Copy Transcript", systemImage: "waveform.and.mic")
+                }
+                Button { copyEntryAIOutput(entry) } label: {
+                    Label("Copy AI Output", systemImage: "sparkles")
+                }
+            } else {
+                Button { copyEntry(entry) } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+            Divider()
+            aiContextMenuItems(for: entry)
+            Divider()
+            Button(role: .destructive) { controller.deleteEntry(entry) } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+    }
+
+    /// Row body; `isHovered` comes from HomeEntryHoverContainer so hovering
+    /// re-renders just this row instead of the whole Home tab.
+    private func entryRowContent(
+        _ entry: TranscriptEntry,
+        layout: HomeLayout,
+        isExpanded: Bool,
+        isHovered: Bool
+    ) -> some View {
+        HStack(alignment: .top, spacing: VoceDesign.lg) {
             // Timestamp
             Text(absoluteTimestamp(for: entry.createdAt))
                 .font(VoceDesign.font(size: 13).monospacedDigit())
@@ -1092,9 +1102,9 @@ struct HomeTab: View {
                 }
             }
             .frame(width: 18, height: 18, alignment: .center)
-            .opacity(hoveredID == entry.id ? 1 : 0)
-            .allowsHitTesting(hoveredID == entry.id)
-            .animation(.easeInOut(duration: VoceDesign.animationFast), value: hoveredID == entry.id)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+            .animation(.easeInOut(duration: VoceDesign.animationFast), value: isHovered)
             .padding(.top, 1)
 
             // Expand chevron
@@ -1112,34 +1122,6 @@ struct HomeTab: View {
         }
         .padding(.horizontal, VoceDesign.xl)
         .padding(.vertical, VoceDesign.md)
-        .background {
-            if hoveredID == entry.id {
-                Rectangle().fill(VoceDesign.textPrimary.opacity(0.03))
-            }
-        }
-        .contentShape(Rectangle())
-        .onHover { hovering in hoveredID = hovering ? entry.id : nil }
-        .onTapGesture { copyEntry(entry) }
-        .contextMenu {
-            if showsAISections {
-                Button { copyEntryTranscript(entry) } label: {
-                    Label("Copy Transcript", systemImage: "waveform.and.mic")
-                }
-                Button { copyEntryAIOutput(entry) } label: {
-                    Label("Copy AI Output", systemImage: "sparkles")
-                }
-            } else {
-                Button { copyEntry(entry) } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-            }
-            Divider()
-            aiContextMenuItems(for: entry)
-            Divider()
-            Button(role: .destructive) { controller.deleteEntry(entry) } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
     }
 
     @ViewBuilder
@@ -1521,8 +1503,15 @@ struct HomeTab: View {
         var groups: [String: [TranscriptEntry]] = [:]
         var order: [String] = []
 
+        // Format each distinct day once rather than once per entry.
+        var previousDay: Date?
+        var label = ""
         for entry in controller.recentEntries {
-            let label = dayLabel(for: entry.createdAt, calendar: calendar)
+            let day = calendar.startOfDay(for: entry.createdAt)
+            if day != previousDay {
+                previousDay = day
+                label = dayLabel(for: entry.createdAt, calendar: calendar)
+            }
             if groups[label] == nil {
                 order.append(label)
                 groups[label] = []
@@ -1633,6 +1622,51 @@ struct HomeTab: View {
         let minutes = total / 60
         let seconds = total % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+/// Owns a history row's hover state so hovering only re-renders that row.
+private struct HomeEntryHoverContainer<Content: View>: View {
+    @ViewBuilder let content: (Bool) -> Content
+    @State private var isHovered = false
+
+    var body: some View {
+        content(isHovered)
+            .background {
+                if isHovered {
+                    Rectangle().fill(VoceDesign.textPrimary.opacity(0.03))
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in isHovered = hovering }
+    }
+}
+
+/// One activity heatmap day; owns its hover outline so moving the pointer
+/// across the grid doesn't re-render the whole Home tab.
+private struct HomeActivityHeatmapCellView: View {
+    let fill: Color
+    let border: Color
+    let size: CGFloat
+    let tooltip: String
+    let accessibilityLabel: String
+    @State private var isHovered = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(fill)
+            .frame(width: size, height: size)
+            .overlay(
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .stroke(
+                        isHovered ? VoceDesign.textPrimary.opacity(0.78) : border,
+                        lineWidth: isHovered ? 1.2 : VoceDesign.borderThin
+                    )
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering in isHovered = hovering }
+            .help(tooltip)
+            .accessibilityLabel(accessibilityLabel)
     }
 }
 
