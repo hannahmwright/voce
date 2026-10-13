@@ -345,3 +345,17 @@ func verifiedPasteCarriesNoticeWithoutDowngrading() async {
     #expect(result.recoveryAction == nil)
     #expect(result.notice == "Previous clipboard was not restored.")
 }
+
+@Test("A copied-only result never carries a clipboard notice")
+func copiedOnlyResultDropsNotice() async {
+    let service = InsertionService(transports: [
+        ClipboardInsertionTransport(clipboard: NoticeRaisingClipboard()) { _ in
+            .unverified(reason: "Paste sent but not confirmed")
+        }
+    ])
+
+    let result = await service.insert(text: "hello", target: .unknown)
+
+    #expect(result.status == .copiedOnly)
+    #expect(result.notice == nil)
+}
