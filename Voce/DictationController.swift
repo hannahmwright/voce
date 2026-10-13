@@ -573,7 +573,7 @@ final class DictationController: ObservableObject {
         realtimeWhisperClientSecretPrefetchTask = nil
         realtimeWhisperClientSecretRefreshTask?.cancel()
         realtimeWhisperClientSecretRefreshTask = nil
-        captureReadyOverlayStartTaskID = nil
+        resetRecordingIndicators()
         overlay.hide()
         screenRecordingHaze.hide()
         clipboardRecoveryPrompt.hide()
@@ -596,12 +596,7 @@ final class DictationController: ObservableObject {
         activeRealtimeWhisperSession?.preserveRecoveryCheckpoint()
         activeRealtimeWhisperSession?.cancel()
         activeRealtimeWhisperSession = nil
-        if let token = activeMediaToken {
-            mediaInterruption.endInterruption(token: token)
-            activeMediaToken = nil
-        }
-        recordingTimer?.invalidate()
-        recordingTimer = nil
+        endActiveMediaInterruption()
         persistLearningDataBeforeExit()
     }
 
@@ -2039,6 +2034,30 @@ final class DictationController: ObservableObject {
         return true
     }
 
+    /// Returns the recording indicators, timer and per-recording limits to
+    /// "not recording". Shared by every path that ends or abandons a
+    /// recording (start failure, streaming failure, stop, teardown); each
+    /// path still releases its own per-dictation state.
+    private func resetRecordingIndicators() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        captureReadyOverlayStartTaskID = nil
+        recordingElapsed = 0
+        isRecording = false
+        handsFreeOn = false
+        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
+        activeRecordingMode = nil
+        activeFreeUsageLimitSeconds = nil
+        activeHostedCloudUsageLimitSeconds = nil
+        updateActiveRecordingHotkeys()
+    }
+
+    private func endActiveMediaInterruption() {
+        guard let token = activeMediaToken else { return }
+        mediaInterruption.endInterruption(token: token)
+        activeMediaToken = nil
+    }
+
     private func startSession(mode: RecordingMode, completionActionOverride: CompletionAction? = nil) {
         guard let coordinator else {
             status = "Runtime not ready yet."
@@ -2262,29 +2281,16 @@ final class DictationController: ObservableObject {
                     }
                     return
                 }
-                if let token = activeMediaToken {
-                    mediaInterruption.endInterruption(token: token)
-                    activeMediaToken = nil
-                }
-                self.recordingTimer?.invalidate()
-                self.recordingTimer = nil
-                self.recordingElapsed = 0
-                captureReadyOverlayStartTaskID = nil
-                isRecording = false
-                handsFreeOn = false
-                menuBar.updateIcon(isRecording: false, handsFreeOn: false)
-                activeRecordingMode = nil
+                endActiveMediaInterruption()
+                resetRecordingIndicators()
                 if activeDictationSequence == dictationSequence {
                     activeDictationSequence = nil
                 }
                 activeAppContext = nil
                 activeInputTarget = nil
-                activeFreeUsageLimitSeconds = nil
-                activeHostedCloudUsageLimitSeconds = nil
                 overlayPersistenceBundleIdentifier = nil
                 pendingCompletionActionOverride = nil
                 activeStyleOverride = nil
-                updateActiveRecordingHotkeys()
                 activePreviewSession = nil
                 activeRealtimeWhisperSession = nil
                 activeCloudUsageMetering = nil
@@ -2368,18 +2374,7 @@ final class DictationController: ObservableObject {
         activePreviewSession = nil
         activeRealtimeWhisperSession = nil
         activeCloudUsageMetering = nil
-
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        captureReadyOverlayStartTaskID = nil
-        recordingElapsed = 0
-        isRecording = false
-        handsFreeOn = false
-        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
-        activeRecordingMode = nil
-        activeFreeUsageLimitSeconds = nil
-        activeHostedCloudUsageLimitSeconds = nil
-        updateActiveRecordingHotkeys()
+        resetRecordingIndicators()
 
         Task {
             await pendingStart?.value
@@ -2402,11 +2397,7 @@ final class DictationController: ObservableObject {
                 }
                 currentSession = nil
                 activeDictationSequence = nil
-
-                if let token = activeMediaToken {
-                    mediaInterruption.endInterruption(token: token)
-                    activeMediaToken = nil
-                }
+                endActiveMediaInterruption()
 
                 activeAppContext = nil
                 activeInputTarget = nil
@@ -2447,17 +2438,7 @@ final class DictationController: ObservableObject {
         let cloudUsageMetering = activeCloudUsageMetering
         activeCloudUsageMetering = nil
         // Shared cleanup — runs on every path including the guard-return.
-        recordingTimer?.invalidate()
-        recordingTimer = nil
-        captureReadyOverlayStartTaskID = nil
-        recordingElapsed = 0
-        isRecording = false
-        handsFreeOn = false
-        menuBar.updateIcon(isRecording: false, handsFreeOn: false)
-        activeRecordingMode = nil
-        activeFreeUsageLimitSeconds = nil
-        activeHostedCloudUsageLimitSeconds = nil
-        updateActiveRecordingHotkeys()
+        resetRecordingIndicators()
 
         let readySession = currentSession
         let readyDictationSequence = activeDictationSequence
