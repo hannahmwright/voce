@@ -665,6 +665,10 @@ final class PreferencesDraftCommitter {
     /// The controller value the owning draft was last reconciled with.
     private var base: AppPreferences?
     private var pendingDraft: AppPreferences?
+    /// The last draft value fully accounted for: committed, adopted from the
+    /// controller, or edited back to it. A draft that differs from this holds
+    /// an edit whose onChange hasn't been delivered yet.
+    private var settledDraft: AppPreferences?
     private var pendingCommitTask: Task<Void, Never>?
     private var lastEditAt: ContinuousClock.Instant?
     /// Registered on first use rather than in init: SwiftUI re-runs `@State`
@@ -702,12 +706,19 @@ final class PreferencesDraftCommitter {
         let remote = controller.preferences
         defer { base = remote }
 
-        guard pendingDraft != nil, let base else {
+        // Also merge when an edit landed after the debounced commit cleared
+        // `pendingDraft` but before the draft's onChange reported it;
+        // returning `remote` then would silently revert that keystroke.
+        let hasUnreportedEdit = settledDraft.map { draft != $0 } ?? false
+        guard let base, pendingDraft != nil || hasUnreportedEdit else {
+            settledDraft = remote
             return remote
         }
 
         let merged = Self.merge(base: base, local: draft, remote: remote)
-        pendingDraft = merged
+        if pendingDraft != nil {
+            pendingDraft = merged
+        }
         return merged
     }
 
@@ -722,6 +733,7 @@ final class PreferencesDraftCommitter {
         guard draft != controller.preferences else {
             // Adopted from the controller, or edited back to the saved value.
             cancelPendingCommit()
+            settledDraft = draft
             return
         }
 
@@ -781,6 +793,7 @@ final class PreferencesDraftCommitter {
             return
         }
         cancelPendingCommit()
+        settledDraft = draft
 
         let current = controller.preferences
         var snapshot = draft
