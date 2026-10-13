@@ -192,6 +192,12 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
             var finishedChunkCount = 0
             while finishedChunkCount < chunks.count, let outcome = try await group.next() {
                 guard case .chunk(let index, let result) = outcome else {
+                    // The deadline sleeper also returns early when the caller
+                    // is cancelled; that is a cancellation, not a timeout.
+                    if Task.isCancelled {
+                        group.cancelAll()
+                        throw CancellationError()
+                    }
                     // Unfinished chunks keep their original text. Cancelling
                     // also cancels their in-flight requests.
                     reachedDeadline = true
@@ -232,6 +238,7 @@ struct ChunkedTranscriptRefinementEngine: TranscriptRefinementEngine, Sendable {
             group.cancelAll()
         }
 
+        try Task.checkCancellation()
         if reachedDeadline {
             Self.logger.error(
                 "Chunked refinement reached its deadline; \(chunks.count - refinedChunkCount, privacy: .public) of \(chunks.count, privacy: .public) chunks keep their original text"

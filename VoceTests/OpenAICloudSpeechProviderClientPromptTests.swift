@@ -213,3 +213,18 @@ func chunkedRefinementTreatsQuotaAsFatal() {
     #expect(ChunkedTranscriptRefinementEngine.isTransient(CloudDictationError.rateLimited))
     #expect(ChunkedTranscriptRefinementEngine.isTransient(CloudDictationError.timedOut) == false)
 }
+
+@Test("Cancelling chunked refinement reports cancellation, not a timeout")
+func chunkedRefinementReportsCancellation() async {
+    let recorder = ChunkRefinementRecorder()
+    var provider = FakeChunkRefinementProvider(recorder: recorder) { _, _ in nil }
+    provider.delayNanoseconds = { _ in 30_000_000_000 }
+    let refinement = Task {
+        try await refineInChunks(chunkedRefinementSample, provider: provider)
+    }
+    try? await Task.sleep(nanoseconds: 100_000_000)
+    refinement.cancel()
+
+    let result = await refinement.result
+    #expect(throws: CancellationError.self) { try result.get() }
+}
