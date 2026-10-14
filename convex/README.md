@@ -15,6 +15,12 @@ Feature flags:
 - `voce_dictation_local`: audit-only local dictation seconds.
 - `voce_dictation_byok`: audit-only BYOK cloud dictation seconds.
 
+All Convex query and mutation functions in this project are internal. They are
+not callable from public Convex clients; the app reaches them only through the
+authenticated HTTP routes in `convex/http.ts`. Admins can still run them from the
+Convex dashboard (Functions tab) or with `npx convex run` (add `--prod` for the
+production deployment).
+
 Manual grant examples:
 
 Prefer the `planTier` shorthand so a Pro grant always includes both features:
@@ -51,6 +57,7 @@ npx convex env set VOCE_AUTH_SECRET <long-random-secret>
 npx convex env set RESEND_API_KEY re_...
 npx convex env set VOCE_AUTH_EMAIL_FROM "Voce <access@your-domain.com>"
 npx convex env set VOCE_ADMIN_EMAILS "you@example.com"
+npx convex env set VOCE_ADMIN_API_SECRET <long-random-secret>
 npx convex env set VOCE_SUPPORT_EMAIL_FROM "Voce Support <support@your-domain.com>"
 npx convex env set VOCE_SUPPORT_EMAIL_TO "h.wright@vervetechgroup.com"
 npx convex env set VOCE_SIGNUP_EMAIL_TO "h.wright@vervetechgroup.com"
@@ -77,11 +84,22 @@ Recommended Stripe price mapping:
 - `STRIPE_PRO_MONTHLY_PRICE_ID`: Pro `$10/month`
 - `STRIPE_PRO_ANNUAL_PRICE_ID`: Pro `$108/year`
 
+Stripe subscriptions are mapped to plans with `STRIPE_PRO_PRODUCT_ID(S)`,
+`STRIPE_PRO_PRICE_ID(S)`, `STRIPE_BASE_PRODUCT_ID(S)` and
+`STRIPE_BASE_PRICE_ID(S)` (comma-separated lists are accepted). The checkout
+`STRIPE_{PRO,BASE}_{MONTHLY,ANNUAL}_PRICE_ID` prices are also recognized.
+If none of the explicit mapping variables (product IDs or `*_PRICE_ID(S)`) are
+set, subscriptions that match no checkout price are treated as Pro (the
+behaviour before plan mapping existed) and a warning is logged. Once an explicit mapping is set,
+subscriptions that match none of the configured IDs grant no plan.
+
 `VOCE_AUTH_SECRET` is required for hashing one-time email codes and app session tokens.
 `RESEND_API_KEY` and `VOCE_AUTH_EMAIL_FROM` are required for sending access codes.
 `VOCE_SUPPORT_EMAIL_FROM` and `VOCE_SUPPORT_EMAIL_TO` configure where in-app support requests are sent.
 `VOCE_SIGNUP_EMAIL_TO` optionally overrides where new signup notifications are sent.
-`VOCE_ADMIN_EMAILS` configures who can read the `/admin/usage-audit` report from the dev-only admin screen.
+`VOCE_ADMIN_EMAILS` configures who can read the `/admin/usage-audit` report with a verified email session.
+Only addresses listed here are admins; `VOCE_SUPPORT_EMAIL_TO` and `VOCE_SIGNUP_EMAIL_TO` do not grant admin access.
+`VOCE_ADMIN_API_SECRET` is the bearer secret for scripted `/admin/usage-audit` access. Bearer access is refused when it is unset.
 `VOCE_ENTITLEMENT_API_SECRET` is optional and should not be used as the primary app access control.
 The Mac app requires a verified email session token for entitlement checks, usage recording, and subscription portal sessions.
 
@@ -102,13 +120,25 @@ The app email verification endpoints are:
 ```txt
 https://<convex-deployment>.convex.site/auth/start
 https://<convex-deployment>.convex.site/auth/verify
+https://<convex-deployment>.convex.site/auth/logout
 ```
+
+`/auth/logout` revokes the session sent in `x-voce-session-token` (the row is
+marked `revokedAt` and rejected from then on).
+An hourly cron (`convex/crons.ts`) deletes expired sessions, login codes more
+than a day past expiry, stale rate-limit counters, and usage report IDs older
+than 45 days. New-signup notifications
+are based on the `emailAccounts` table, which is never cleaned up.
 
 The app usage endpoint is:
 
 ```txt
 https://<convex-deployment>.convex.site/entitlements/record-usage
 ```
+
+It accepts an optional `reportId` (UUID). A report whose `reportId` was already
+applied for the same email and feature returns the current entitlement without
+counting the seconds again. Reports without `reportId` are always counted.
 
 Usage audit report:
 
@@ -127,9 +157,10 @@ The dev app also reads the same report through:
 https://<convex-deployment>.convex.site/admin/usage-audit
 ```
 
-That endpoint requires either the entitlement API bearer secret or a verified
-session for an email listed in `VOCE_ADMIN_EMAILS`, `VOCE_SIGNUP_EMAIL_TO`, or
-`VOCE_SUPPORT_EMAIL_TO`.
+That endpoint requires either `Authorization: Bearer <VOCE_ADMIN_API_SECRET>`
+or a verified session (`x-voce-session-token` plus `email` in the body) for an
+email listed in `VOCE_ADMIN_EMAILS`. `VOCE_ENTITLEMENT_API_SECRET` does not
+grant admin access.
 
 Cloud dictation proxy endpoints are:
 

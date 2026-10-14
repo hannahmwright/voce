@@ -1,4 +1,4 @@
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 
 export const APP_ACCESS_FEATURE = "voce_app_access";
@@ -42,6 +42,21 @@ const STRIPE_BASE_PRODUCT_IDS = configuredSetFromEnv("STRIPE_BASE_PRODUCT_IDS", 
 const STRIPE_PRO_PRODUCT_IDS = configuredSetFromEnv("STRIPE_PRO_PRODUCT_IDS", "STRIPE_PRO_PRODUCT_ID");
 const STRIPE_BASE_PRICE_IDS = configuredSetFromEnv("STRIPE_BASE_PRICE_IDS", "STRIPE_BASE_PRICE_ID");
 const STRIPE_PRO_PRICE_IDS = configuredSetFromEnv("STRIPE_PRO_PRICE_IDS", "STRIPE_PRO_PRICE_ID");
+// The prices /stripe/checkout sells also identify the plan, so deployments that
+// only configure checkout still map those subscriptions correctly.
+const STRIPE_BASE_CHECKOUT_PRICE_IDS = configuredSetFromEnv(
+  "STRIPE_BASE_MONTHLY_PRICE_ID",
+  "STRIPE_BASE_ANNUAL_PRICE_ID",
+);
+const STRIPE_PRO_CHECKOUT_PRICE_IDS = configuredSetFromEnv(
+  "STRIPE_PRO_MONTHLY_PRICE_ID",
+  "STRIPE_PRO_ANNUAL_PRICE_ID",
+);
+const EXPLICIT_STRIPE_PLAN_MAPPING_CONFIGURED =
+  STRIPE_BASE_PRODUCT_IDS.size > 0 ||
+  STRIPE_PRO_PRODUCT_IDS.size > 0 ||
+  STRIPE_BASE_PRICE_IDS.size > 0 ||
+  STRIPE_PRO_PRICE_IDS.size > 0;
 
 function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
@@ -145,29 +160,44 @@ function planTierForStripeSubscription(subscription: {
 }): PlanTier | null {
   if (
     (subscription.productId && STRIPE_PRO_PRODUCT_IDS.has(subscription.productId)) ||
-    (subscription.priceId && STRIPE_PRO_PRICE_IDS.has(subscription.priceId))
+    (subscription.priceId &&
+      (STRIPE_PRO_PRICE_IDS.has(subscription.priceId) ||
+        STRIPE_PRO_CHECKOUT_PRICE_IDS.has(subscription.priceId)))
   ) {
     return "pro";
   }
 
   if (
     (subscription.productId && STRIPE_BASE_PRODUCT_IDS.has(subscription.productId)) ||
-    (subscription.priceId && STRIPE_BASE_PRICE_IDS.has(subscription.priceId))
+    (subscription.priceId &&
+      (STRIPE_BASE_PRICE_IDS.has(subscription.priceId) ||
+        STRIPE_BASE_CHECKOUT_PRICE_IDS.has(subscription.priceId)))
   ) {
     return "base";
   }
 
-  // Backward-compatible default for legacy subscriptions that predate explicit plan mapping.
-  if (
-    STRIPE_BASE_PRODUCT_IDS.size === 0 &&
-    STRIPE_PRO_PRODUCT_IDS.size === 0 &&
-    STRIPE_BASE_PRICE_IDS.size === 0 &&
-    STRIPE_PRO_PRICE_IDS.size === 0
-  ) {
+  // Backward-compatible default for legacy subscriptions that predate explicit
+  // plan mapping. Base checkouts are recognized above by their checkout price,
+  // so this only keeps unrecognized (legacy Pro) subscribers on Pro.
+  if (!EXPLICIT_STRIPE_PLAN_MAPPING_CONFIGURED) {
+    warnMissingStripePlanMappingOnce();
     return "pro";
   }
 
   return null;
+}
+
+let didWarnMissingStripePlanMapping = false;
+
+function warnMissingStripePlanMappingOnce() {
+  if (didWarnMissingStripePlanMapping) {
+    return;
+  }
+  didWarnMissingStripePlanMapping = true;
+  console.warn(
+    "Stripe plan mapping is not configured; treating unrecognized active subscriptions as Pro. " +
+      "Set STRIPE_PRO_PRODUCT_IDS / STRIPE_PRO_PRICE_IDS (and the Base equivalents).",
+  );
 }
 
 function activeStripeStatus(status: string) {
@@ -409,7 +439,7 @@ async function entitlementFor(ctx: ReadCtx, email: string, feature: string) {
   };
 }
 
-export const check = query({
+export const check = internalQuery({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
@@ -421,11 +451,13 @@ export const check = query({
   },
 });
 
-export const recordUsage = mutation({
+export const recordUsage = internalMutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
     seconds: v.number(),
+    // Optional idempotency key from the app. Old builds omit it.
+    reportId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const email = normalizeEmail(args.email);
@@ -438,11 +470,25 @@ export const recordUsage = mutation({
       return await entitlementFor(ctx, email, entitlementFeature);
     }
 
-    if (isAuditOnlyFeature(feature)) {
-      const entitlement = await entitlementFor(ctx, email, DEFAULT_FEATURE);
-      if (!entitlement.entitled) {
-        return entitlement;
+    if (args.reportId !== undefined) {
+      const reportId = args.reportId;
+      const alreadyApplied = await ctx.db
+        .query("usageReports")
+        .withIndex("by_email_feature_report", (q) =>
+          q.eq("email", email).eq("feature", feature).eq("reportId", reportId),
+        )
+        .first();
+      if (alreadyApplied) {
+        return await entitlementFor(ctx, email, entitlementFeature);
       }
+      // Recorded in the same transaction as the counters below, so a report is
+      // either fully applied once or not at all.
+      await ctx.db.insert("usageReports", { email, feature, reportId, appliedAt: now });
+    }
+
+    if (isAuditOnlyFeature(feature)) {
+      // Audit counters only measure dictation volume and never gate access, so
+      // record them whether or not the user is currently entitled.
       await addUsageSeconds(ctx, email, feature, seconds, now);
       if (feature !== TOTAL_DICTATION_FEATURE) {
         await addUsageSeconds(ctx, email, TOTAL_DICTATION_FEATURE, seconds, now);
@@ -516,7 +562,7 @@ function usageBucketForFeature(feature: string): UsageBucket | null {
   }
 }
 
-export const usageAudit = query({
+export const usageAudit = internalQuery({
   args: {
     months: v.optional(v.number()),
     costPerHostedMinuteUSD: v.optional(v.number()),
@@ -706,7 +752,7 @@ async function deleteManualEntitlement(
   return true;
 }
 
-export const grantManual = mutation({
+export const grantManual = internalMutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),
@@ -744,7 +790,7 @@ export const grantManual = mutation({
   },
 });
 
-export const revokeManual = mutation({
+export const revokeManual = internalMutation({
   args: {
     email: v.string(),
     feature: v.optional(v.string()),

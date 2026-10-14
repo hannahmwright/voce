@@ -77,7 +77,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Push debounced settings edits into the controller before any
+        // willTerminate observer runs, so its exit-time save sees them.
+        // Observers of this notification handle it synchronously on main.
+        NotificationCenter.default.post(name: .voceFlushPendingPreferenceDrafts, object: nil)
+        return .terminateNow
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Track app switches from launch: Settings opened from the menu bar
+        // makes Voce frontmost before any window's onAppear runs.
+        ExternalFrontmostAppTracker.startIfNeeded()
         installWindowObservers()
 
         // Delay slightly so the window is fully created before configuring transparency

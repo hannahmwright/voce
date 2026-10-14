@@ -1765,7 +1765,7 @@ func unverifiedPauseCommandEscalatesToMediaKeyForBrowsers() async {
     let chrome = FakeChromePlaybackController([.playing], pauseSucceeds: false)
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector(
-            [.playing, .playing, .notPlaying],
+            [.playing, .playing, .playing, .notPlaying],
             displayIDs: [MediaDisplayID.chrome],
             fallbackDisplayID: MediaDisplayID.chrome
         ),
@@ -1785,6 +1785,66 @@ func unverifiedPauseCommandEscalatesToMediaKeyForBrowsers() async {
         keyRecorder.sendCalls == 1,
         "A pause command that claims success while playback verifiably continues must escalate to the media key."
     )
+}
+
+@MainActor
+@Test("Pause escalation requires a second confirming detection before toggling the media key")
+func pauseEscalationRequiresConfirmingDetection() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let chrome = FakeChromePlaybackController([.playing], pauseSucceeds: false)
+    // begin: playing; first post-command detection lags (still playing);
+    // confirming detection: not playing. The command worked; a key press would
+    // have toggled playback back on.
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .playing, .notPlaying],
+            displayIDs: [MediaDisplayID.chrome],
+            fallbackDisplayID: MediaDisplayID.chrome
+        ),
+        chromePlaybackController: chrome,
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(commandRecorder.commands == [.pause])
+    #expect(keyRecorder.sendCalls == 0, "A lagging detection must not trigger a toggling media key press.")
+}
+
+@MainActor
+@Test("Resume escalation requires a second confirming detection before toggling the media key")
+func resumeEscalationRequiresConfirmingDetection() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    // begin: playing, post-pause: not playing; resume detection: not playing;
+    // post-resume detection lags (not playing); confirming detection: playing.
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying, .notPlaying, .notPlaying, .playing],
+            fallback: .playing
+        ),
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for confirmed generic playback.")
+        return
+    }
+    service.endInterruption(token: token)
+    let didResume = await waitUntil {
+        commandRecorder.commands == [.pause, .play]
+    }
+    #expect(didResume)
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    #expect(keyRecorder.sendCalls == 0, "A lagging detection must not re-pause resumed media.")
 }
 
 @MainActor
@@ -1891,7 +1951,7 @@ func weakBrowserDetectionEscalatesToMediaKeyWhenCommandUnverified() async {
     let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
     let service = MacMediaInterruptionService(
         playbackDetector: SequencedPlaybackDetector(
-            [.likelyPlaying, .likelyPlaying, .notPlaying],
+            [.likelyPlaying, .likelyPlaying, .likelyPlaying, .notPlaying],
             displayIDs: [MediaDisplayID.chrome],
             fallbackDisplayID: MediaDisplayID.chrome
         ),
@@ -2285,10 +2345,11 @@ func pauseVerifiesViaOwnerSilenceWhenDetectorStaysAmbiguous() async {
     let keyRecorder = MediaKeySendRecorder()
     let commandRecorder = MediaCommandRecorder()
     let chrome = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
-    // begin: Chrome audible; post-command verify: still audible (escalate to key);
-    // post-key verify: silent (pause verified through CoreAudio ground truth).
+    // begin: Chrome audible; post-command verify and its confirmation: still audible
+    // (escalate to key); post-key verify: silent (pause verified through CoreAudio
+    // ground truth).
     let audible = AudibleProcessSequence(
-        [["com.google.Chrome.helper"], ["com.google.Chrome.helper"], []],
+        [["com.google.Chrome.helper"], ["com.google.Chrome.helper"], ["com.google.Chrome.helper"], []],
         fallback: []
     )
     let service = MacMediaInterruptionService(
@@ -2504,5 +2565,330 @@ func productionServiceWiresAudibleProbeAndMediaKeyEscalation() {
             """
         )
     }
+}
+// MARK: - Re-interruption while a resume is pending
+
+/// Spotify controller whose first state query suspends until released, so tests can
+/// begin a new interruption while the resume task is inside the (osascript) probe.
+private actor GatedSpotifyPlaybackController: SpotifyPlaybackControlling {
+    private var gateOpen = false
+    private(set) var stateCalls = 0
+    private(set) var pauseCalls = 0
+    private(set) var playCalls = 0
+    private let gatedState: AppPlaybackState
+    private let laterState: AppPlaybackState
+
+    init(gatedState: AppPlaybackState, laterState: AppPlaybackState) {
+        self.gatedState = gatedState
+        self.laterState = laterState
+    }
+
+    func open() {
+        gateOpen = true
+    }
+
+    func playerState() async -> AppPlaybackState {
+        stateCalls += 1
+        if stateCalls == 1 {
+            while !gateOpen {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            return gatedState
+        }
+        return laterState
+    }
+
+    func pause() async -> Bool {
+        pauseCalls += 1
+        return true
+    }
+
+    func play() async -> Bool {
+        playCalls += 1
+        return true
+    }
+}
+
+@MainActor
+@Test("A new interruption during the pre-resume delay inherits the pause and resumes later")
+func newInterruptionDuringPreResumeDelayInheritsPause() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([.paused])
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying],
+        // After Voce paused Spotify, any re-detection reports not playing.
+        fallback: .notPlaying,
+        displayIDs: [MediaDisplayID.spotify, MediaDisplayID.spotify],
+        fallbackDisplayID: MediaDisplayID.spotify
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    #expect(await spotify.pauseCalls == 1)
+    service.endInterruption(token: firstToken)
+
+    // Second dictation starts inside the ~200ms pre-resume delay.
+    guard let secondToken = await service.beginInterruption() else {
+        Issue.record("A new interruption during a pending resume must inherit the pause, not re-detect.")
+        return
+    }
+    #expect(detector.detectCalls == 2, "Inheriting the pause must not re-detect Voce-paused media.")
+    #expect(await spotify.pauseCalls == 1, "Media is already paused; it must not be paused again.")
+
+    try? await Task.sleep(nanoseconds: 300_000_000)
+    #expect(await spotify.playCalls == 0, "The cancelled resume must not resume during the second dictation.")
+
+    service.endInterruption(token: secondToken)
+    let didResume = await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "Media paused by the first dictation must resume after the second one ends.")
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("A new interruption during the resume state query prevents the stale resume")
+func newInterruptionDuringResumeStateQueryPreventsStaleResume() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = GatedSpotifyPlaybackController(gatedState: .unknown, laterState: .paused)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying],
+            fallback: .notPlaying,
+            displayIDs: [MediaDisplayID.spotify, MediaDisplayID.spotify],
+            fallbackDisplayID: MediaDisplayID.spotify
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+    let resumeIsQuerying = await waitUntil {
+        await spotify.stateCalls == 1
+    }
+    #expect(resumeIsQuerying)
+
+    guard let secondToken = await service.beginInterruption() else {
+        Issue.record("A new interruption during a pending resume must inherit the pause.")
+        return
+    }
+
+    // The stale state query now completes with `.unknown`, which previously fell
+    // through to play() and resumed the music mid-dictation.
+    await spotify.open()
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await spotify.playCalls == 0, "A stale resume must not start playback during a new dictation.")
+
+    service.endInterruption(token: secondToken)
+    let didResume = await waitUntil {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "The inherited interruption must keep its Spotify resume strategy.")
+}
+
+@MainActor
+@Test("A cancelled begin does not cancel a pending resume")
+func cancelledBeginDoesNotCancelPendingResume() async {
+    let spotify = FakeSpotifyPlaybackController([.paused])
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector(
+            [.playing, .notPlaying],
+            fallback: .notPlaying,
+            displayIDs: [MediaDisplayID.spotify, MediaDisplayID.spotify],
+            fallbackDisplayID: MediaDisplayID.spotify
+        ),
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { true },
+        minimumResumeDelayNanoseconds: 100_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let token = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: token)
+
+    let cancelledBegin = Task { @MainActor in
+        await service.beginInterruption()
+    }
+    cancelledBegin.cancel()
+    #expect(await cancelledBegin.value == nil)
+
+    let didResume = await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "A cancelled begin must leave the pending resume intact.")
+}
+@MainActor
+@Test("Audible shared WebKit helper is not attributed to Safari when Safari is not running")
+func audibleWebKitHelperNotAttributedToSafariWhenSafariIsNotRunning() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let safari = FakeChromePlaybackController([.unknown], pauseSucceeds: false)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([], fallback: .likelyPlaying),
+        playbackControllerOverrides: [.safari: safari],
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.apple.WebKit.GPU"] },
+        isApplicationRunning: { $0 != "com.apple.Safari" },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token == nil, "WKWebView audio in another app is not evidence of Safari playback.")
+    #expect(await safari.pauseCalls == 0)
+    #expect(commandRecorder.commands.isEmpty)
+    #expect(keyRecorder.sendCalls == 0)
+}
+
+@MainActor
+@Test("Audible shared WebKit helper is attributed to Safari while Safari is running")
+func audibleWebKitHelperAttributedToSafariWhileSafariIsRunning() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let commandRecorder = MediaCommandRecorder()
+    let safari = FakeChromePlaybackController([.unknown], pauseSucceeds: true)
+    let service = MacMediaInterruptionService(
+        playbackDetector: SequencedPlaybackDetector([], fallback: .likelyPlaying),
+        playbackControllerOverrides: [.safari: safari],
+        sendPlayPauseKey: { keyRecorder.send() },
+        sendMediaCommand: { commandRecorder.send($0) },
+        audibleProcessBundleIDs: { ["com.apple.WebKit.GPU"] },
+        isApplicationRunning: { $0 == "com.apple.Safari" },
+        minimumResumeDelayNanoseconds: 0,
+        pauseConfirmationDelayNanoseconds: 0
+    )
+
+    let token = await service.beginInterruption()
+
+    #expect(token != nil)
+    #expect(await safari.pauseCalls == 1)
+    #expect(keyRecorder.sendCalls == 0)
+}
+@MainActor
+@Test("A new interruption does not inherit the pause when the owner was resumed manually")
+func newInterruptionDetectsAfreshWhenOwnerResumedManually() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([], fallbackState: .paused)
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying, .playing, .notPlaying],
+        fallback: .notPlaying,
+        fallbackDisplayID: MediaDisplayID.spotify
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        // The user resumed Spotify during the first dictation: it is audible.
+        audibleProcessBundleIDs: { ["com.spotify.client"] },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    let secondToken = await service.beginInterruption()
+    #expect(secondToken != nil)
+    #expect(detector.detectCalls == 4, "An audible owner must trigger fresh detection instead of inheriting.")
+    #expect(await spotify.pauseCalls == 2, "Manually resumed media must be paused for the new dictation.")
+}
+@MainActor
+@Test("Inherited pause is restored when fresh detection after an audible owner finds nothing")
+func inheritedPauseFallbackWhenFreshDetectionFindsNothing() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let spotify = FakeSpotifyPlaybackController([], fallbackState: .paused)
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying],
+        fallback: .notPlaying,
+        fallbackDisplayID: MediaDisplayID.spotify
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        spotifyPlaybackController: spotify,
+        sendPlayPauseKey: { keyRecorder.send() },
+        // A false-positive audibility signal: Spotify looks audible, but the
+        // media is still paused by Voce.
+        audibleProcessBundleIDs: { ["com.spotify.client"] },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Spotify playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    guard let secondToken = await service.beginInterruption() else {
+        Issue.record("Fresh detection found nothing to pause; the pending pause must be inherited.")
+        return
+    }
+    #expect(detector.detectCalls == 3, "Audible owner triggers one fresh detection.")
+    #expect(await spotify.pauseCalls == 1)
+
+    service.endInterruption(token: secondToken)
+    let didResume = await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+        await spotify.playCalls == 1
+    }
+    #expect(didResume, "Media paused by the first dictation must still resume.")
+}
+
+@MainActor
+@Test("Shared WebKit audio does not make Safari look audible while Safari is not running")
+func sharedWebKitAudioDoesNotMakeSafariAudibleWhenNotRunning() async {
+    let keyRecorder = MediaKeySendRecorder()
+    let safari = FakeChromePlaybackController([], fallbackState: .paused, pauseSucceeds: true)
+    let detector = SequencedPlaybackDetector(
+        [.playing, .notPlaying],
+        fallback: .notPlaying,
+        fallbackDisplayID: MediaDisplayID.safari
+    )
+    let service = MacMediaInterruptionService(
+        playbackDetector: detector,
+        playbackControllerOverrides: [.safari: safari],
+        sendPlayPauseKey: { keyRecorder.send() },
+        audibleProcessBundleIDs: { ["com.apple.WebKit.GPU"] },
+        isApplicationRunning: { $0 != "com.apple.Safari" },
+        minimumResumeDelayNanoseconds: 200_000_000,
+        pauseConfirmationDelayNanoseconds: 0,
+        unknownResumeRetryDelayNanoseconds: 0
+    )
+
+    guard let firstToken = await service.beginInterruption() else {
+        Issue.record("Expected interruption token for Safari playback.")
+        return
+    }
+    service.endInterruption(token: firstToken)
+
+    let secondToken = await service.beginInterruption()
+    #expect(secondToken != nil)
+    #expect(detector.detectCalls == 2, "Another app's WebKit audio must not discard the inherited pause.")
 }
 #endif

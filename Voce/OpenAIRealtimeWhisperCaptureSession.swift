@@ -5,7 +5,6 @@ import VoceKit
 
 struct OpenAIRealtimeWhisperStopResult: Sendable {
     let rawTranscript: RawTranscript
-    let captureURL: URL
 }
 
 struct RealtimePCMConversion {
@@ -25,9 +24,10 @@ enum RealtimeDictationRecoveryError: Error, LocalizedError {
     }
 }
 
-/// A durable, append-only transcript checkpoint for an active realtime
-/// dictation. Deltas are flushed as they arrive so a socket failure or app
-/// termination cannot erase everything the provider has already transcribed.
+/// A durable transcript checkpoint for an active realtime dictation. The
+/// capture session rewrites it with the combined long-form transcript as
+/// text arrives (throttled), so a socket failure or app termination cannot
+/// erase everything the provider has already transcribed.
 final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     struct PendingRecovery: Sendable {
         let url: URL
@@ -37,9 +37,11 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
 
     private let lock = NSLock()
     private let url: URL
-    private var handle: FileHandle?
+    /// Cleared once the checkpoint is discarded or handed to the next launch.
+    private var isWritable = true
     private var text = ""
     private var lastSynchronizationAt = Date.distantPast
+    private var lastRevision: UInt64 = 0
 
     init(
         directoryURL: URL = RealtimeDictationRecoveryCheckpoint.defaultDirectoryURL()
@@ -52,11 +54,13 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             let url = directoryURL
                 .appendingPathComponent(UUID().uuidString)
                 .appendingPathExtension("txt")
+            // Pin the reference date before the file exists, so launch
+            // recovery never treats this live checkpoint as left over.
+            _ = Self.processReferenceDate
             guard FileManager.default.createFile(atPath: url.path, contents: Data()) else {
                 throw RealtimeDictationRecoveryError.unableToCreateCheckpoint
             }
             self.url = url
-            self.handle = try FileHandle(forWritingTo: url)
         } catch let error as RealtimeDictationRecoveryError {
             throw error
         } catch {
@@ -64,38 +68,24 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
         }
     }
 
-    func append(delta: String) {
-        guard !delta.isEmpty else { return }
+    /// Replaces the checkpoint with a full transcript. When `revision` is
+    /// given, an older render never overwrites a newer one, so concurrent
+    /// writers (throttled partials, segment completion) cannot regress it.
+    /// Every version goes to the `.partial` sibling; only a flushed version
+    /// is renamed over the `.txt`, at most once a second unless
+    /// `synchronize` forces it. After a crash the `.txt` therefore holds the
+    /// last durable version and the `.partial` anything newer.
+    func replace(with transcript: String, revision: UInt64? = nil, synchronize: Bool = true) {
         lock.withLock {
-            text += delta
-            guard let data = delta.data(using: .utf8), let handle else { return }
-            do {
-                try handle.seekToEnd()
-                try handle.write(contentsOf: data)
-                let now = Date()
-                if now.timeIntervalSince(lastSynchronizationAt) >= 1 {
-                    try handle.synchronize()
-                    lastSynchronizationAt = now
-                }
-            } catch {
-                // The in-memory snapshot remains available to the immediate
-                // failure handler even if the durable flush fails.
+            if let revision {
+                guard revision >= lastRevision else { return }
+                lastRevision = revision
             }
-        }
-    }
-
-    func replace(with transcript: String) {
-        lock.withLock {
             text = transcript
-            guard let data = transcript.data(using: .utf8), let handle else { return }
-            do {
-                try handle.truncate(atOffset: 0)
-                try handle.seek(toOffset: 0)
-                try handle.write(contentsOf: data)
-                try handle.synchronize()
-                lastSynchronizationAt = Date()
-            } catch {
-                // Keep the in-memory final transcript available for recovery.
+            let now = Date()
+            let shouldSynchronize = synchronize || now.timeIntervalSince(lastSynchronizationAt) >= 1
+            if writeLocked(synchronize: shouldSynchronize), shouldSynchronize {
+                lastSynchronizationAt = now
             }
         }
     }
@@ -105,24 +95,78 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
     }
 
     func discard() {
-        let checkpointURL = lock.withLock { () -> URL in
-            try? handle?.close()
-            handle = nil
-            return url
-        }
-        try? FileManager.default.removeItem(at: checkpointURL)
+        lock.withLock { isWritable = false }
+        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: Self.temporaryURL(for: url))
     }
 
     func preserveForNextLaunch() {
         lock.withLock {
-            try? handle?.synchronize()
-            try? handle?.close()
-            handle = nil
+            // The last throttled write may not have been flushed yet.
+            writeLocked(synchronize: true)
+            isWritable = false
         }
     }
 
+    /// Writes `text` to the `.partial` sibling. When `synchronize` is set,
+    /// flushes it to disk and only then renames it over the checkpoint, so
+    /// an unflushed (possibly zero-filled after power loss) version never
+    /// replaces a durable one. Must be called with `lock` held.
+    @discardableResult
+    private func writeLocked(synchronize: Bool) -> Bool {
+        guard isWritable, let data = text.data(using: .utf8) else { return false }
+        let temporaryURL = Self.temporaryURL(for: url)
+        do {
+            guard FileManager.default.createFile(atPath: temporaryURL.path, contents: data) else {
+                return false
+            }
+            guard synchronize else { return true }
+            let handle = try FileHandle(forWritingTo: temporaryURL)
+            defer { try? handle.close() }
+            try handle.synchronize()
+            return rename(temporaryURL.path, url.path) == 0
+        } catch {
+            // Keep the in-memory transcript available for recovery.
+            return false
+        }
+    }
+
+    private static func temporaryURL(for url: URL) -> URL {
+        url.appendingPathExtension("partial")
+    }
+
+    /// Set when this process first touches checkpoints. Files modified after
+    /// it belong to a dictation in this process, not a previous launch.
+    static let processReferenceDate = Date()
+
+    private struct RecoveryCandidate {
+        let text: String
+        let modifiedAt: Date
+
+        var isBlank: Bool {
+            text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    /// Reads a checkpoint file leniently. Blocks that were never flushed
+    /// before a power loss read back as NULs, which are dropped.
+    private static func recoveryCandidate(at url: URL) -> RecoveryCandidate? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let text = String(decoding: data, as: UTF8.self)
+            .replacingOccurrences(of: "\u{0}", with: "")
+        let modifiedAt = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate ?? .distantPast
+        return RecoveryCandidate(text: text, modifiedAt: modifiedAt)
+    }
+
+    /// Checkpoints left by earlier launches. Each checkpoint is read from its
+    /// `.txt` (last durable version) or its newer `.partial` (written but
+    /// maybe not flushed), whichever is newest and not blank. Blank leftovers
+    /// are deleted. Files modified at or after `cutoff` are skipped because
+    /// they belong to a dictation running in this process.
     static func pendingRecoveries(
-        directoryURL: URL = defaultDirectoryURL()
+        directoryURL: URL = defaultDirectoryURL(),
+        modifiedBefore cutoff: Date = processReferenceDate
     ) -> [PendingRecovery] {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directoryURL,
@@ -132,25 +176,53 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             return []
         }
 
-        return urls.compactMap { url in
-            guard url.pathExtension == "txt",
-                  let text = try? String(contentsOf: url, encoding: .utf8),
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else {
-                return nil
+        var checkpointURLs: [String: URL] = [:]
+        for url in urls {
+            let checkpointURL: URL
+            if url.pathExtension == "txt" {
+                checkpointURL = url
+            } else if url.pathExtension == "partial", url.deletingPathExtension().pathExtension == "txt" {
+                checkpointURL = url.deletingPathExtension()
+            } else {
+                continue
             }
-            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
-            return PendingRecovery(
-                url: url,
-                text: text,
-                modifiedAt: values?.contentModificationDate ?? .distantPast
-            )
-        }.sorted { $0.modifiedAt < $1.modifiedAt }
+            checkpointURLs[checkpointURL.standardizedFileURL.path] = checkpointURL
+        }
+
+        var recoveries: [PendingRecovery] = []
+        for checkpointURL in checkpointURLs.values {
+            let durable = recoveryCandidate(at: checkpointURL)
+            let unflushed = recoveryCandidate(at: temporaryURL(for: checkpointURL))
+            let newest = [durable?.modifiedAt, unflushed?.modifiedAt].compactMap { $0 }.max() ?? .distantPast
+            guard newest < cutoff else { continue }
+
+            let chosen: RecoveryCandidate?
+            if let unflushed, !unflushed.isBlank,
+               durable.map({ $0.isBlank || unflushed.modifiedAt >= $0.modifiedAt }) ?? true {
+                chosen = unflushed
+            } else if let durable, !durable.isBlank {
+                chosen = durable
+            } else {
+                chosen = nil
+            }
+            guard let chosen else {
+                try? FileManager.default.removeItem(at: checkpointURL)
+                try? FileManager.default.removeItem(at: temporaryURL(for: checkpointURL))
+                continue
+            }
+            recoveries.append(PendingRecovery(
+                url: checkpointURL,
+                text: chosen.text,
+                modifiedAt: newest
+            ))
+        }
+        return recoveries.sorted { $0.modifiedAt < $1.modifiedAt }
     }
 
     static func discardPending(_ recoveries: [PendingRecovery]) {
         for recovery in recoveries {
             try? FileManager.default.removeItem(at: recovery.url)
+            try? FileManager.default.removeItem(at: temporaryURL(for: recovery.url))
         }
     }
 
@@ -165,9 +237,6 @@ final class RealtimeDictationRecoveryCheckpoint: @unchecked Sendable {
             .appendingPathComponent("Dictation Recovery", isDirectory: true)
     }
 
-    deinit {
-        try? handle?.close()
-    }
 }
 
 final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
@@ -176,6 +245,26 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     /// 50 minutes leaves enough time to fetch a new credential and retry the
     /// handshake without approaching the provider-enforced disconnect.
     static let connectionRolloverIntervalSeconds: TimeInterval = 50 * 60
+    /// OpenAI's hard limit for one Realtime session.
+    static let providerSessionLimitSeconds: TimeInterval = 60 * 60
+    /// The swap to a replacement must happen at least this long before the
+    /// active session hits the provider limit, leaving room to finalize the
+    /// retired segment.
+    static let rolloverCapMarginSeconds: TimeInterval = 2 * 60
+    /// Worst-case time from starting to open a replacement to the swap:
+    /// credential fetch (20 s request timeout), the 10 s handshake deadline,
+    /// and slack. No attempt starts with less time than this left.
+    static let rolloverAttemptReserveSeconds: TimeInterval = 45
+    static let rolloverRetryDelaySeconds: TimeInterval = 15
+    static let rolloverMaximumAttempts = 12
+    /// Mic buffers arrive roughly every 21 ms. Coalescing them into ~100 ms
+    /// appends (24 kHz mono Int16) cuts websocket messages, JSON encoding and
+    /// base64 work about fivefold while adding at most ~100 ms of latency.
+    static let audioAppendBatchBytes = 4_800
+    /// Upper bound for the websocket handshake, `session.update` and its
+    /// acknowledgement together. Mic audio captured meanwhile is buffered,
+    /// so this also bounds the local backlog while arming.
+    static let connectionHandshakeTimeoutSeconds: TimeInterval = 10
 
     private let session: URLSession
     private let authTokenProvider: @Sendable (_ forceRefresh: Bool) async throws -> String
@@ -185,27 +274,58 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     private let onPartialText: @Sendable (String) -> Void
     private let onTerminalError: @Sendable (Error) -> Void
     private let onAudioLevel: @Sendable (Double) -> Void
+    private let onInputLost: @Sendable (OpenAIRealtimeWhisperCaptureSession) -> Void
+    /// Guards every mutable property below. Callers arrive from the main
+    /// actor (`cancel()`), the audio tap thread, URLSession callbacks and
+    /// background tasks (`stop()`, rollover), so never read or write them
+    /// without it, and never hold it across an `await`.
     private let stateLock = NSLock()
+    /// Serializes every engine call (tap install and removal, start, restart
+    /// after an input device change, stop) so the engine is never used from
+    /// two threads at once. Lock order: `engineLock` before `stateLock`. The
+    /// audio tap never takes it, and the restart path never waits on main.
+    private let engineLock = NSLock()
+    private let engineConfigurationQueue = DispatchQueue(
+        label: "io.voceapp.voce.realtime-capture.engine-configuration"
+    )
 
     private var audioEngine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
-    private var outputURL: URL?
+    private var engineConfigurationObserver: NSObjectProtocol?
+    /// Bumped per configuration change so stale restart retries stop.
+    private var engineRestartGeneration: UInt64 = 0
+    private var didReportInputLost = false
+    private var consecutiveConversionFailures = 0
     private var capturedFrameCount: AVAudioFramePosition = 0
+    /// Captured audio duration, accumulated per buffer so it stays correct
+    /// even if the input sample rate changes mid-dictation. Raw audio is not
+    /// written to disk: only its duration is needed for usage metering.
+    private var capturedDurationSeconds: Double = 0
     private var captureStartedAt: ContinuousClock.Instant?
     private var lastAudibleAt: ContinuousClock.Instant?
     private var hasStopped = false
     private var latestWriteError: Error?
-    private var socket: URLSessionWebSocketTask?
-    private var socketWriter: RealtimeWebSocketWriter?
-    private var transcriptAccumulator: RealtimeTranscriptAccumulator?
-    private var receiveTask: Task<Void, Never>?
+    /// The connection currently receiving audio.
+    private var connection: RealtimeConnection?
+    /// The previous connection while a rollover finalizes it, tracked so
+    /// `cancel()` and failure paths close it too.
+    private var retiringConnection: RealtimeConnection?
     private var audioSendContinuation: AsyncStream<Data>.Continuation?
+    /// Converted PCM waiting to reach `audioAppendBatchBytes` before it is
+    /// yielded to the sender. Flushed by `stop()` ahead of the commit.
+    private var pendingAudio = Data()
+    /// One continuous resampling stream (48 kHz mic to 24 kHz), so there is
+    /// no filter seam at every ~21 ms buffer edge. Drained in `stop()`.
+    private let pcmConverter = StreamingPCMConverter(
+        outputFormat: OpenAIRealtimeWhisperCaptureSession.realtimeTargetFormat
+    )
     private var audioSendTask: Task<Void, Never>?
     private var audioRouter: RealtimeAudioRouter?
     private var rolloverTask: Task<Void, Never>?
-    private var activeSegmentID: UUID?
     private let longFormTranscript = RealtimeLongFormTranscript()
     private var recoveryCheckpoint: RealtimeDictationRecoveryCheckpoint?
+    /// Coalesces transcript updates: at most ~10 partial-text callbacks and
+    /// checkpoint rewrites per second, always including the latest text.
+    private var partialTranscriptThrottle: CoalescingThrottle?
 
     // MARK: Diagnostics
     // This is intentionally narrow realtime instrumentation. It does not
@@ -246,7 +366,8 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         transcriptionHints: [LexiconEntry],
         onPartialText: @escaping @Sendable (String) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void = { _ in },
-        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in }
+        onAudioLevel: @escaping @Sendable (Double) -> Void = { _ in },
+        onInputLost: @escaping @Sendable (OpenAIRealtimeWhisperCaptureSession) -> Void = { _ in }
     ) {
         self.session = session
         self.authTokenProvider = authTokenProvider
@@ -256,6 +377,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         self.onPartialText = onPartialText
         self.onTerminalError = onTerminalError
         self.onAudioLevel = onAudioLevel
+        self.onInputLost = onInputLost
     }
 
     func start() async throws {
@@ -264,6 +386,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             hasStopped = false
             latestWriteError = nil
             capturedFrameCount = 0
+            capturedDurationSeconds = 0
             captureStartedAt = nil
             lastAudibleAt = nil
             self.diagSessionID = UUID().uuidString
@@ -280,20 +403,14 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         Self.logger.notice("RealtimeDiag[\(diagSessionID, privacy: .public)]: start")
 
         let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.inputFormat(forBus: 0)
-        let outputURL = Self.makeOutputURL()
         let recoveryCheckpoint = try RealtimeDictationRecoveryCheckpoint()
+        let partialTranscriptThrottle = CoalescingThrottle(interval: 0.1) { [weak self] in
+            await self?.publishPartialTranscript()
+        }
         stateLock.withLock {
             self.recoveryCheckpoint = recoveryCheckpoint
-        }
-
-        let audioFile: AVAudioFile
-        do {
-            audioFile = try AVAudioFile(forWriting: outputURL, settings: inputFormat.settings)
-        } catch {
-            discardRecoveryCheckpoint()
-            throw AppleSpeechPreviewError.failedToCreateOutputFile
+            self.partialTranscriptThrottle?.invalidate()
+            self.partialTranscriptThrottle = partialTranscriptThrottle
         }
 
         // Audio chunks must reach the realtime API strictly in capture order, and
@@ -303,86 +420,123 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // finishing the stream to flush all pending sends. The stream is created
         // before websocket setup so audio captured while the realtime session is
         // arming is buffered locally and sent once the server is ready.
-        var sendContinuation: AsyncStream<Data>.Continuation?
-        let sendStream = AsyncStream<Data> { sendContinuation = $0 }
-        audioSendContinuation = sendContinuation
-        self.outputURL = outputURL
-        self.audioFile = audioFile
-
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
-            guard let self else { return }
-            do {
-                try self.stateLock.withLock {
-                    guard !self.hasStopped else { return }
-                    try self.audioFile?.write(from: buffer)
-                    self.capturedFrameCount += AVAudioFramePosition(buffer.frameLength)
-                }
-            } catch {
-                self.recordTerminalError(AppleSpeechPreviewError.audioWriteFailed(error.localizedDescription))
-            }
-
-            let audioLevel = Self.normalizedAudioLevel(from: buffer)
-            self.onAudioLevel(audioLevel)
-            if audioLevel >= 0.08 {
-                self.stateLock.withLock {
-                    self.lastAudibleAt = ContinuousClock().now
-                }
-            }
-            let isFirstBuffer = self.stateLock.withLock { () -> Bool in
-                guard !self.diagFirstBufferLogged else { return false }
-                self.diagFirstBufferLogged = true
-                return true
-            }
-            if isFirstBuffer {
-                Self.logger.notice(
-                    "RealtimeDiag: first mic buffer +\(self.diagElapsedMS(), privacy: .public)ms format=\(buffer.format.sampleRate, privacy: .public)Hz ch=\(buffer.format.channelCount, privacy: .public)"
-                )
-            }
-            guard self.stateLock.withLock({ !self.hasStopped }) else { return }
-            guard let conversion = Self.convertToRealtimePCMData(buffer),
-                  !conversion.data.isEmpty else { return }
-            self.stateLock.withLock {
-                self.diagYieldedChunks += 1
-                self.diagYieldedBytes += conversion.data.count
-                self.diagInputFrames += conversion.inputFrameCount
-                self.diagOutputFrames += conversion.outputFrameCount
-            }
-            self.audioSendContinuation?.yield(conversion.data)
-        }
-
-        do {
-            try engine.start()
-        } catch {
-            cleanupAfterStartFailure(socket: nil, inputNode: inputNode)
-            throw AppleSpeechPreviewError.failedToStartAudioEngine
-        }
-
-        audioEngine = engine
+        let (sendStream, sendContinuation) = AsyncStream<Data>.makeStream()
         stateLock.withLock {
-            captureStartedAt = ContinuousClock().now
-            lastAudibleAt = captureStartedAt
+            audioSendContinuation = sendContinuation
+            pendingAudio = Data()
+        }
+
+        let inputFormat: AVAudioFormat
+        do {
+            inputFormat = try engineLock.withLock { () throws -> AVAudioFormat in
+                let inputFormat = try installCaptureTap(on: engine)
+                do {
+                    try engine.start()
+                } catch {
+                    engine.inputNode.removeTap(onBus: 0)
+                    throw error
+                }
+                // When the input device changes (AirPods connect, a USB mic is
+                // unplugged) the engine stops itself and posts this; without
+                // handling it audio silently ends mid-dictation.
+                let observer = NotificationCenter.default.addObserver(
+                    forName: .AVAudioEngineConfigurationChange,
+                    object: engine,
+                    queue: nil
+                ) { [weak self] _ in
+                    self?.scheduleEngineRestart()
+                }
+                let installed = stateLock.withLock { () -> Bool in
+                    guard !hasStopped else { return false }
+                    audioEngine = engine
+                    engineConfigurationObserver = observer
+                    captureStartedAt = ContinuousClock().now
+                    lastAudibleAt = captureStartedAt
+                    return true
+                }
+                guard installed else {
+                    NotificationCenter.default.removeObserver(observer)
+                    engine.inputNode.removeTap(onBus: 0)
+                    engine.stop()
+                    throw CancellationError()
+                }
+                return inputFormat
+            }
+        } catch is CancellationError {
+            cleanupAfterStartFailure()
+            throw CancellationError()
+        } catch let error as AppleSpeechPreviewError {
+            cleanupAfterStartFailure()
+            throw error
+        } catch {
+            cleanupAfterStartFailure()
+            throw AppleSpeechPreviewError.failedToStartAudioEngine
         }
         Self.logger.notice(
             "RealtimeDiag: engine started +\(self.diagElapsedMS(), privacy: .public)ms input=\(inputFormat.sampleRate, privacy: .public)Hz"
         )
 
         let connection: RealtimeConnection
+        let armingStartedAt = ContinuousClock().now
         do {
-            connection = try await openConnection(forceCredentialRefresh: false)
+            do {
+                connection = try await openConnection(forceCredentialRefresh: false)
+            } catch let error where Self.isRejectedCredentialError(error) {
+                // A cached client secret can be rejected as expired even
+                // though it looked valid locally (for example, clock skew).
+                // Fetch a fresh one once, within the arming deadline.
+                let elapsed = armingStartedAt.duration(to: ContinuousClock().now)
+                let elapsedSeconds = Double(elapsed.components.seconds)
+                    + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+                let remainingSeconds = Self.connectionHandshakeTimeoutSeconds - elapsedSeconds
+                guard remainingSeconds >= 2, !isStopped else { throw error }
+                Self.logger.notice("Realtime credential rejected while arming; retrying once with a refreshed credential")
+                // Bound the whole retry, including the forced token fetch that
+                // runs before the handshake deadline starts. Cancelling the
+                // attempt cancels that fetch; a connection that still opens
+                // after the deadline is closed.
+                let retry = Task { [self] in
+                    try await openConnection(
+                        forceCredentialRefresh: true,
+                        handshakeTimeoutSeconds: remainingSeconds
+                    )
+                }
+                do {
+                    connection = try await OpenAIRealtimeWhisperSpeechProviderClient.value(
+                        of: retry,
+                        timeoutSeconds: remainingSeconds
+                    )
+                } catch {
+                    retry.cancel()
+                    Task { [self] in
+                        if let lateConnection = try? await retry.value {
+                            await discard(lateConnection)
+                        }
+                    }
+                    throw error
+                }
+            }
         } catch {
-            cleanupAfterStartFailure(socket: nil, inputNode: inputNode)
+            cleanupAfterStartFailure()
             throw error
         }
         Self.logger.notice("RealtimeDiag: socket created (token fetched) +\(self.diagElapsedMS(), privacy: .public)ms")
-        self.socket = connection.socket
-        self.socketWriter = connection.writer
-        self.transcriptAccumulator = connection.accumulator
-        self.receiveTask = connection.receiveTask
-        stateLock.withLock {
-            self.activeSegmentID = connection.segmentID
-        }
         let audioRouter = RealtimeAudioRouter(writer: connection.writer)
-        self.audioRouter = audioRouter
+        // Install the connection and its sender together so `stop()` or
+        // `cancel()` always sees either neither or both, and a cancel that
+        // landed while arming tears the new socket down instead of leaking it.
+        let connectionInstalled = stateLock.withLock { () -> Bool in
+            guard !hasStopped else { return false }
+            self.connection = connection
+            self.audioRouter = audioRouter
+            self.audioSendTask = makeAudioSendTask(stream: sendStream, router: audioRouter)
+            return true
+        }
+        guard connectionInstalled else {
+            await discard(connection)
+            cleanupAfterStartFailure()
+            throw CancellationError()
+        }
         Self.logger.notice("RealtimeDiag: session ready, sender starting +\(self.diagElapsedMS(), privacy: .public)ms")
         let (bufferedChunks, bufferedBytes, bufferedOutputFrames) = stateLock.withLock {
             (diagYieldedChunks, diagYieldedBytes, diagOutputFrames)
@@ -390,17 +544,82 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         Self.logger.notice(
             "RealtimeDiag: buffered before sender chunks=\(bufferedChunks, privacy: .public) bytes=\(bufferedBytes, privacy: .public) outputFrames=\(bufferedOutputFrames, privacy: .public) (~\(Self.diagAudioSeconds(fromOutputFrames: bufferedOutputFrames), format: .fixed(precision: 1))s audio)"
         )
+        scheduleConnectionRollover()
+    }
 
-        audioSendTask = Task { [weak self, audioRouter] in
+    /// Runs on the audio tap thread. Never call `diagElapsedMS()` (or anything
+    /// else that takes `stateLock`) while holding the lock here.
+    private func handleCapturedBuffer(_ buffer: AVAudioPCMBuffer) {
+        stateLock.withLock {
+            guard !hasStopped else { return }
+            capturedFrameCount += AVAudioFramePosition(buffer.frameLength)
+            capturedDurationSeconds += Double(buffer.frameLength) / max(buffer.format.sampleRate, 1)
+        }
+
+        let audioLevel = Self.normalizedAudioLevel(from: buffer)
+        onAudioLevel(audioLevel)
+        if audioLevel >= 0.08 {
+            stateLock.withLock {
+                lastAudibleAt = ContinuousClock().now
+            }
+        }
+        let isFirstBuffer = stateLock.withLock { () -> Bool in
+            guard !diagFirstBufferLogged else { return false }
+            diagFirstBufferLogged = true
+            return true
+        }
+        if isFirstBuffer {
+            Self.logger.notice(
+                "RealtimeDiag: first mic buffer +\(self.diagElapsedMS(), privacy: .public)ms format=\(buffer.format.sampleRate, privacy: .public)Hz ch=\(buffer.format.channelCount, privacy: .public)"
+            )
+        }
+        guard stateLock.withLock({ !hasStopped }) else { return }
+        guard let converted = pcmConverter.process(buffer) else {
+            let failures = stateLock.withLock { () -> Int in
+                consecutiveConversionFailures += 1
+                return consecutiveConversionFailures
+            }
+            if failures == Self.inputLostConversionFailureLimit {
+                Self.logger.error(
+                    "Realtime capture cannot convert \(buffer.format.sampleRate, privacy: .public)Hz input; treating the microphone as lost"
+                )
+                notifyInputLost()
+            }
+            return
+        }
+        stateLock.withLock { consecutiveConversionFailures = 0 }
+        guard let conversion = Self.realtimePCMConversion(
+            from: converted,
+            inputFrameCount: Int(buffer.frameLength)
+        ), !conversion.data.isEmpty else { return }
+        stateLock.withLock {
+            // Yield under the lock so batches stay in capture order and
+            // `stop()` can flush the remainder before finishing the stream.
+            guard !hasStopped else { return }
+            diagInputFrames += conversion.inputFrameCount
+            diagOutputFrames += conversion.outputFrameCount
+            pendingAudio.append(conversion.data)
+            guard pendingAudio.count >= Self.audioAppendBatchBytes else { return }
+            diagYieldedChunks += 1
+            diagYieldedBytes += pendingAudio.count
+            audioSendContinuation?.yield(pendingAudio)
+            pendingAudio = Data()
+        }
+    }
+
+    private func makeAudioSendTask(
+        stream sendStream: AsyncStream<Data>,
+        router audioRouter: RealtimeAudioRouter
+    ) -> Task<Void, Never> {
+        Task { [weak self, audioRouter] in
             var isFirstAppend = true
             for await pcmData in sendStream {
                 do {
                     try await audioRouter.appendAudio(pcmData)
                     if let self {
-                        let (chunks, bytes) = self.stateLock.withLock { () -> (Int, Int) in
+                        self.stateLock.withLock {
                             self.diagAppendedChunks += 1
                             self.diagAppendedBytes += pcmData.count
-                            return (self.diagAppendedChunks, self.diagAppendedBytes)
                         }
                         if isFirstAppend {
                             isFirstAppend = false
@@ -408,7 +627,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                                 "RealtimeDiag: first audio append +\(self.diagElapsedMS(), privacy: .public)ms bytes=\(pcmData.count, privacy: .public)"
                             )
                         }
-                        _ = (chunks, bytes)
                     }
                 } catch {
                     self?.recordTerminalError(error)
@@ -422,55 +640,62 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 )
             }
         }
-        scheduleConnectionRollover()
     }
 
     func stop() async throws -> OpenAIRealtimeWhisperStopResult {
         Self.logger.notice("RealtimeDiag: stop initiated +\(self.diagElapsedMS(), privacy: .public)ms")
-        let pendingRollover = rolloverTask
-        rolloverTask = nil
-        pendingRollover?.cancel()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
+        stopAudioEngine()
+        // The streaming resampler still holds the last few milliseconds.
+        let converterTail = Self.realtimePCMConversion(from: pcmConverter.drain(), inputFrameCount: 0)
 
         let stoppedAt = ContinuousClock().now
-        let outputURL: URL?
-        let wallDurationSeconds: Double?
-        (outputURL, wallDurationSeconds) = stateLock.withLock {
+        let (pendingRollover, audioSendTask, capturedDurationSeconds, wallDurationSeconds) = stateLock.withLock {
             hasStopped = true
+            let pendingRollover = rolloverTask
+            rolloverTask = nil
             let wallDurationSeconds = captureStartedAt.map { start in
                 let duration = start.duration(to: stoppedAt)
                 return Double(duration.components.seconds)
                     + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
             }
-            let outputURL = self.outputURL
-            audioFile = nil
             captureStartedAt = nil
             lastAudibleAt = nil
-            return (outputURL, wallDurationSeconds)
-        }
 
-        // Wait for every queued audio chunk to hit the wire before committing.
-        // Committing early makes the API transcribe only the audio it has
-        // received so far, cutting off the end of the dictation.
-        stateLock.withLock {
+            // Wait for every queued audio chunk to hit the wire before
+            // committing. Committing early makes the API transcribe only the
+            // audio it has received so far, cutting off the end of the
+            // dictation. Flush the partial batch, then end the stream so the
+            // sender drains everything.
+            if let converterTail {
+                diagOutputFrames += converterTail.outputFrameCount
+                pendingAudio.append(converterTail.data)
+            }
+            if !pendingAudio.isEmpty {
+                diagYieldedChunks += 1
+                diagYieldedBytes += pendingAudio.count
+                audioSendContinuation?.yield(pendingAudio)
+            }
+            pendingAudio = Data()
             audioSendContinuation?.finish()
             audioSendContinuation = nil
+            let audioSendTask = self.audioSendTask
+            self.audioSendTask = nil
+            return (pendingRollover, audioSendTask, self.capturedDurationSeconds, wallDurationSeconds)
         }
+        pendingRollover?.cancel()
+
         // Bound the drain so a wedged websocket send can never hang `stop()`
         // forever. On timeout we must NOT attempt `commit()`: it goes through
         // the same writer/socket and can block behind the stuck send
         // (`waitForFinal`'s 90s cap only starts after commit returns).
         // Instead, tear the connection down and fail fast.
         if let audioSendTask {
-            self.audioSendTask = nil
             do {
                 try await Self.ensureDrained(audioSendTask, timeoutSeconds: 10)
             } catch {
                 Self.logger.error("Timed out draining realtime audio sends; abandoning wedged connection without commit")
-                abandonWedgedRealtimeConnection()
-                cleanupOutputFile(at: outputURL)
+                abandonRealtimeConnection()
+                await persistRecoveryCheckpoint()
                 throw error
             }
         }
@@ -478,18 +703,15 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         // settle before selecting the connection that receives the final commit.
         await pendingRollover?.value
 
-        if let latestWriteError {
-            cleanupOutputFile(at: outputURL)
+        if let latestWriteError = stateLock.withLock({ latestWriteError }) {
+            abandonRealtimeConnection()
+            await persistRecoveryCheckpoint()
             throw latestWriteError
         }
-        guard let outputURL else {
-            throw AppleSpeechPreviewError.missingOutputFile
-        }
 
-        guard let writer = socketWriter,
-              let accumulator = transcriptAccumulator,
-              let activeSegmentID else {
-            cleanupOutputFile(at: outputURL)
+        guard let connection = stateLock.withLock({ self.connection }) else {
+            abandonRealtimeConnection()
+            await persistRecoveryCheckpoint()
             throw CloudDictationError.invalidResponse
         }
 
@@ -499,27 +721,34 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         Self.logger.notice(
             "RealtimeDiag: drained, committing +\(self.diagElapsedMS(), privacy: .public)ms appendedChunks=\(sentChunks, privacy: .public) appendedBytes=\(sentBytes, privacy: .public) capturedFrames=\(capturedFrames, privacy: .public) inputFrames=\(inputFrames, privacy: .public) outputFrames=\(outputFrames, privacy: .public) (~\(Self.diagAudioSeconds(fromOutputFrames: outputFrames), format: .fixed(precision: 1))s audio on wire)"
         )
-        try await writer.commit()
-        Self.logger.notice("RealtimeDiag: commit sent +\(self.diagElapsedMS(), privacy: .public)ms")
-        let activeSegmentTranscript = try await accumulator.waitForFinal(timeoutSeconds: 90)
-        let transcript = await longFormTranscript.completeSegment(
-            activeSegmentID,
+        let activeSegmentTranscript: String
+        do {
+            try await connection.writer.commit()
+            Self.logger.notice("RealtimeDiag: commit sent +\(self.diagElapsedMS(), privacy: .public)ms")
+            activeSegmentTranscript = try await connection.accumulator.waitForFinal(timeoutSeconds: 90)
+        } catch {
+            // Without this the receive loop keeps the session and its socket
+            // alive until the server closes the connection. The recovery
+            // checkpoint is separate, so clipboard recovery still works.
+            abandonRealtimeConnection()
+            await persistRecoveryCheckpoint()
+            throw error
+        }
+        _ = await longFormTranscript.completeSegment(
+            connection.segmentID,
             transcript: activeSegmentTranscript
         )
-        stateLock.withLock { recoveryCheckpoint }?.replace(with: transcript)
+        let transcript = await persistRecoveryCheckpoint()
+        stateLock.withLock { partialTranscriptThrottle }?.invalidate()
         Self.logger.notice(
-            "RealtimeDiag: final transcript received +\(self.diagElapsedMS(), privacy: .public)ms chars=\(transcript.count, privacy: .public) preview=\"\(Self.diagPreview(transcript), privacy: .public)\""
+            "RealtimeDiag: final transcript received +\(self.diagElapsedMS(), privacy: .public)ms chars=\(transcript.count, privacy: .public)"
         )
-        socket?.cancel(with: .normalClosure, reason: nil)
-        receiveTask?.cancel()
-        stateLock.withLock {
-            self.activeSegmentID = nil
-        }
+        closeConnections(closeCode: .normalClosure)
 
-        let captureDurationMS = Self.captureDurationMS(for: outputURL)
+        let captureDurationMS = Int((capturedDurationSeconds * 1_000).rounded())
         let wallDurationDescription = wallDurationSeconds.map { "\($0.formatted(.number.precision(.fractionLength(2))))s" } ?? "unknown"
         Self.logger.notice(
-            "Realtime capture stopped; wall=\(wallDurationDescription, privacy: .public) file=\(Double(captureDurationMS) / 1_000, format: .fixed(precision: 2))s transcriptChars=\(transcript.count, privacy: .public)"
+            "Realtime capture stopped; wall=\(wallDurationDescription, privacy: .public) captured=\(capturedDurationSeconds, format: .fixed(precision: 2))s transcriptChars=\(transcript.count, privacy: .public)"
         )
 
         return OpenAIRealtimeWhisperStopResult(
@@ -527,38 +756,35 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 text: transcript,
                 segments: [],
                 durationMS: captureDurationMS
-            ),
-            captureURL: outputURL
+            )
         )
     }
 
     func cancel() {
-        let outputURL = stateLock.withLock {
+        stopAudioEngine()
+        let (rolloverTask, audioSendTask) = stateLock.withLock {
             hasStopped = true
-            return self.outputURL
-        }
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
-        rolloverTask?.cancel()
-        rolloverTask = nil
-        socket?.cancel(with: .goingAway, reason: nil)
-        receiveTask?.cancel()
-        audioSendTask?.cancel()
-        audioSendTask = nil
-        audioRouter = nil
-        stateLock.withLock {
-            activeSegmentID = nil
+            let rolloverTask = self.rolloverTask
+            self.rolloverTask = nil
+            let audioSendTask = self.audioSendTask
+            self.audioSendTask = nil
             audioSendContinuation?.finish()
             audioSendContinuation = nil
-            audioFile = nil
-            self.outputURL = nil
+            pendingAudio = Data()
             latestWriteError = nil
             capturedFrameCount = 0
+            capturedDurationSeconds = 0
             captureStartedAt = nil
             lastAudibleAt = nil
+            partialTranscriptThrottle?.invalidate()
+            return (rolloverTask, audioSendTask)
         }
-        cleanupOutputFile(at: outputURL)
+        // A rollover in flight notices `hasStopped` after its next await and
+        // discards any replacement it opened; the connections it may already
+        // hold (active and retiring) are closed here.
+        rolloverTask?.cancel()
+        audioSendTask?.cancel()
+        abandonRealtimeConnection()
     }
 
     /// Gate between draining audio sends and committing the buffer: throws on
@@ -571,20 +797,166 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
     }
 
-    /// Tears down the realtime connection after a drain timeout. The socket
-    /// cancel also unblocks the leftover sender task: its in-flight
-    /// `URLSessionWebSocketTask.send` fails once the socket dies.
-    private func abandonWedgedRealtimeConnection() {
-        socket?.cancel(with: .goingAway, reason: nil)
-        socket = nil
-        receiveTask?.cancel()
-        receiveTask = nil
-        socketWriter = nil
-        transcriptAccumulator = nil
-        audioRouter = nil
-        stateLock.withLock {
-            activeSegmentID = nil
+    /// Tears down the realtime connections when `stop()` fails, e.g. after a
+    /// drain timeout. The socket cancel also unblocks a leftover sender task:
+    /// its in-flight `URLSessionWebSocketTask.send` fails once the socket dies.
+    private func abandonRealtimeConnection() {
+        closeConnections(closeCode: .goingAway)
+    }
+
+    /// Detaches the active and retiring connections under the lock, then
+    /// closes them outside it.
+    private func closeConnections(closeCode: URLSessionWebSocketTask.CloseCode) {
+        let (active, retiring) = stateLock.withLock {
+            defer {
+                connection = nil
+                retiringConnection = nil
+                audioRouter = nil
+            }
+            return (connection, retiringConnection)
         }
+        for connection in [active, retiring].compactMap({ $0 }) {
+            connection.receiveTask.cancel()
+            connection.socket.cancel(with: closeCode, reason: nil)
+        }
+    }
+
+    private func stopAudioEngine() {
+        let observer = engineLock.withLock { () -> NSObjectProtocol? in
+            let (engine, observer) = stateLock.withLock { () -> (AVAudioEngine?, NSObjectProtocol?) in
+                defer {
+                    audioEngine = nil
+                    engineConfigurationObserver = nil
+                }
+                return (audioEngine, engineConfigurationObserver)
+            }
+            engine?.inputNode.removeTap(onBus: 0)
+            engine?.stop()
+            return observer
+        }
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Installs the capture tap using the input node's current format.
+    /// Must be called with `engineLock` held.
+    private func installCaptureTap(on engine: AVAudioEngine) throws -> AVAudioFormat {
+        let inputNode = engine.inputNode
+        let inputFormat = inputNode.inputFormat(forBus: 0)
+        // A zero rate or channel count means there is no usable input device;
+        // installing a tap with it raises an Objective-C exception.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw AppleSpeechPreviewError.noInputDevice
+        }
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+            self?.handleCapturedBuffer(buffer)
+        }
+        return inputFormat
+    }
+
+    /// Delay before each restart attempt after a configuration change. A
+    /// Bluetooth profile switch can report no input format for more than a
+    /// second, so the attempts span about five seconds.
+    static let engineRestartDelays: [TimeInterval] = [0, 0.25, 0.5, 1, 1.5, 2]
+    /// About half a second of mic buffers that could not be converted.
+    static let inputLostConversionFailureLimit = 25
+
+    /// Called on AVAudioEngine's notifying thread: only bumps the generation
+    /// (superseding retries for an earlier change) and hops to the queue.
+    private func scheduleEngineRestart() {
+        let generation = stateLock.withLock { () -> UInt64? in
+            guard !hasStopped else { return nil }
+            engineRestartGeneration &+= 1
+            return engineRestartGeneration
+        }
+        guard let generation else { return }
+        engineConfigurationQueue.async { [weak self] in
+            self?.restartEngineAfterConfigurationChange(generation: generation, attempt: 0)
+        }
+    }
+
+    /// Restarts capture with the new input format after the engine stopped
+    /// itself for a configuration change. Per-buffer conversion
+    /// already adapts to a new format.
+    /// If the input never comes back, capture ends but the session stays
+    /// finalizable: `stop()` still delivers what was captured, and a later
+    /// configuration change (the device returning) restarts capture.
+    private func restartEngineAfterConfigurationChange(generation: UInt64, attempt: Int) {
+        // Holding `engineLock` across `engine.start()` means `stop()` or
+        // `cancel()` may wait (rarely, only after a device change) for a slow
+        // Bluetooth start, but the engine is never touched from two threads
+        // at once. This runs on `engineConfigurationQueue` and never waits on
+        // the main thread, and the tap never takes the lock, so it cannot
+        // deadlock.
+        let result = engineLock.withLock { () -> Result<Void, Error>? in
+            let engine = stateLock.withLock { () -> AVAudioEngine? in
+                guard !hasStopped, engineRestartGeneration == generation else { return nil }
+                return audioEngine
+            }
+            guard let engine else { return nil }
+            engine.inputNode.removeTap(onBus: 0)
+            do {
+                _ = try installCaptureTap(on: engine)
+                engine.prepare()
+                try engine.start()
+                return .success(())
+            } catch {
+                engine.inputNode.removeTap(onBus: 0)
+                engine.stop()
+                return .failure(error)
+            }
+        }
+
+        let failure: Error?
+        switch result {
+        case .none:
+            return
+        case .success:
+            failure = nil
+        case .failure(let error):
+            failure = error
+        }
+
+        guard let failure else {
+            Self.logger.notice(
+                "Realtime capture restarted after audio configuration change (attempt \(attempt + 1, privacy: .public))"
+            )
+            return
+        }
+        Self.logger.error(
+            "Realtime capture restart attempt \(attempt + 1, privacy: .public) after audio configuration change failed: \(failure.localizedDescription, privacy: .public)"
+        )
+        let nextAttempt = attempt + 1
+        guard nextAttempt < Self.engineRestartDelays.count else {
+            Self.logger.error(
+                "Realtime capture input lost after audio configuration change; stopping will finalize the audio captured so far"
+            )
+            notifyInputLost()
+            return
+        }
+        engineConfigurationQueue.asyncAfter(deadline: .now() + Self.engineRestartDelays[nextAttempt]) { [weak self] in
+            self?.restartEngineAfterConfigurationChange(generation: generation, attempt: nextAttempt)
+        }
+    }
+
+    /// Tells the controller, once, that capture ended because the microphone
+    /// was lost, so it can finalize what was captured instead of leaving the
+    /// overlay listening (and the timer running) until the user stops.
+    private func notifyInputLost() {
+        let shouldNotify = stateLock.withLock { () -> Bool in
+            guard !hasStopped, !didReportInputLost else { return false }
+            didReportInputLost = true
+            return true
+        }
+        guard shouldNotify else { return }
+        DispatchQueue.main.async {
+            self.onInputLost(self)
+        }
+    }
+
+    private var isStopped: Bool {
+        stateLock.withLock { hasStopped }
     }
 
     /// Waits for `task` to finish, returning `false` if it does not within the
@@ -610,46 +982,100 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         }
     }
 
-    private func cleanupAfterStartFailure(socket: URLSessionWebSocketTask?, inputNode: AVAudioInputNode?) {
-        inputNode?.removeTap(onBus: 0)
-        socket?.cancel(with: .goingAway, reason: nil)
-        audioEngine?.stop()
-        audioEngine = nil
-        receiveTask?.cancel()
-        receiveTask = nil
-        audioSendTask?.cancel()
-        audioSendTask = nil
-        rolloverTask?.cancel()
-        rolloverTask = nil
-        self.socket = nil
-        socketWriter = nil
-        transcriptAccumulator = nil
-        audioRouter = nil
-        stateLock.withLock {
-            activeSegmentID = nil
-        }
-        let staleOutputURL = stateLock.withLock { () -> URL? in
+    private func cleanupAfterStartFailure() {
+        stopAudioEngine()
+        let (rolloverTask, audioSendTask) = stateLock.withLock {
+            hasStopped = true
+            let rolloverTask = self.rolloverTask
+            self.rolloverTask = nil
+            let audioSendTask = self.audioSendTask
+            self.audioSendTask = nil
             audioSendContinuation?.finish()
             audioSendContinuation = nil
-            audioFile = nil
-            let url = outputURL
-            outputURL = nil
-            return url
+            pendingAudio = Data()
+            partialTranscriptThrottle?.invalidate()
+            return (rolloverTask, audioSendTask)
         }
-        cleanupOutputFile(at: staleOutputURL)
+        rolloverTask?.cancel()
+        audioSendTask?.cancel()
+        abandonRealtimeConnection()
         discardRecoveryCheckpoint()
     }
 
-    private struct RealtimeConnection {
+    private struct RealtimeConnection: Sendable {
         let segmentID: UUID
         let socket: URLSessionWebSocketTask
         let writer: RealtimeWebSocketWriter
         let accumulator: RealtimeTranscriptAccumulator
         let receiveTask: Task<Void, Never>
+        /// When the provider session began; it is closed 60 minutes later.
+        let openedAt: ContinuousClock.Instant
+
+        /// The accumulator fails as soon as the receive loop errors, so an
+        /// open accumulator plus a running socket means the server has not
+        /// closed the session.
+        func isHealthy() async -> Bool {
+            guard socket.state == .running, socket.closeCode == .invalid else { return false }
+            return await accumulator.isOpen
+        }
+    }
+
+    /// Credential, entitlement and quota failures will not recover within the
+    /// rollover window, so they end the dictation right away (its transcript
+    /// is still recovered) instead of being retried for three minutes.
+    static func isNonRetryableConnectionError(_ error: Error) -> Bool {
+        switch error as? CloudDictationError {
+        case .missingAPIKey,
+             .authenticationRequired,
+             .authenticationFailed,
+             .subscriptionRequired,
+             .hostedCloudMinutesExhausted:
+            return true
+        case .providerError(let message):
+            let lowercased = message.lowercased()
+            return CloudDictationError.isQuotaExhaustedMessage(message)
+                || lowercased.contains("invalid_api_key")
+                || lowercased.contains("incorrect api key")
+        default:
+            return false
+        }
+    }
+
+    /// A rejected (for example expired) credential on the realtime socket,
+    /// as opposed to a credential the token provider could not issue.
+    static func isRejectedCredentialError(_ error: Error) -> Bool {
+        switch error as? CloudDictationError {
+        case .authenticationFailed:
+            return true
+        case .providerError(let message):
+            let message = message.lowercased()
+            return message.contains("expired") || message.contains("invalid_client_secret")
+        default:
+            return false
+        }
+    }
+
+    /// A rejected websocket upgrade surfaces as a generic URL error; report
+    /// 401/403 as an authentication failure so it is not retried.
+    private static func connectionError(for socket: URLSessionWebSocketTask, underlying error: Error) -> Error {
+        if let statusCode = (socket.response as? HTTPURLResponse)?.statusCode,
+           statusCode == 401 || statusCode == 403 {
+            return CloudDictationError.authenticationFailed
+        }
+        return error
+    }
+
+    /// Closes a connection that was never (or is no longer) installed and
+    /// drops its transcript segment.
+    private func discard(_ connection: RealtimeConnection) async {
+        connection.receiveTask.cancel()
+        connection.socket.cancel(with: .goingAway, reason: nil)
+        await longFormTranscript.removeSegment(connection.segmentID)
     }
 
     private func openConnection(
-        forceCredentialRefresh: Bool
+        forceCredentialRefresh: Bool,
+        handshakeTimeoutSeconds: TimeInterval = connectionHandshakeTimeoutSeconds
     ) async throws -> RealtimeConnection {
         let segmentID = UUID()
         await longFormTranscript.registerSegment(segmentID)
@@ -664,6 +1090,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         let accumulator = RealtimeTranscriptAccumulator()
         let sessionReadiness = RealtimeSessionReadiness()
 
+        let openedAt = ContinuousClock().now
         socket.resume()
         let receiveTask = Task { [weak self, socket, accumulator, sessionReadiness] in
             do {
@@ -678,7 +1105,7 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 await accumulator.fail(error)
                 guard !Task.isCancelled, let self else { return }
                 let isActiveConnection = self.stateLock.withLock {
-                    !self.hasStopped && self.activeSegmentID == segmentID
+                    !self.hasStopped && self.connection?.segmentID == segmentID
                 }
                 if isActiveConnection {
                     self.recordTerminalError(error)
@@ -686,42 +1113,83 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             }
         }
 
+        // One deadline covers the whole handshake. `sendSessionUpdate` first
+        // waits for the websocket upgrade, which is otherwise bounded only by
+        // the request's 90-second timeout, so a readiness timeout that starts
+        // afterwards cannot bound arming. Cancelling the socket at the
+        // deadline fails a pending send immediately.
+        let handshakeDeadline = Task { [socket, sessionReadiness] in
+            let deadline = UInt64(handshakeTimeoutSeconds * 1_000_000_000)
+            guard (try? await Task.sleep(nanoseconds: deadline)) != nil else { return }
+            await sessionReadiness.fail(CloudDictationError.timedOut)
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+        defer { handshakeDeadline.cancel() }
+
         do {
             try await sendSessionUpdate(writer: writer)
-            try await sessionReadiness.waitUntilReady(timeoutSeconds: 5)
+            try await sessionReadiness.waitUntilReady(timeoutSeconds: handshakeTimeoutSeconds)
             return RealtimeConnection(
                 segmentID: segmentID,
                 socket: socket,
                 writer: writer,
                 accumulator: accumulator,
-                receiveTask: receiveTask
+                receiveTask: receiveTask,
+                openedAt: openedAt
             )
         } catch {
             receiveTask.cancel()
             socket.cancel(with: .goingAway, reason: nil)
             await longFormTranscript.removeSegment(segmentID)
-            throw error
+            // Prefer the readiness failure: it carries the deadline timeout or
+            // the receive loop's error rather than the cancelled send.
+            let failure = await sessionReadiness.failure ?? error
+            throw Self.connectionError(for: socket, underlying: failure)
         }
     }
 
+
     private func scheduleConnectionRollover() {
-        rolloverTask?.cancel()
-        rolloverTask = Task { [weak self] in
+        let task = Task { [weak self] in
             try? await Task.sleep(
                 nanoseconds: UInt64(Self.connectionRolloverIntervalSeconds * 1_000_000_000)
             )
             guard !Task.isCancelled else { return }
             await self?.rolloverConnectionWithRetry()
         }
+        // Checked under the lock so a rollover finishing after `stop()` or
+        // `cancel()` cannot install a timer that nothing will cancel.
+        let scheduled = stateLock.withLock { () -> Bool in
+            guard !hasStopped else { return false }
+            rolloverTask = task
+            return true
+        }
+        if !scheduled {
+            task.cancel()
+        }
     }
 
     private func rolloverConnectionWithRetry() async {
+        guard let activeOpenedAt = stateLock.withLock({ connection?.openedAt }) else { return }
+        // Every attempt must swap before the active session hits the provider
+        // limit, so attempts are bounded by that deadline, not just a count.
+        let swapDeadline = activeOpenedAt.advanced(
+            by: .seconds(Self.providerSessionLimitSeconds - Self.rolloverCapMarginSeconds)
+        )
         var lastError: Error?
-        for attempt in 1...12 {
-            guard !Task.isCancelled,
-                  stateLock.withLock({ !hasStopped }) else { return }
+        for attempt in 1...Self.rolloverMaximumAttempts {
+            guard !Task.isCancelled, !isStopped else { return }
+            guard Self.rolloverPreOpenWaitLimit(
+                secondsUntilDeadline: Self.seconds(until: swapDeadline)
+            ) != nil else {
+                Self.logger.error(
+                    "Realtime connection rollover stopped before attempt \(attempt, privacy: .public): not enough time left before the provider session limit"
+                )
+                lastError = lastError ?? CloudDictationError.timedOut
+                break
+            }
             do {
-                try await rolloverConnection()
+                try await rolloverConnection(swapDeadline: swapDeadline)
                 return
             } catch is CancellationError {
                 return
@@ -730,91 +1198,152 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                 Self.logger.error(
                     "Realtime connection rollover attempt \(attempt, privacy: .public) failed: \(error.localizedDescription, privacy: .public)"
                 )
-                if attempt < 12 {
-                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                if Self.isNonRetryableConnectionError(error) {
+                    break
+                }
+                // Skip the pause when no attempt could start after it anyway;
+                // the deadline check above then ends the loop.
+                let remainingAfterDelay = Self.seconds(until: swapDeadline) - Self.rolloverRetryDelaySeconds
+                if attempt < Self.rolloverMaximumAttempts,
+                   Self.rolloverPreOpenWaitLimit(secondsUntilDeadline: remainingAfterDelay) != nil {
+                    try? await Task.sleep(nanoseconds: UInt64(Self.rolloverRetryDelaySeconds * 1_000_000_000))
                 }
             }
         }
+        // End the dictation before the provider would close it mid-speech;
+        // the controller recovers the transcript from the checkpoint.
         if let lastError,
            !Task.isCancelled,
-           stateLock.withLock({ !hasStopped }) {
+           !isStopped {
             recordTerminalError(lastError)
         }
     }
 
-    private func rolloverConnection() async throws {
-        guard let oldSocket = socket,
-              let oldWriter = socketWriter,
-              let oldAccumulator = transcriptAccumulator,
-              let oldReceiveTask = receiveTask,
-              let oldSegmentID = activeSegmentID,
-              let audioRouter else {
-            throw CloudDictationError.invalidResponse
-        }
+    /// The longest pause-wait an attempt may spend before opening its
+    /// replacement, or `nil` if an attempt can no longer finish before the
+    /// swap deadline.
+    static func rolloverPreOpenWaitLimit(secondsUntilDeadline: TimeInterval) -> TimeInterval? {
+        let available = secondsUntilDeadline - rolloverAttemptReserveSeconds
+        guard available > 0 else { return nil }
+        return min(3 * 60, available)
+    }
 
-        let newConnection = try await openConnection(forceCredentialRefresh: true)
-        guard !Task.isCancelled,
-              stateLock.withLock({ !hasStopped }) else {
-            newConnection.receiveTask.cancel()
-            newConnection.socket.cancel(with: .goingAway, reason: nil)
-            await longFormTranscript.removeSegment(newConnection.segmentID)
-            throw CancellationError()
+    /// The longest pause-wait after the replacement handshake that still
+    /// leaves a few seconds to swap before the deadline.
+    static func rolloverPostOpenWaitLimit(secondsUntilDeadline: TimeInterval) -> TimeInterval {
+        max(0, min(45, secondsUntilDeadline - 5))
+    }
+
+    private static func seconds(until deadline: ContinuousClock.Instant) -> TimeInterval {
+        let remaining = ContinuousClock().now.duration(to: deadline)
+        return Double(remaining.components.seconds)
+            + Double(remaining.components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func rolloverConnection(swapDeadline: ContinuousClock.Instant) async throws {
+        guard let audioRouter = stateLock.withLock({ connection == nil ? nil : self.audioRouter }) else {
+            throw CloudDictationError.invalidResponse
         }
 
         // Prefer a natural speech boundary so the provider never has to split
         // one spoken word across two transcription sessions. Continuous speech
-        // still rolls after the bounded wait, well before OpenAI's 60-minute cap.
+        // still rolls after the bounded wait, well before OpenAI's 60-minute
+        // cap. Wait before opening the replacement: an idle replacement socket
+        // can be closed while it waits, and its errors are not reported until
+        // it becomes the active connection.
+        guard let preOpenWaitLimit = Self.rolloverPreOpenWaitLimit(
+            secondsUntilDeadline: Self.seconds(until: swapDeadline)
+        ) else {
+            throw CloudDictationError.timedOut
+        }
+        try await waitForQuietRolloverBoundary(maximumWaitSeconds: preOpenWaitLimit)
+
+        let newConnection = try await openConnection(forceCredentialRefresh: true)
         do {
-            try await waitForQuietRolloverBoundary(maximumWaitSeconds: 3 * 60)
+            guard !Task.isCancelled, !isStopped else {
+                throw CancellationError()
+            }
+            // Speech may have resumed during the handshake, so wait for the
+            // next pause again (bounded by the swap deadline), then make sure
+            // the replacement is still open before routing audio to it. An
+            // unhealthy replacement is discarded and retried while the old
+            // connection keeps recording.
+            try await waitForQuietRolloverBoundary(
+                maximumWaitSeconds: Self.rolloverPostOpenWaitLimit(
+                    secondsUntilDeadline: Self.seconds(until: swapDeadline)
+                )
+            )
+            guard await newConnection.isHealthy() else {
+                throw CloudDictationError.networkUnavailable
+            }
         } catch {
-            newConnection.receiveTask.cancel()
-            newConnection.socket.cancel(with: .goingAway, reason: nil)
-            await longFormTranscript.removeSegment(newConnection.segmentID)
+            await discard(newConnection)
             throw error
         }
 
-        // Audio keeps flowing to the old socket while the new credential and
-        // handshake are prepared. The actor swap is ordered between append
-        // calls, so no captured PCM chunk is dropped at the boundary.
-        await audioRouter.replaceWriter(with: newConnection.writer)
-        self.socket = newConnection.socket
-        self.socketWriter = newConnection.writer
-        self.transcriptAccumulator = newConnection.accumulator
-        self.receiveTask = newConnection.receiveTask
-        stateLock.withLock {
-            activeSegmentID = newConnection.segmentID
+        // Swap under the lock, atomically with respect to `stop()` and
+        // `cancel()`: once either has run, the replacement is torn down here
+        // instead of being installed where nothing would ever close it. The
+        // old connection stays reachable as `retiringConnection` so `cancel()`
+        // can close it while it is being finalized.
+        let oldConnection = stateLock.withLock { () -> RealtimeConnection? in
+            guard !hasStopped, let oldConnection = connection else { return nil }
+            connection = newConnection
+            retiringConnection = oldConnection
+            return oldConnection
+        }
+        guard let oldConnection else {
+            await discard(newConnection)
+            throw CancellationError()
         }
 
+        // Audio keeps flowing to the old socket while the new credential and
+        // handshake are prepared. `replaceWriter` returns only after any append
+        // already routed to the old writer has been sent, so the old commit
+        // below covers every chunk the old session received.
+        await audioRouter.replaceWriter(with: newConnection.writer)
+
+        // Finalize in an unstructured task: `stop()` cancels the rollover task,
+        // but the retired segment's transcript is still needed for its result.
+        await Task { [self] in
+            await finalizeRetiredConnection(oldConnection)
+        }.value
+
+        Self.logger.notice("Realtime connection rolled over without stopping microphone capture")
+        scheduleConnectionRollover()
+    }
+
+    private func finalizeRetiredConnection(_ oldConnection: RealtimeConnection) async {
         do {
-            try await oldWriter.commit()
-            let segmentTranscript = try await oldAccumulator.waitForFinal(timeoutSeconds: 90)
-            let combined = await longFormTranscript.completeSegment(
-                oldSegmentID,
+            try await oldConnection.writer.commit()
+            let segmentTranscript = try await oldConnection.accumulator.waitForFinal(timeoutSeconds: 90)
+            _ = await longFormTranscript.completeSegment(
+                oldConnection.segmentID,
                 transcript: segmentTranscript
             )
-            stateLock.withLock { recoveryCheckpoint }?.replace(with: combined)
         } catch {
             // The streamed deltas are already durable. If finalization of the
             // retired segment fails, freeze its best partial text and keep the
             // new socket recording instead of losing the entire dictation.
-            let partial = await oldAccumulator.snapshot()
-            let combined = await longFormTranscript.completeSegment(
-                oldSegmentID,
+            let partial = await oldConnection.accumulator.snapshot()
+            _ = await longFormTranscript.completeSegment(
+                oldConnection.segmentID,
                 transcript: partial
             )
-            stateLock.withLock { recoveryCheckpoint }?.replace(with: combined)
             Self.logger.error(
                 "Retired realtime segment finalized from checkpoint after rollover error: \(error.localizedDescription, privacy: .public)"
             )
         }
+        // Rendered from the combined transcript, so text the new connection
+        // streamed meanwhile is kept rather than overwritten.
+        await persistRecoveryCheckpoint()
 
-        oldReceiveTask.cancel()
-        oldSocket.cancel(with: .normalClosure, reason: nil)
-        Self.logger.notice("Realtime connection rolled over without stopping microphone capture")
-
-        if !Task.isCancelled,
-           stateLock.withLock({ !hasStopped }) {
-            scheduleConnectionRollover()
+        oldConnection.receiveTask.cancel()
+        oldConnection.socket.cancel(with: .normalClosure, reason: nil)
+        stateLock.withLock {
+            if retiringConnection?.segmentID == oldConnection.segmentID {
+                retiringConnection = nil
+            }
         }
     }
 
@@ -955,39 +1484,32 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
                     firstDeltaLogged = true
                     Self.logger.notice("RealtimeDiag: first transcript delta +\(self.diagElapsedMS(), privacy: .public)ms")
                 }
-                let partial = await accumulator.appendDelta(delta)
-                stateLock.withLock { recoveryCheckpoint }?.append(delta: delta)
-                let combinedPartial = await longFormTranscript.updatePartial(
-                    segmentID,
-                    transcript: partial
-                )
+                // Appends are O(delta). The combined transcript is rendered,
+                // published and checkpointed by the throttle, not per delta.
+                let partialCharacterCount = await accumulator.appendDelta(delta)
+                await longFormTranscript.appendPartial(segmentID, delta: delta)
                 if deltaCount <= 12 || deltaCount.isMultiple(of: 50) {
                     Self.logger.notice(
-                        "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partial.count, privacy: .public) delta=\"\(Self.diagPreview(delta), privacy: .public)\""
+                        "RealtimeDiag: delta #\(deltaCount, privacy: .public) item=\(itemID, privacy: .public) deltaChars=\(delta.count, privacy: .public) partialChars=\(partialCharacterCount, privacy: .public)"
                     )
                 }
-                if !combinedPartial.isEmpty {
-                    onPartialText(combinedPartial)
-                }
+                stateLock.withLock { partialTranscriptThrottle }?.signal()
             }
             if type == "conversation.item.input_audio_transcription.completed",
                let transcript = payload["transcript"] as? String {
                 completedCount += 1
                 Self.logger.notice(
-                    "RealtimeDiag: completed event #\(completedCount, privacy: .public) item=\(itemID, privacy: .public) chars=\(transcript.count, privacy: .public) +\(self.diagElapsedMS(), privacy: .public)ms preview=\"\(Self.diagPreview(transcript), privacy: .public)\""
+                    "RealtimeDiag: completed event #\(completedCount, privacy: .public) item=\(itemID, privacy: .public) chars=\(transcript.count, privacy: .public) +\(self.diagElapsedMS(), privacy: .public)ms"
                 )
                 if !firstCompletedDelivered {
                     firstCompletedDelivered = true
                     let completedText = Self.normalizeText(transcript)
                     let finalText = await accumulator.complete(completedText)
-                    let combinedTranscript = await longFormTranscript.completeSegment(
+                    _ = await longFormTranscript.completeSegment(
                         segmentID,
                         transcript: finalText
                     )
-                    stateLock.withLock { recoveryCheckpoint }?.replace(with: combinedTranscript)
-                    if !combinedTranscript.isEmpty {
-                        onPartialText(combinedTranscript)
-                    }
+                    stateLock.withLock { partialTranscriptThrottle }?.signal()
                     Self.logger.notice(
                         "RealtimeDiag: completed event #\(completedCount, privacy: .public) delivered to accumulator; continuing receive loop for diagnostics"
                     )
@@ -1007,14 +1529,39 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
             return true
         }
         guard shouldNotify else { return }
-        DispatchQueue.main.async {
-            self.onTerminalError(error)
+        // Bring the checkpoint up to date first: the controller recovers the
+        // transcript from it as soon as it handles the error.
+        Task {
+            await self.persistRecoveryCheckpoint()
+            DispatchQueue.main.async {
+                self.onTerminalError(error)
+            }
         }
     }
 
-    private func cleanupOutputFile(at url: URL?) {
-        guard let url else { return }
-        try? FileManager.default.removeItem(at: url)
+    /// Throttled: delivers the combined transcript to the UI and rewrites the
+    /// checkpoint without forcing a disk flush.
+    private func publishPartialTranscript() async {
+        let snapshot = await longFormTranscript.snapshot()
+        stateLock.withLock { recoveryCheckpoint }?.replace(
+            with: snapshot.text,
+            revision: snapshot.revision,
+            synchronize: false
+        )
+        if !snapshot.text.isEmpty {
+            onPartialText(snapshot.text)
+        }
+    }
+
+    /// Writes the combined transcript to the checkpoint and flushes it.
+    @discardableResult
+    private func persistRecoveryCheckpoint() async -> String {
+        let snapshot = await longFormTranscript.snapshot()
+        stateLock.withLock { recoveryCheckpoint }?.replace(
+            with: snapshot.text,
+            revision: snapshot.revision
+        )
+        return snapshot.text
     }
 
     func recoveryTranscript() -> String {
@@ -1046,18 +1593,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         _ recoveries: [RealtimeDictationRecoveryCheckpoint.PendingRecovery]
     ) {
         RealtimeDictationRecoveryCheckpoint.discardPending(recoveries)
-    }
-
-    private static func makeOutputURL() -> URL {
-        FileManager.default.temporaryDirectory
-            .appendingPathComponent("voce-realtime-whisper-\(UUID().uuidString)")
-            .appendingPathExtension("caf")
-    }
-
-    private static func captureDurationMS(for url: URL) -> Int {
-        guard let audioFile = try? AVAudioFile(forReading: url) else { return 0 }
-        let durationSeconds = Double(audioFile.length) / max(audioFile.processingFormat.sampleRate, 1)
-        return Int((durationSeconds * 1_000).rounded())
     }
 
     fileprivate static func normalizeText(_ text: String) -> String {
@@ -1095,16 +1630,6 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         return "-"
     }
 
-    private static func diagPreview(_ text: String, limit: Int = 96) -> String {
-        let collapsed = text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-        if collapsed.count <= limit {
-            return collapsed
-        }
-        return String(collapsed.prefix(limit)) + "..."
-    }
-
     static var realtimeTargetFormat: AVAudioFormat {
         AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -1114,43 +1639,38 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
         )!
     }
 
+    /// Converts one buffer as a complete stream (including the resampler's
+    /// tail). Capture uses a shared `StreamingPCMConverter` instead.
     static func convertToRealtimePCMData(_ buffer: AVAudioPCMBuffer) -> RealtimePCMConversion? {
-        let targetFormat = realtimeTargetFormat
-        guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
-            return nil
-        }
-        let ratio = targetFormat.sampleRate / max(buffer.format.sampleRate, 1)
-        let capacity = max(1_024, AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 1_024)
-        let inputProvider = RealtimeCaptureConverterInputProvider(buffer: buffer)
+        let converter = StreamingPCMConverter(outputFormat: realtimeTargetFormat)
+        guard let converted = converter.process(buffer) else { return nil }
+        return realtimePCMConversion(from: converted + converter.drain(), inputFrameCount: Int(buffer.frameLength))
+    }
+
+    static func convertToRealtimePCMData(
+        _ buffer: AVAudioPCMBuffer,
+        using converter: StreamingPCMConverter
+    ) -> RealtimePCMConversion? {
+        guard let converted = converter.process(buffer) else { return nil }
+        return realtimePCMConversion(from: converted, inputFrameCount: Int(buffer.frameLength))
+    }
+
+    static func realtimePCMConversion(
+        from buffers: [AVAudioPCMBuffer],
+        inputFrameCount: Int
+    ) -> RealtimePCMConversion? {
         var data = Data()
         var outputFrameCount = 0
-
-        while true {
-            guard let targetBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
-                return nil
-            }
-            var conversionError: NSError?
-            let status = converter.convert(to: targetBuffer, error: &conversionError) { _, outStatus in
-                inputProvider.next(outStatus: outStatus)
-            }
-            guard conversionError == nil, status != .error else { return nil }
-            if targetBuffer.frameLength > 0,
-               let chunk = pcmData(from: targetBuffer) {
+        for buffer in buffers where buffer.frameLength > 0 {
+            if let chunk = pcmData(from: buffer) {
                 data.append(chunk)
-                outputFrameCount += Int(targetBuffer.frameLength)
-            }
-            if status == .endOfStream || status == .inputRanDry {
-                break
-            }
-            if status == .haveData, targetBuffer.frameLength == 0 {
-                break
+                outputFrameCount += Int(buffer.frameLength)
             }
         }
-
         guard !data.isEmpty else { return nil }
         return RealtimePCMConversion(
             data: data,
-            inputFrameCount: Int(buffer.frameLength),
+            inputFrameCount: inputFrameCount,
             outputFrameCount: outputFrameCount
         )
     }
@@ -1186,6 +1706,83 @@ final class OpenAIRealtimeWhisperCaptureSession: @unchecked Sendable {
     }
 }
 
+/// Runs `action` at most once per `interval` however often `signal()` is
+/// called, and always once more after the last signal, so the latest state
+/// is delivered. Runs never overlap. After `invalidate()` nothing more runs.
+final class CoalescingThrottle: @unchecked Sendable {
+    private let interval: TimeInterval
+    private let action: @Sendable () async -> Void
+    private let lock = NSLock()
+    private var isSignaled = false
+    private var isScheduled = false
+    private var isInvalidated = false
+    private var lastRunAt: ContinuousClock.Instant?
+
+    init(interval: TimeInterval, action: @escaping @Sendable () async -> Void) {
+        self.interval = interval
+        self.action = action
+    }
+
+    func signal() {
+        let delay = lock.withLock { () -> TimeInterval? in
+            guard !isInvalidated else { return nil }
+            isSignaled = true
+            guard !isScheduled else { return nil }
+            isScheduled = true
+            return remainingDelay()
+        }
+        if let delay {
+            schedule(after: delay)
+        }
+    }
+
+    func invalidate() {
+        lock.withLock { isInvalidated = true }
+    }
+
+    /// Must be called with `lock` held.
+    private func remainingDelay() -> TimeInterval {
+        guard let lastRunAt else { return 0 }
+        let elapsed = lastRunAt.duration(to: ContinuousClock().now)
+        let elapsedSeconds = Double(elapsed.components.seconds)
+            + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000_000
+        return max(0, interval - elapsedSeconds)
+    }
+
+    private func schedule(after delay: TimeInterval) {
+        Task {
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            await self.run()
+        }
+    }
+
+    private func run() async {
+        let shouldRun = lock.withLock { () -> Bool in
+            guard !isInvalidated else {
+                isScheduled = false
+                return false
+            }
+            isSignaled = false
+            lastRunAt = ContinuousClock().now
+            return true
+        }
+        guard shouldRun else { return }
+        await action()
+        let nextDelay = lock.withLock { () -> TimeInterval? in
+            guard isSignaled, !isInvalidated else {
+                isScheduled = false
+                return nil
+            }
+            return remainingDelay()
+        }
+        if let nextDelay {
+            schedule(after: nextDelay)
+        }
+    }
+}
+
 private final class OneShotContinuation: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Bool, Never>?
@@ -1213,6 +1810,11 @@ private actor RealtimeSessionReadiness {
 
     func fail(_ error: Error) {
         complete(.failure(error))
+    }
+
+    var failure: Error? {
+        guard case .failure(let error) = result else { return nil }
+        return error
     }
 
     func waitUntilReady(timeoutSeconds: TimeInterval) async throws {
@@ -1267,47 +1869,49 @@ private final class OneShotReadinessContinuation: @unchecked Sendable {
     }
 }
 
-private final class RealtimeCaptureConverterInputProvider: @unchecked Sendable {
-    private var buffer: AVAudioPCMBuffer?
-    private var didEndStream = false
-
-    init(buffer: AVAudioPCMBuffer) {
-        self.buffer = buffer
-    }
-
-    func next(outStatus: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
-        if didEndStream {
-            outStatus.pointee = .endOfStream
-            return nil
-        }
-        guard let buffer else {
-            didEndStream = true
-            outStatus.pointee = .endOfStream
-            return nil
-        }
-        self.buffer = nil
-        outStatus.pointee = .haveData
-        return buffer
-    }
-}
-
 private actor RealtimeAudioRouter {
     private var writer: RealtimeWebSocketWriter
+    private var appendsInFlight = 0
+    private var drainWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(writer: RealtimeWebSocketWriter) {
         self.writer = writer
     }
 
     func appendAudio(_ data: Data) async throws {
+        // Actor reentrancy lets `replaceWriter` run while this append is
+        // suspended, so track it to let the swap wait for it.
+        let writer = writer
+        appendsInFlight += 1
+        defer {
+            appendsInFlight -= 1
+            if appendsInFlight == 0 {
+                let waiters = drainWaiters
+                drainWaiters.removeAll()
+                waiters.forEach { $0.resume() }
+            }
+        }
         try await writer.appendAudio(data)
     }
 
-    func replaceWriter(with writer: RealtimeWebSocketWriter) {
+    /// Routes later appends to `writer`, returning once every append already
+    /// routed to the previous writer has finished sending.
+    func replaceWriter(with writer: RealtimeWebSocketWriter) async {
         self.writer = writer
+        guard appendsInFlight > 0 else { return }
+        await withCheckedContinuation { continuation in
+            drainWaiters.append(continuation)
+        }
     }
 }
 
 actor RealtimeLongFormTranscript {
+    struct Snapshot: Sendable {
+        let text: String
+        /// Increases with every change, so writers can drop stale renders.
+        let revision: UInt64
+    }
+
     private struct Segment {
         var partial = ""
         var completed: String?
@@ -1315,30 +1919,36 @@ actor RealtimeLongFormTranscript {
 
     private var order: [UUID] = []
     private var segments: [UUID: Segment] = [:]
+    private var revision: UInt64 = 0
 
     func reset() {
         order.removeAll(keepingCapacity: true)
         segments.removeAll(keepingCapacity: true)
+        revision &+= 1
     }
 
     func registerSegment(_ id: UUID) {
         guard segments[id] == nil else { return }
         order.append(id)
         segments[id] = Segment()
+        revision &+= 1
     }
 
     func removeSegment(_ id: UUID) {
         order.removeAll { $0 == id }
         segments[id] = nil
+        revision &+= 1
     }
 
-    func updatePartial(_ id: UUID, transcript: String) -> String {
-        guard var segment = segments[id], segment.completed == nil else {
-            return renderedTranscript()
-        }
-        segment.partial = transcript
-        segments[id] = segment
-        return renderedTranscript()
+    /// Appends a streamed delta in place (no copy of the running text).
+    func appendPartial(_ id: UUID, delta: String) {
+        guard let segment = segments[id], segment.completed == nil else { return }
+        segments[id]?.partial.append(delta)
+        revision &+= 1
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(text: renderedTranscript(), revision: revision)
     }
 
     func completeSegment(_ id: UUID, transcript: String) -> String {
@@ -1353,6 +1963,7 @@ actor RealtimeLongFormTranscript {
             segment.completed = completed
             segment.partial = completed
             segments[id] = segment
+            revision &+= 1
         }
         return renderedTranscript()
     }
@@ -1397,12 +2008,17 @@ private actor RealtimeWebSocketWriter {
 
 private actor RealtimeTranscriptAccumulator {
     private var partialText = ""
+    private var partialCharacterCount = 0
     private var result: Result<String, Error>?
     private var continuation: CheckedContinuation<Result<String, Error>, Never>?
 
-    func appendDelta(_ delta: String) -> String {
+    /// Returns the running character count; re-normalizing the whole partial
+    /// text on every delta made long dictations quadratic.
+    @discardableResult
+    func appendDelta(_ delta: String) -> Int {
         partialText += delta
-        return OpenAIRealtimeWhisperCaptureSession.normalizeText(partialText)
+        partialCharacterCount += delta.count
+        return partialCharacterCount
     }
 
     @discardableResult
@@ -1434,6 +2050,11 @@ private actor RealtimeTranscriptAccumulator {
 
     func snapshot() -> String {
         OpenAIRealtimeWhisperCaptureSession.normalizeText(partialText)
+    }
+
+    /// `false` once the receive loop failed or the final transcript arrived.
+    var isOpen: Bool {
+        result == nil
     }
 
     func waitForFinal(timeoutSeconds: TimeInterval) async throws -> String {

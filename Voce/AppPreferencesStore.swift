@@ -5,6 +5,11 @@ import VoceKit
 actor AppPreferencesStore {
     private let storageURL: URL
     private var hasPreparedStorageDirectory = false
+    /// Set when an unreadable preferences file could not be moved or copied
+    /// aside; saving would destroy it, so saves are skipped for this run.
+    private var isPersistenceBlocked = false
+    /// Orders snapshot saves; sequence numbers are taken synchronously by callers.
+    private nonisolated let saveSequencer = LatestWinsSequencer()
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "AppPreferencesStore")
     private static let legacyModelCleanupMarkerName = ".legacy-model-cleanup-v2"
 
@@ -22,18 +27,65 @@ actor AppPreferencesStore {
         do {
             let data = try Data(contentsOf: storageURL)
             let decoder = JSONDecoder()
+            let report = LossyDecodingReport()
+            decoder.attach(report)
             var prefs = try decoder.decode(AppPreferences.self, from: data)
+            if report.skippedValueCount > 0 {
+                // Part of the file could not be read and will be dropped by the
+                // next save; keep the original alongside.
+                let backup = CorruptFilePreserver.preserve(fileAt: storageURL, moving: false)
+                isPersistenceBlocked = backup == nil
+                Self.logger.error(
+                    "Preferences loaded with \(report.skippedValueCount, privacy: .public) unreadable value(s); original preserved: \(backup != nil, privacy: .public)"
+                )
+            }
             prefs.normalize()
+            if report.skippedValueCount > 0, !isPersistenceBlocked {
+                // Write the repaired preferences now so the next launch does
+                // not find the same damage (and back it up) again.
+                writeToDisk(prefs)
+            }
             return prefs
         } catch {
+            // Move the unreadable file aside so saving defaults can never
+            // overwrite the user's lexicon, snippets and workflows.
+            let backup = CorruptFilePreserver.preserve(fileAt: storageURL, moving: true)
+            if backup == nil, FileManager.default.fileExists(atPath: storageURL.path) {
+                isPersistenceBlocked = true
+            }
             Self.logger.error(
-                "Preferences load failed for path \(self.storageURL.path, privacy: .private): \(error.localizedDescription, privacy: .public)"
+                "Preferences load failed for path \(self.storageURL.path, privacy: .private): \(error.localizedDescription, privacy: .public); original preserved at \(backup?.path ?? "nowhere", privacy: .private)"
             )
             return .default
         }
     }
 
-    func save(_ preferences: AppPreferences) {
+    /// Saves a full preferences snapshot, latest-wins.
+    ///
+    /// Callers fire saves from independent `Task`s, which can reach this actor
+    /// out of order. The sequence number is taken synchronously on the
+    /// caller's executor (`nonisolated(nonsending)`), i.e. in the order the
+    /// main-actor tasks run, before hopping to the actor; the actor then drops
+    /// any snapshot older than one it has already written, so an older
+    /// snapshot can never overwrite a newer one.
+    nonisolated(nonsending) func save(_ preferences: AppPreferences) async {
+        let sequence = saveSequencer.nextSequence()
+        await write(preferences, sequence: sequence)
+    }
+
+    private func write(_ preferences: AppPreferences, sequence: UInt64) {
+        guard saveSequencer.claimWrite(sequence) else {
+            Self.logger.notice("Skipped stale preferences snapshot \(sequence, privacy: .public)")
+            return
+        }
+        guard !isPersistenceBlocked else {
+            Self.logger.error("Preferences save skipped: unreadable preferences file could not be preserved.")
+            return
+        }
+        writeToDisk(preferences)
+    }
+
+    private func writeToDisk(_ preferences: AppPreferences) {
         var normalized = preferences
         normalized.normalize()
 

@@ -31,6 +31,7 @@ struct ContentView: View {
     @State private var lastNonSettingsTab: VoceTab = .home
     @State private var settingsLaunchTarget: SettingsLaunchTarget?
     @State private var preferencesDraft: AppPreferences = .default
+    @State private var draftCommitter = PreferencesDraftCommitter()
     @State private var accessEmailDraft = ""
     @State private var accessVerificationCodeDraft = ""
     @State private var accessVerificationCodeWasSent = false
@@ -90,27 +91,37 @@ struct ContentView: View {
             idealHeight: VoceDesign.windowIdealHeight
         )
         .onAppear {
-            preferencesDraft = controller.preferences
+            // Start early so "Use current app" in Settings knows which app the
+            // user came from before switching to Voce.
+            ExternalFrontmostAppTracker.startIfNeeded()
+            preferencesDraft = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
             accessEmailDraft = controller.preferences.billing.subscriberEmail
         }
         .onChange(of: controller.preferences) { _, newValue in
-            if newValue != preferencesDraft {
-                preferencesDraft = newValue
+            let reconciled = draftCommitter.reconcile(draft: preferencesDraft, with: controller)
+            if reconciled != preferencesDraft {
+                preferencesDraft = reconciled
             }
             if newValue.billing.subscriberEmail != normalizedAccessEmail {
                 accessEmailDraft = newValue.billing.subscriberEmail
             }
         }
         .onChange(of: preferencesDraft) { _, newValue in
-            var normalized = newValue
-            normalized.normalize()
-            guard normalized != controller.preferences else { return }
-
-            if normalized.requiresRuntimeRebuild(comparedTo: controller.preferences) {
-                controller.applySettingsDraft(preferences: newValue, announceImmediateSave: false)
-            } else {
-                controller.savePreferencesQuietly(preferences: newValue)
-            }
+            // Coalesces keystrokes (Scratchpad, Dictionary/Snippets/Style
+            // fields) instead of publishing and saving preferences per key.
+            draftCommitter.draftDidChange(newValue, controller: controller)
+        }
+        .onChange(of: selectedTab) { _, _ in
+            draftCommitter.flush()
+        }
+        .onDisappear {
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            draftCommitter.flush()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+            draftCommitter.flush()
         }
         .task {
             await controller.refreshHistory()
@@ -219,6 +230,7 @@ struct ContentView: View {
                 HomeTab(isActive: selectedTab == .home && scenePhase == .active) {
                     openSettings(.handsFreeGlobalHotkey)
                 }
+                .equatable()
                 .tabContentVisibility(selectedTab == .home)
 
                 DictionaryTab(preferences: $preferencesDraft)
@@ -414,7 +426,7 @@ struct ContentView: View {
         let isSelected = selectedTab == tab
 
         return Button {
-            withAnimation(.easeInOut(duration: VoceDesign.animationFast)) {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast)) {
                 lastNonSettingsTab = tab
                 settingsLaunchTarget = nil
                 selectedTab = tab
@@ -1386,6 +1398,9 @@ private struct TabContentVisibilityModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // Hidden tabs stay alive, so they never see onDisappear; let them
+            // react to becoming inactive instead.
+            .environment(\.voceTabIsActive, isVisible)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import VoceKit
 @testable import Voce
 
 /// Regression canaries for the settings search index.
@@ -176,4 +177,116 @@ func everyEntryMatchesItsOwnTitle() {
             "Searching \"\(entry.title)\" does not return the \(entry.id) entry"
         )
     }
+}
+
+// MARK: - Preferences draft merging
+
+@MainActor
+@Test("A pending draft edit survives a concurrent controller update to other fields")
+func draftMergeKeepsLocalEditsAndAdoptsRemoteChanges() {
+    let base = AppPreferences.default
+
+    var local = base
+    local.scratchPadContent = "typed while dictation finished"
+
+    var remote = base
+    remote.metricsRecordingSecondsLifetime = 42
+    remote.general.userName = "Remote"
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.scratchPadContent == "typed while dictation finished")
+    #expect(merged.metricsRecordingSecondsLifetime == 42)
+    #expect(merged.general.userName == "Remote")
+}
+
+@MainActor
+@Test("When both sides edit the same field, the user's draft wins")
+func draftMergePrefersLocalOnConflict() {
+    let base = AppPreferences.default
+
+    var local = base
+    local.scratchPadContent = "local"
+
+    var remote = base
+    remote.scratchPadContent = "remote"
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+    #expect(merged.scratchPadContent == "local")
+}
+
+@MainActor
+@Test("Controller-owned fields inside edited groups keep the controller's value")
+func draftMergeKeepsControllerOwnedFieldsInEditedGroups() {
+    let base = AppPreferences.default
+
+    var local = base
+    local.general.userName = "Typed"
+    local.dictation.localeIdentifier = "fr-FR"
+
+    var remote = base
+    remote.general.showOnboarding = !base.general.showOnboarding
+    remote.dictation.cloud.directUsagePeriodKey = "2026-10"
+    remote.dictation.cloud.directUsageSeconds = 90
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.general.userName == "Typed")
+    #expect(merged.general.showOnboarding == remote.general.showOnboarding)
+    #expect(merged.dictation.localeIdentifier == "fr-FR")
+    #expect(merged.dictation.cloud.directUsagePeriodKey == "2026-10")
+    #expect(merged.dictation.cloud.directUsageSeconds == 90)
+}
+
+@MainActor
+@Test("Concurrent edits of the same term or trigger collapse to one entry")
+func draftMergeCollapsesSameTermEdits() {
+    var base = AppPreferences.default
+    let original = LexiconEntry(term: "chat gbt", preferred: "ChatGPT", scope: .global)
+    let snippet = Snippet(trigger: "sig", expansion: "Best", scope: .global)
+    base.lexiconEntries = [original]
+    base.snippets = [snippet]
+
+    var local = base
+    local.lexiconEntries = [LexiconEntry(term: "chat gbt", preferred: "ChatGPT-local", scope: .global)]
+    local.snippets[0].expansion = "Best, local"
+
+    var remote = base
+    remote.lexiconEntries = [LexiconEntry(term: "Chat GBT", preferred: "ChatGPT-remote", scope: .global)]
+    remote.snippets = [Snippet(trigger: "SIG", expansion: "Remote", scope: .global)]
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.lexiconEntries.map(\.preferred) == ["ChatGPT-local"])
+    #expect(merged.snippets.map(\.expansion) == ["Best, local"])
+}
+
+@MainActor
+@Test("Controller-added snippets and corrections survive a concurrent local list edit")
+func draftMergeUnionsListAdditions() {
+    var base = AppPreferences.default
+    let kept = Snippet(trigger: "kept", expansion: "kept", scope: .global)
+    let deletedLocally = Snippet(trigger: "gone", expansion: "gone", scope: .global)
+    base.snippets = [kept, deletedLocally]
+    base.lexiconEntries = [LexiconEntry(term: "chat gbt", preferred: "ChatGPT", scope: .global)]
+
+    var local = base
+    local.snippets.removeAll { $0.id == deletedLocally.id }
+    local.snippets[0].expansion = "edited locally"
+    let localSnippet = Snippet(trigger: "mine", expansion: "mine", scope: .global)
+    local.snippets.append(localSnippet)
+    local.lexiconEntries.append(LexiconEntry(term: "voce", preferred: "Voce", scope: .global))
+
+    var remote = base
+    let promotedSnippet = Snippet(trigger: "promoted", expansion: "promoted", scope: .global)
+    remote.snippets.append(promotedSnippet)
+    let promotedEntry = LexiconEntry(term: "steno", preferred: "Steno", scope: .global)
+    remote.lexiconEntries.append(promotedEntry)
+
+    let merged = PreferencesDraftCommitter.merge(base: base, local: local, remote: remote)
+
+    #expect(merged.snippets.map(\.id) == [kept.id, localSnippet.id, promotedSnippet.id])
+    #expect(merged.snippets.first?.expansion == "edited locally")
+    #expect(merged.lexiconEntries.count == 3)
+    #expect(merged.lexiconEntries.contains(promotedEntry))
 }

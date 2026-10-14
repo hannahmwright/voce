@@ -221,6 +221,9 @@ enum VoceProEntitlementError: LocalizedError {
     case checkoutUnavailable
     case portalUnavailable
     case verificationFailed
+    case tooManyCodeRequests
+    case tooManyIncorrectCodes
+    case tooManyIncorrectCodesHourly
 
     var errorDescription: String? {
         switch self {
@@ -240,6 +243,12 @@ enum VoceProEntitlementError: LocalizedError {
             return "Could not open subscription settings."
         case .verificationFailed:
             return "Could not verify that code."
+        case .tooManyCodeRequests:
+            return "Too many code requests. Try again later."
+        case .tooManyIncorrectCodes:
+            return "Too many incorrect codes. Request a new code."
+        case .tooManyIncorrectCodesHourly:
+            return "Too many incorrect codes. Try again in about an hour."
         }
     }
 }
@@ -306,6 +315,9 @@ actor VoceProEntitlementService {
         if httpResponse.statusCode == 400 {
             throw VoceProEntitlementError.invalidEmail
         }
+        if httpResponse.statusCode == 429 {
+            throw VoceProEntitlementError.tooManyCodeRequests
+        }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw VoceProEntitlementError.accessCodeUnavailable
         }
@@ -320,6 +332,13 @@ actor VoceProEntitlementService {
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw VoceProEntitlementError.invalidResponse
+        }
+        if httpResponse.statusCode == 429 {
+            let errorCode = try? JSONDecoder().decode(AuthErrorResponse.self, from: data).code
+            if errorCode == "too_many_incorrect_codes_hourly" {
+                throw VoceProEntitlementError.tooManyIncorrectCodesHourly
+            }
+            throw VoceProEntitlementError.tooManyIncorrectCodes
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw VoceProEntitlementError.verificationFailed
@@ -366,7 +385,8 @@ actor VoceProEntitlementService {
     func recordUsage(
         email: String,
         feature: VoceEntitlementFeature = .appAccess,
-        seconds: Int
+        seconds: Int,
+        reportID: UUID? = nil
     ) async throws -> VoceProEntitlement {
         var request = URLRequest(url: usageEndpointURL)
         request.httpMethod = "POST"
@@ -376,7 +396,12 @@ actor VoceProEntitlementService {
             request.setValue("Bearer \(apiSecret)", forHTTPHeaderField: "authorization")
         }
         request.httpBody = try JSONEncoder().encode(
-            RecordUsageRequest(email: email, feature: feature.rawValue, seconds: seconds)
+            RecordUsageRequest(
+                email: email,
+                feature: feature.rawValue,
+                seconds: seconds,
+                reportId: reportID?.uuidString
+            )
         )
 
         let (data, response) = try await session.data(for: request)
@@ -704,6 +729,10 @@ private struct AuthStartRequest: Encodable {
     var email: String
 }
 
+private struct AuthErrorResponse: Decodable {
+    var code: String?
+}
+
 private struct AuthVerifyRequest: Encodable {
     var email: String
     var code: String
@@ -718,6 +747,9 @@ private struct RecordUsageRequest: Encodable {
     var email: String
     var feature: String
     var seconds: Int
+    /// Stable per queued report so the backend can ignore a resend of a
+    /// report it already recorded. Omitted when nil.
+    var reportId: String?
 }
 
 private struct PortalSessionRequest: Encodable {

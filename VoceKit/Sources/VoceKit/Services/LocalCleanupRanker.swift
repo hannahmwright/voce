@@ -146,16 +146,16 @@ public struct LocalCleanupRanker: Sendable {
     private func fluencyScore(text: String) -> Double {
         var score = 1.0
 
-        if text.range(of: #"^[\s]*[,.!?;:]"#, options: .regularExpression) != nil {
+        if Self.matches(Self.leadingPunctuationRegex, in: text) {
             score -= 0.25
         }
-        if text.range(of: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#, options: .regularExpression) != nil {
+        if Self.matches(Self.interjectionalLikeRegex, in: text) {
             score -= 0.2
         }
         if text.contains("  ") {
             score -= 0.2
         }
-        if text.contains(",.") || text.contains("..") {
+        if Self.matches(Self.orphanCommaRegex, in: text) || text.contains("..") {
             score -= 0.2
         }
 
@@ -210,22 +210,17 @@ public struct LocalCleanupRanker: Sendable {
             return 0
         }
 
-        let loweredRaw = rawText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-
+        // Only reward list formatting when the raw text carries the same list
+        // cue the cleanup engine accepts, so prose that merely starts with
+        // "First" or "Bullet points" is not pushed into a list.
         switch structureRewrite.to {
         case "auto-bullets":
-            if loweredRaw.hasPrefix("bullet list ")
-                || loweredRaw.hasPrefix("bullet points ")
-                || loweredRaw.hasPrefix("bulleted list ")
-                || loweredRaw.hasPrefix("bullet point ") {
+            if RuleBasedCleanupEngine.explicitListCue(in: rawText)?.kind == .bullets {
                 return 1
             }
         case "auto-numbered":
-            if loweredRaw.hasPrefix("numbered list ")
-                || loweredRaw.hasPrefix("number list ")
-                || loweredRaw.hasPrefix("numbered points ")
-                || loweredRaw.hasPrefix("numbered items ")
-                || loweredRaw.hasPrefix("first ") {
+            if RuleBasedCleanupEngine.explicitListCue(in: rawText)?.kind == .numbered
+                || RuleBasedCleanupEngine.ordinalListItems(from: rawText) != nil {
                 return 1
             }
         default:
@@ -235,16 +230,22 @@ public struct LocalCleanupRanker: Sendable {
         return 0
     }
 
+    /// Lowercased, space-joined words using the tokenizer shared with the
+    /// learning engine, so accented words ("café") survive and contractions
+    /// ("don't") match the keys stored in `wordFrequencies`.
     private func normalize(_ text: String) -> String {
-        text
-            .lowercased()
-            .replacingOccurrences(
-                of: #"[^a-z0-9'\s]+"#,
-                with: " ",
-                options: .regularExpression
-            )
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        WordTokenizer.normalizedText(text)
+    }
+
+    private static let leadingPunctuationRegex = try? NSRegularExpression(pattern: #"^[\s]*[,.!?;:]"#)
+    private static let interjectionalLikeRegex = try? NSRegularExpression(pattern: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#)
+    /// A comma followed (after optional spaces) by another comma or terminal
+    /// punctuation: ", ," or ",." — typical debris of a bad filler removal.
+    private static let orphanCommaRegex = try? NSRegularExpression(pattern: #",[ \t]*[,.!?;:]"#)
+
+    private static func matches(_ regex: NSRegularExpression?, in text: String) -> Bool {
+        guard let regex else { return false }
+        return regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     private func tokenizeWords(_ text: String) -> [String] {
@@ -278,17 +279,8 @@ public struct LocalCleanupRanker: Sendable {
             return false
         }
 
-        let rawHasInterjection = rawText.range(
-            of: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#,
-            options: .regularExpression
-        ) != nil
-        guard rawHasInterjection else { return false }
-
-        let candidateStillHasInterjection = candidate.text.range(
-            of: #"(?i)(^|[.!?]\s+)like,\s+|,\s*like,\s*"#,
-            options: .regularExpression
-        ) != nil
-        return candidateStillHasInterjection == false
+        guard Self.matches(Self.interjectionalLikeRegex, in: rawText) else { return false }
+        return Self.matches(Self.interjectionalLikeRegex, in: candidate.text) == false
     }
 
     private func levenshteinDistance<Element: Equatable>(

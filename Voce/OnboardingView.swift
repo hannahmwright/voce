@@ -100,7 +100,7 @@ struct OnboardingView: View {
         .onChange(of: currentStep) { _, newStep in
             if newStep == .walkthrough || newStep == .practice {
                 syncPracticeState()
-                controller.applySettingsDraft(preferences: onboardingPreferences, announceImmediateSave: false)
+                pushOnboardingPreferences()
                 focusPracticePadSoon()
             } else if newStep == .typingSpeed {
                 focusTypingTestSoon()
@@ -138,12 +138,13 @@ struct OnboardingView: View {
             practiceStartCharacterCount = 0
             focusPracticePadSoon()
         }
-        .onChange(of: controller.status) { _, newStatus in
+        .onChange(of: controller.lastCompletionOutcome) { _, outcome in
             guard currentStep == .walkthrough || currentStep == .practice else { return }
-            guard newStatus.localizedCaseInsensitiveContains("copied to clipboard")
-                || newStatus.localizedCaseInsensitiveContains("click the input again.") else { return }
+            // Text that ended up on the clipboard never reached the practice
+            // pad, so add it here.
+            guard let outcome, outcome.leftTextOnClipboard else { return }
 
-            let transcript = controller.lastTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            let transcript = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !transcript.isEmpty, transcript != lastPracticeTranscriptApplied else { return }
 
             appendTranscriptToPracticePad(transcript)
@@ -252,7 +253,7 @@ struct OnboardingView: View {
                     measuredWordsPerMinute: $typingTestMeasuredWPM,
                     autofocus: true
                 ) { _ in
-                    controller.savePreferencesQuietly(preferences: onboardingPreferences)
+                    pushOnboardingPreferences()
                 }
             }
             .frame(maxWidth: 640)
@@ -1517,7 +1518,7 @@ struct OnboardingView: View {
 
         guard measuredWPM > onboardingPreferences.metricsBestTypingWordsPerMinute else { return }
         onboardingPreferences.metricsBestTypingWordsPerMinute = measuredWPM
-        controller.savePreferencesQuietly(preferences: onboardingPreferences)
+        pushOnboardingPreferences()
     }
 
     private func resetTypingTest() {
@@ -1672,7 +1673,7 @@ struct OnboardingView: View {
     }
 
     private func completeOnboarding() {
-        controller.savePreferencesQuietly(preferences: onboardingPreferences)
+        pushOnboardingPreferences()
         controller.completeOnboarding()
     }
 
@@ -1685,7 +1686,7 @@ struct OnboardingView: View {
         accessEmailDraft = email
         onboardingPreferences.billing.subscriberEmail = email
         onboardingPreferences.normalize()
-        controller.applySettingsDraft(preferences: onboardingPreferences, announceImmediateSave: false)
+        controller.updatePreferences { $0.billing.subscriberEmail = email }
 
         Task {
             do {
@@ -1779,8 +1780,27 @@ struct OnboardingView: View {
     }
 
     private func saveOnboardingPreferences() {
-        controller.applySettingsDraft(preferences: onboardingPreferences, announceImmediateSave: false)
+        pushOnboardingPreferences()
         syncPracticeState()
+    }
+
+    /// Writes back only the fields onboarding edits. `onboardingPreferences`
+    /// is copied once on appear, while the controller keeps changing other
+    /// fields during practice (metrics, usage, learned lexicon, overlay
+    /// anchors), so writing the copy back whole would revert them.
+    private func pushOnboardingPreferences() {
+        let hotkeys = onboardingPreferences.hotkeys
+        let bestWordsPerMinute = onboardingPreferences.metricsBestTypingWordsPerMinute
+        controller.updatePreferences { preferences in
+            preferences.hotkeys.optionPressToTalkEnabled = hotkeys.optionPressToTalkEnabled
+            preferences.hotkeys.pressToTalkHotkey = hotkeys.pressToTalkHotkey
+            preferences.hotkeys.handsFreeGlobalHotkey = hotkeys.handsFreeGlobalHotkey
+            preferences.hotkeys.voceActionsTapEnabled = hotkeys.voceActionsTapEnabled
+            preferences.metricsBestTypingWordsPerMinute = max(
+                preferences.metricsBestTypingWordsPerMinute,
+                bestWordsPerMinute
+            )
+        }
     }
 
     private func animateStepChange(to step: OnboardingStep) {

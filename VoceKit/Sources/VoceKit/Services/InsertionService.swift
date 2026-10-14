@@ -14,6 +14,30 @@ public enum AutoPasteOutcome: Sendable, Equatable {
     }
 }
 
+/// Collects a non-error notice raised while a transport runs (see
+/// `InsertResult.notice`). Installed by `InsertionService` around the
+/// clipboard transport via `InsertionNoticeContext`.
+final class InsertionNoticeCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedNotice: String?
+
+    var notice: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedNotice
+    }
+
+    func record(_ notice: String) {
+        lock.lock()
+        storedNotice = notice
+        lock.unlock()
+    }
+}
+
+enum InsertionNoticeContext {
+    @TaskLocal static var collector: InsertionNoticeCollector?
+}
+
 public struct InsertionService: InsertionServiceProtocol, Sendable {
     private let transports: [any InsertionTransport]
 
@@ -54,11 +78,14 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
         for transport in prioritizedTransports(for: target) {
             if let clipboardTransport = transport as? ClipboardInsertionTransport {
                 do {
-                    let outcome = try await clipboardTransport.insertAndReturnOutcome(
-                        text: text,
-                        target: target,
-                        inputTarget: inputTarget
-                    )
+                    let noticeCollector = InsertionNoticeCollector()
+                    let outcome = try await InsertionNoticeContext.$collector.withValue(noticeCollector) {
+                        try await clipboardTransport.insertAndReturnOutcome(
+                            text: text,
+                            target: target,
+                            inputTarget: inputTarget
+                        )
+                    }
                     let status: InsertionStatus
                     let errorMessage: String?
                     let recoveryAction: InsertionRecoveryAction?
@@ -84,7 +111,10 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
                         method: .clipboardPaste,
                         insertedText: text,
                         errorMessage: errorMessage,
-                        recoveryAction: recoveryAction
+                        recoveryAction: recoveryAction,
+                        // Notices describe a successful insertion only; a
+                        // copied-only result already explains the clipboard.
+                        notice: status == .inserted ? noticeCollector.notice : nil
                     )
                 } catch {
                     failures.append(
@@ -194,6 +224,15 @@ public struct InsertionService: InsertionServiceProtocol, Sendable {
             || normalized.contains("failed to update focused element text")
     }
 
+    /// Clipboard paste always runs first, by design: it is the only transport
+    /// whose result is positively verified against the exact captured field,
+    /// and its outcome (inserted, unverified, or skipped with the transcript
+    /// left on the clipboard) is final. Direct typing and AX insertion run
+    /// only when the clipboard transport throws, in their configured relative
+    /// order, and never when `exactTargetRequired` is set. The app pins the
+    /// configured order to `[.clipboardPaste, .accessibility, .direct]`
+    /// (`AppPreferences.reliableInsertionOrder`), so there is no user-facing
+    /// ordering preference to honor.
     private func prioritizedTransports(for _: AppContext) -> [any InsertionTransport] {
         var clipboard: [any InsertionTransport] = []
         var others: [any InsertionTransport] = []
@@ -270,9 +309,11 @@ public struct ClipboardInsertionTransport: InsertionTransport {
         }
 
         if let temporaryClipboard = clipboard as? any TemporaryClipboardPasteService {
+            // The temporary paste service owns staging (and the settle delay
+            // after it), so the transcript is only staged once the paste
+            // helper's preconditions have passed.
             return try await temporaryClipboard.performTemporaryPaste(text: text) {
-                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms for clipboard to settle
-                return await paste(text: text, target: target, inputTarget: inputTarget)
+                await paste(text: text, target: target, inputTarget: inputTarget)
             }
         }
 
@@ -314,11 +355,27 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         paste: @escaping @Sendable () async -> AutoPasteOutcome
     ) async throws -> AutoPasteOutcome {
         let provider = TemporaryPasteboardDataProvider(text: text)
-        let transaction = await MainActor.run {
-            TemporaryPasteboardTransaction.begin(text: text, provider: provider)
+        let (staging, changeCountBeforePaste) = await MainActor.run {
+            (TemporaryPasteStaging(text: text, provider: provider), NSPasteboard.general.changeCount)
         }
 
-        let pasteOutcome = await paste()
+        // `MacPasteHelper.activateAndPaste` snapshots the clipboard and stages
+        // the transcript through `staging` only after its cheap preconditions
+        // pass, right before Cmd+V.
+        let pasteOutcome = await TemporaryPasteStagingContext.$current.withValue(staging) {
+            await paste()
+        }
+
+        guard let transaction = await MainActor.run(body: { staging.transaction }) else {
+            return await MainActor.run {
+                Self.finishUnstagedPaste(
+                    text: text,
+                    pasteOutcome: pasteOutcome,
+                    changeCountBeforePaste: changeCountBeforePaste
+                )
+            }
+        }
+
         let didConsumeStagedText: Bool
         switch pasteOutcome {
         case .attempted:
@@ -345,6 +402,20 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
             return .unverified(reason: reason)
         }
 
+        if disposition == .transcriptKeptSnapshotTooLarge {
+            // The paste itself was verified, so the outcome stays `.attempted`
+            // (inserted; Insert & Submit still sends Return). The replaced
+            // clipboard is reported separately as `InsertResult.notice`.
+            InsertionNoticeContext.collector?.record(
+                "Your previous clipboard was too large to restore, so the transcript was left on your clipboard."
+            )
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "clipboard_not_restored",
+                details: ["reason": "snapshot_too_large"]
+            )
+        }
+
         guard pasteOutcome == .attempted, !didConsumeStagedText else {
             return pasteOutcome
         }
@@ -352,6 +423,48 @@ public actor MacClipboardService: TemporaryClipboardPasteService {
         return .unverified(
             reason: "Voce could not confirm that the target accepted the paste. The transcript was kept on your clipboard."
         )
+    }
+
+    /// The paste ended without staging: the helper's preconditions failed
+    /// before Cmd+V, so the user's clipboard was never snapshotted. Leave the
+    /// transcript on the clipboard for manual pasting (the same end state as a
+    /// staged paste that was skipped), unless the user copied something newer.
+    @MainActor
+    private static func finishUnstagedPaste(
+        text: String,
+        pasteOutcome: AutoPasteOutcome,
+        changeCountBeforePaste: Int
+    ) -> AutoPasteOutcome {
+        let pasteboard = NSPasteboard.general
+        if case .attempted = pasteOutcome {
+            // Only a paste closure that does not stage through
+            // `TemporaryPasteStagingContext` can get here; the paste cannot be
+            // trusted to have used the transcript.
+            VoceDiagnosticStore.shared.record(
+                category: "insertion",
+                event: "temporary_paste_not_staged"
+            )
+        }
+
+        guard pasteboard.changeCount == changeCountBeforePaste else {
+            let baseReason = pasteOutcome.skippedReason
+                ?? "Voce could not confirm that the target accepted the paste."
+            let reason = "\(baseReason) The clipboard changed during insertion, so Voce did not overwrite the newer clipboard contents."
+            if case .skipped = pasteOutcome {
+                return .skipped(reason: reason)
+            }
+            return .unverified(reason: reason)
+        }
+
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+
+        if case .attempted = pasteOutcome {
+            return .unverified(
+                reason: "Voce could not confirm that the target accepted the paste. The transcript was kept on your clipboard."
+            )
+        }
+        return pasteOutcome
     }
 }
 #endif

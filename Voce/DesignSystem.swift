@@ -306,6 +306,7 @@ struct InteractiveCardStyle: ViewModifier {
 
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
@@ -333,8 +334,8 @@ struct InteractiveCardStyle: ViewModifier {
                     )
             )
             .shadowStyle(isHovering ? .lg : elevation)
-            .scaleEffect(isHovering ? 1.005 : 1.0)
-            .animation(.easeInOut(duration: VoceDesign.animationFast), value: isHovering)
+            .scaleEffect(isHovering && !reduceMotion ? 1.005 : 1.0)
+            .animation(reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationFast), value: isHovering)
             .onHover { hovering in
                 isHovering = hovering
             }

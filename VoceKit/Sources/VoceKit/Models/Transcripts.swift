@@ -118,6 +118,10 @@ public struct InsertResult: Sendable, Codable, Equatable {
     public var errorMessage: String?
     public var cleanupOutcome: CleanupOutcome?
     public var recoveryAction: InsertionRecoveryAction?
+    /// Non-error, user-facing information about a successful insertion, e.g.
+    /// that the previous clipboard could not be restored. Independent of
+    /// `status` and `errorMessage`.
+    public var notice: String?
 
     public init(
         status: InsertionStatus,
@@ -125,7 +129,8 @@ public struct InsertResult: Sendable, Codable, Equatable {
         insertedText: String,
         errorMessage: String? = nil,
         cleanupOutcome: CleanupOutcome? = nil,
-        recoveryAction: InsertionRecoveryAction? = nil
+        recoveryAction: InsertionRecoveryAction? = nil,
+        notice: String? = nil
     ) {
         self.status = status
         self.method = method
@@ -133,6 +138,7 @@ public struct InsertResult: Sendable, Codable, Equatable {
         self.errorMessage = errorMessage
         self.cleanupOutcome = cleanupOutcome
         self.recoveryAction = recoveryAction
+        self.notice = notice
     }
 }
 
