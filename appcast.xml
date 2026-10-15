@@ -3,6 +3,28 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.64</title>
+      <sparkle:version>67</sparkle:version>
+      <sparkle:shortVersionString>0.4.64</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.64</h2>
+        <ul>
+          <li>Fixes Voce getting slower and using more CPU with each dictation</li>
+          <li>Fixes the dictation overlay disappearing early or staying on screen after quick starts and stops</li>
+          <li>Settings changes are no longer lost when saved quickly or when quitting</li>
+          <li>Faster voice commands and text processing on long dictations</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 15 Oct 2026 18:55:10 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.64/Voce-0.4.64.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="ebtEeVyP69OHVT1FxOJhZh5FTChDAFAyfG3lz8EQoMjpn9P2N+eTGv+J/kBpk+rT5lAkh4hlIVAHbHwl2biBAQ=="
+        length="20780203"
+      />
+    </item>
+    <item>
       <title>Version 0.4.63</title>
       <sparkle:version>66</sparkle:version>
       <sparkle:shortVersionString>0.4.63</sparkle:shortVersionString>
