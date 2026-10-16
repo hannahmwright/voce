@@ -72,6 +72,9 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
     var cloudRemainingSeconds: Int?
     var cloudPeriodStartsAt: Double?
     var cloudPeriodEndsAt: Double?
+    /// When the access session used for this request expires (milliseconds
+    /// since 1970). Sent by servers that extend sessions while in use.
+    var sessionExpiresAt: Double?
 
     enum Source: String, Decodable, Sendable {
         case free
@@ -97,6 +100,7 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
         case cloudRemainingSeconds
         case cloudPeriodStartsAt
         case cloudPeriodEndsAt
+        case sessionExpiresAt
     }
 
     init(from decoder: Decoder) throws {
@@ -118,6 +122,7 @@ struct VoceProEntitlement: Decodable, Equatable, Sendable {
         cloudRemainingSeconds = try container.decodeIfPresent(Int.self, forKey: .cloudRemainingSeconds)
         cloudPeriodStartsAt = try container.decodeIfPresent(Double.self, forKey: .cloudPeriodStartsAt)
         cloudPeriodEndsAt = try container.decodeIfPresent(Double.self, forKey: .cloudPeriodEndsAt)
+        sessionExpiresAt = try container.decodeIfPresent(Double.self, forKey: .sessionExpiresAt)
     }
 
     var freeRemainingMinutesText: String? {
@@ -344,13 +349,22 @@ actor VoceProEntitlementService {
             throw VoceProEntitlementError.verificationFailed
         }
         let verifiedSession = try JSONDecoder().decode(VoceAccessVerificationSession.self, from: data)
-        try sessionStore.save(sessionToken: verifiedSession.sessionToken, email: verifiedSession.email)
+        try sessionStore.save(
+            sessionToken: verifiedSession.sessionToken,
+            email: verifiedSession.email,
+            expiresAt: VoceAccessSessionStore.date(fromMilliseconds: verifiedSession.expiresAt)
+        )
         return verifiedSession
     }
 
     func hasAccessSession(email: String) -> Bool {
         guard let token = try? sessionStore.sessionToken(for: email) else { return false }
         return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// When the stored access session expires, if the server has reported it.
+    func accessSessionExpiry(email: String) -> Date? {
+        sessionStore.sessionExpiry(for: email)
     }
 
     #if DEBUG
@@ -379,7 +393,9 @@ actor VoceProEntitlementService {
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw VoceProEntitlementError.server(status: httpResponse.statusCode)
         }
-        return try JSONDecoder().decode(VoceProEntitlement.self, from: data)
+        let entitlement = try JSONDecoder().decode(VoceProEntitlement.self, from: data)
+        storeSessionExpiry(from: entitlement, email: email)
+        return entitlement
     }
 
     func recordUsage(
@@ -414,7 +430,9 @@ actor VoceProEntitlementService {
         guard (200..<300).contains(httpResponse.statusCode) else {
             throw VoceProEntitlementError.server(status: httpResponse.statusCode)
         }
-        return try JSONDecoder().decode(VoceProEntitlement.self, from: data)
+        let entitlement = try JSONDecoder().decode(VoceProEntitlement.self, from: data)
+        storeSessionExpiry(from: entitlement, email: email)
+        return entitlement
     }
 
     func checkoutURL(
@@ -479,6 +497,11 @@ actor VoceProEntitlementService {
             throw VoceProEntitlementError.invalidResponse
         }
         return url
+    }
+
+    private func storeSessionExpiry(from entitlement: VoceProEntitlement, email: String) {
+        guard let expiresAt = entitlement.sessionExpiresAt else { return }
+        sessionStore.saveSessionExpiry(VoceAccessSessionStore.date(fromMilliseconds: expiresAt), email: email)
     }
 
     private func addSessionToken(for email: String, to request: inout URLRequest) {
@@ -642,7 +665,55 @@ final class VoceAccessSessionStore: @unchecked Sendable {
 #endif
     }()
 
-    func save(sessionToken: String, email: String) throws {
+    /// The session's expiry is not secret, so it lives in user defaults next
+    /// to the Keychain token, keyed by email.
+    private let expiryDefaultsKey: String = {
+#if DEBUG
+        return "voce.debug.accessSessionExpiry.v1"
+#else
+        return "voce.accessSessionExpiry.v1"
+#endif
+    }()
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    static func date(fromMilliseconds milliseconds: Double) -> Date {
+        Date(timeIntervalSince1970: milliseconds / 1_000)
+    }
+
+    /// Saves the token and the expiry the server reported with it. A nil
+    /// expiry (an older server) clears any expiry kept for an earlier token.
+    func save(sessionToken: String, email: String, expiresAt: Date?) throws {
+        try save(sessionToken: sessionToken, email: email)
+        if let expiresAt {
+            saveSessionExpiry(expiresAt, email: email)
+        } else {
+            clearSessionExpiry(email: email)
+        }
+    }
+
+    func sessionExpiry(for email: String) -> Date? {
+        let expiries = defaults.dictionary(forKey: expiryDefaultsKey) as? [String: Double]
+        guard let seconds = expiries?[normalizedEmail(email)] else { return nil }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    func saveSessionExpiry(_ expiresAt: Date, email: String) {
+        var expiries = (defaults.dictionary(forKey: expiryDefaultsKey) as? [String: Double]) ?? [:]
+        expiries[normalizedEmail(email)] = expiresAt.timeIntervalSince1970
+        defaults.set(expiries, forKey: expiryDefaultsKey)
+    }
+
+    private func clearSessionExpiry(email: String) {
+        guard var expiries = defaults.dictionary(forKey: expiryDefaultsKey) as? [String: Double] else { return }
+        expiries[normalizedEmail(email)] = nil
+        defaults.set(expiries, forKey: expiryDefaultsKey)
+    }
+
+    private func save(sessionToken: String, email: String) throws {
         let account = normalizedEmail(email)
         let data = Data(sessionToken.utf8)
         let query: [String: Any] = [
@@ -707,6 +778,7 @@ final class VoceAccessSessionStore: @unchecked Sendable {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw VoceAccessSessionStoreError.keychain(status: status)
         }
+        clearSessionExpiry(email: email)
     }
 
     private func normalizedEmail(_ email: String) -> String {

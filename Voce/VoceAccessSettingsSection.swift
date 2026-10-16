@@ -4,6 +4,7 @@ struct VoceAccessSettingsSection: View {
     @Binding var preferences: AppPreferences
     @Binding var verificationCode: String
     let entitlementStatus: VoceProEntitlementStatus
+    let sessionExpiryWarning: String?
     let didSendVerificationCode: Bool
     let isAuthWorking: Bool
     let authError: String
@@ -66,6 +67,13 @@ struct VoceAccessSettingsSection: View {
         settingsCard("Access") {
             VStack(alignment: .leading, spacing: VoceDesign.lg) {
                 accessStatusCard
+
+                if let sessionExpiryWarning {
+                    Label(sessionExpiryWarning, systemImage: "clock.badge.exclamationmark")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 VStack(alignment: .leading, spacing: VoceDesign.sm) {
                     settingInlineLabel(

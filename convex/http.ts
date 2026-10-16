@@ -3,7 +3,7 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import Stripe from "stripe";
 import { APP_ACCESS_FEATURE, CLOUD_DICTATION_FEATURE } from "./entitlements";
-import { SESSION_TOUCH_INTERVAL_MS } from "./auth";
+import { SESSION_TOUCH_INTERVAL_MS, SESSION_TTL_MS } from "./auth";
 import {
   CloudDictationProviderError,
   createRealtimeTranscriptionSession,
@@ -41,7 +41,6 @@ const MAX_SUPPORT_DIAGNOSTICS_CHARS = 200_000;
 const MAX_USAGE_SECONDS_PER_REPORT = 4 * 60 * 60;
 const USAGE_REPORT_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 // Refuse to mint a realtime client secret when less hosted time than this is left.
 const MIN_HOSTED_SECONDS_FOR_REALTIME_SESSION = 30;
 // The app maps a 403 containing "monthly minutes" to its hosted-minutes-exhausted state.
@@ -386,7 +385,16 @@ async function sendSignupEmail(payload: {
   }
 }
 
-async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: string) {
+/**
+ * Resolves the request's session for `requestedEmail`, extending its sliding
+ * expiry when due. `expiresAt` is the session's current expiry, which the app
+ * stores so it can tell ahead of time when the user must verify again.
+ */
+async function verifiedSession(
+  ctx: any,
+  request: Request,
+  requestedEmail: string,
+): Promise<{ email: string; expiresAt: number } | null> {
   const token = request.headers.get("x-voce-session-token");
   if (!token) {
     return null;
@@ -403,10 +411,18 @@ async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: 
     return null;
   }
 
+  let expiresAt: number = session.expiresAt;
   if (Date.now() - session.lastSeenAt >= SESSION_TOUCH_INTERVAL_MS) {
-    await ctx.runMutation(internal.auth.touchSession, { tokenHash: hash });
+    const touchedExpiresAt = await ctx.runMutation(internal.auth.touchSession, { tokenHash: hash });
+    if (typeof touchedExpiresAt === "number") {
+      expiresAt = touchedExpiresAt;
+    }
   }
-  return email;
+  return { email, expiresAt };
+}
+
+async function verifiedSessionEmail(ctx: any, request: Request, requestedEmail: string) {
+  return (await verifiedSession(ctx, request, requestedEmail))?.email ?? null;
 }
 
 function cloudEmailHeader(request: Request) {
@@ -840,10 +856,11 @@ http.route({
     }
 
     const sessionToken = randomToken();
+    const sessionExpiresAt = Date.now() + SESSION_TTL_MS;
     const session = await ctx.runMutation(internal.auth.createSession, {
       email,
       tokenHash: await tokenHash(sessionToken),
-      expiresAt: Date.now() + SESSION_TTL_MS,
+      expiresAt: sessionExpiresAt,
     });
 
     if (session.isFirstSession) {
@@ -862,7 +879,7 @@ http.route({
       }
     }
 
-    return jsonResponse({ email, sessionToken, expiresAt: Date.now() + SESSION_TTL_MS });
+    return jsonResponse({ email, sessionToken, expiresAt: sessionExpiresAt });
   }),
 });
 
@@ -895,16 +912,16 @@ http.route({
     if (!body.email) {
       return jsonResponse({ error: "Missing email" }, 400);
     }
-    const email = await verifiedSessionEmail(ctx, request, body.email);
-    if (!email) {
+    const session = await verifiedSession(ctx, request, body.email);
+    if (!session) {
       return jsonResponse({ error: "Email verification required" }, 401);
     }
 
     const entitlement = await ctx.runQuery(internal.entitlements.check, {
-      email,
+      email: session.email,
       feature: body.feature ?? DEFAULT_FEATURE,
     });
-    return jsonResponse(entitlement);
+    return jsonResponse({ ...entitlement, sessionExpiresAt: session.expiresAt });
   }),
 });
 
@@ -935,8 +952,8 @@ http.route({
       }
       reportId = body.reportId.toLowerCase();
     }
-    const email = await verifiedSessionEmail(ctx, request, body.email);
-    if (!email) {
+    const session = await verifiedSession(ctx, request, body.email);
+    if (!session) {
       return jsonResponse({ error: "Email verification required" }, 401);
     }
     if (typeof body.seconds !== "number" || !Number.isFinite(body.seconds)) {
@@ -944,12 +961,12 @@ http.route({
     }
 
     const entitlement = await ctx.runMutation(internal.entitlements.recordUsage, {
-      email,
+      email: session.email,
       feature: body.feature ?? DEFAULT_FEATURE,
       seconds: Math.min(body.seconds, MAX_USAGE_SECONDS_PER_REPORT),
       ...(reportId !== undefined ? { reportId } : {}),
     });
-    return jsonResponse(entitlement);
+    return jsonResponse({ ...entitlement, sessionExpiresAt: session.expiresAt });
   }),
 });
 

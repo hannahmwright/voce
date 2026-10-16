@@ -8,8 +8,11 @@ const MAX_CODE_ATTEMPTS = 5;
 // issued. This is the brute-force bound: requesting new codes does not reset it.
 const MAX_VERIFY_FAILURES_PER_HOUR = 10;
 const VERIFY_FAILURE_WINDOW_MS = 60 * 60 * 1000;
-// lastSeenAt is informational; refreshing it at most hourly avoids a database
-// write on every authenticated request.
+// Sessions slide: each touch moves expiry to this long after the latest use, so
+// a Mac in regular use never has its session expire under it.
+export const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+// Refreshing lastSeenAt and the sliding expiry at most hourly avoids a
+// database write on every authenticated request.
 export const SESSION_TOUCH_INTERVAL_MS = 60 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 200;
 // Expired codes and stale rate-limit windows are kept for a day for debugging.
@@ -326,14 +329,17 @@ export const touchSession = internalMutation({
       .query("authSessions")
       .withIndex("by_token_hash", (q) => q.eq("tokenHash", args.tokenHash))
       .unique();
-    if (!session) {
-      return;
-    }
     const now = Date.now();
-    if (now - session.lastSeenAt < SESSION_TOUCH_INTERVAL_MS) {
-      return;
+    // An expired or revoked session stays dead; touching must not revive it.
+    if (!session || session.revokedAt !== undefined || session.expiresAt <= now) {
+      return null;
     }
-    await ctx.db.patch(session._id, { lastSeenAt: now });
+    if (now - session.lastSeenAt < SESSION_TOUCH_INTERVAL_MS) {
+      return session.expiresAt;
+    }
+    const expiresAt = Math.max(session.expiresAt, now + SESSION_TTL_MS);
+    await ctx.db.patch(session._id, { lastSeenAt: now, expiresAt });
+    return expiresAt;
   },
 });
 

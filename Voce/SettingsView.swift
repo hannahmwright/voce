@@ -426,6 +426,7 @@ struct SettingsView: View {
                 preferences: $preferencesDraft,
                 verificationCode: $accessVerificationCode,
                 entitlementStatus: controller.voceProEntitlementStatus,
+                sessionExpiryWarning: controller.accessSessionExpiryWarning,
                 didSendVerificationCode: accessVerificationCodeWasSent,
                 isAuthWorking: accessAuthIsWorking,
                 authError: accessAuthError,
@@ -447,6 +448,7 @@ struct SettingsView: View {
                 preferences: $preferencesDraft,
                 verificationCode: $accessVerificationCode,
                 entitlementStatus: controller.voceProEntitlementStatus,
+                sessionExpiryWarning: controller.accessSessionExpiryWarning,
                 didSendVerificationCode: accessVerificationCodeWasSent,
                 isAuthWorking: accessAuthIsWorking,
                 authError: accessAuthError,
@@ -1468,6 +1470,7 @@ private struct HelpSupportSection: View {
             "pause_media_for_hold_to_talk=\(pauseDuringPressToTalk)",
             "ai_available=\(aiAvailable)",
             "hotkey_registration=\(hotkeyRegistrationMessage.isEmpty ? "ok" : hotkeyRegistrationMessage)",
+            controller.accessDiagnosticsText,
             mediaDiagnosticsText,
             VoceDiagnosticStore.shared.reportText()
         ]

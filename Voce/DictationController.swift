@@ -276,6 +276,8 @@ final class DictationController: ObservableObject {
     private static let directOpenAIEstimatedCostPerMinute = 0.017
     private static let aiAvailabilityCacheSeconds: CFAbsoluteTime = 5
     private static let logger = Logger(subsystem: "io.voceapp.voce", category: "DictationController")
+    /// How far ahead of expiry Settings starts warning about the access session.
+    private static let accessSessionExpiryWarningInterval: TimeInterval = 7 * 24 * 60 * 60
 
     private enum RecordingStartError: LocalizedError {
         case microphonePermissionDenied
@@ -337,6 +339,10 @@ final class DictationController: ObservableObject {
             }
         }
     }
+
+    /// When this Mac's access session expires, as last reported by the
+    /// server. Nil until a server that reports it has answered.
+    @Published private(set) var accessSessionExpiresAt: Date?
 
     private let captureService = MacAudioCaptureService()
     private let clipboardService = MacClipboardService()
@@ -423,6 +429,8 @@ final class DictationController: ObservableObject {
     private var realtimeWhisperClientSecretRefreshTask: Task<Void, Never>?
     private var captureReadyOverlayStartTaskID: UUID?
     private var terminationObserver: Any?
+    private var wakeObserver: Any?
+    private var accessRevalidationTask: Task<Void, Never>?
     private var hasTornDown = false
     private var inputLostWhileArmingSession: ObjectIdentifier?
     /// Status shown while finalizing a stop the app initiated for a reason
@@ -570,6 +578,16 @@ final class DictationController: ObservableObject {
             }
         }
 
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.revalidateAccessQuietly()
+            }
+        }
+
         Task {
             await bootstrap()
         }
@@ -584,6 +602,12 @@ final class DictationController: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             terminationObserver = nil
         }
+        if let observer = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            wakeObserver = nil
+        }
+        accessRevalidationTask?.cancel()
+        accessRevalidationTask = nil
         hotkey.stop()
         overlayDismissTask?.cancel()
         overlayDismissTask = nil
@@ -672,6 +696,7 @@ final class DictationController: ObservableObject {
 
         applyPreferencesLocally(loaded)
         hasAppliedLoadedPreferences = true
+        refreshAccessSessionExpiry()
         refreshPermissionStatuses()
         validateEngineConfiguration()
         await rebuildRuntime()
@@ -774,6 +799,7 @@ final class DictationController: ObservableObject {
 
     func verifyVoceAccessCode(email: String, code: String) async throws {
         _ = try await entitlementService.verifyCode(email: email, code: code)
+        refreshAccessSessionExpiry()
         scheduleVoceProEntitlementRefresh(immediate: true)
     }
 
@@ -1885,7 +1911,12 @@ final class DictationController: ObservableObject {
                 )
             } catch {
                 // Prefetch is opportunistic. Recording startup still reports
-                // actionable cloud errors if fetching a token fails there.
+                // actionable cloud errors if fetching a token fails there,
+                // but a refused session is worth acting on before then.
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.handleAccessSessionRejectedIfNeeded(error, source: "secret_prefetch")
+                }
                 return
             }
 
@@ -1945,6 +1976,10 @@ final class DictationController: ObservableObject {
                     model: model
                 )
             } catch {
+                await MainActor.run {
+                    guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.handleAccessSessionRejectedIfNeeded(error, source: "secret_refresh")
+                }
                 return
             }
 
@@ -2375,9 +2410,25 @@ final class DictationController: ObservableObject {
                     activeCaptureUsageMeter = nil
                 }
                 markRecordingFinished(owner: dictationSequence)
+                VoceDiagnosticStore.shared.record(
+                    category: "dictation",
+                    event: "start_failed",
+                    details: [
+                        "sequence": String(dictationSequence),
+                        "error": Self.diagnosticErrorKind(error),
+                    ]
+                )
+                handleAccessSessionRejectedIfNeeded(error, source: "dictation_start")
                 status = "Failed to start"
                 lastError = error.localizedDescription
-                overlay.hide()
+                if error is CancellationError {
+                    overlay.hide()
+                } else {
+                    // The bubble was already up; hiding it silently looked like
+                    // the dictation started and ended for no reason.
+                    overlay.show(state: .failure(message: error.localizedDescription))
+                    dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+                }
                 screenRecordingHaze.hide()
                 clipboardRecoveryPrompt.hide()
             }
@@ -2403,6 +2454,11 @@ final class DictationController: ObservableObject {
                 activeMediaToken = nil
             }
         }
+        VoceDiagnosticStore.shared.record(
+            category: "dictation",
+            event: "start_abandoned",
+            details: ["sequence": String(dictationSequence)]
+        )
         guard latestDictationSequence == dictationSequence, !isRecording else { return }
         status = "Recording stopped"
         // startSession cancelled any pending dismissal of the previous overlay;
@@ -2470,6 +2526,15 @@ final class DictationController: ObservableObject {
         let previewSession = activePreviewSession
         let realtimeSession = activeRealtimeWhisperSession
         guard previewSession != nil || realtimeSession != nil else { return }
+        VoceDiagnosticStore.shared.record(
+            category: "dictation",
+            event: "capture_failed",
+            details: [
+                "sequence": String(failingSequence),
+                "error": Self.diagnosticErrorKind(error),
+            ]
+        )
+        handleAccessSessionRejectedIfNeeded(error, source: "dictation_capture")
 
         let pendingStart = inFlightStartTask?.task
         activeStartTask = nil
@@ -2641,6 +2706,11 @@ final class DictationController: ObservableObject {
                 // failed and already reported why), or a streaming failure took
                 // the capture over and reports it. Release this dictation
                 // quietly instead of showing a misleading failure.
+                VoceDiagnosticStore.shared.record(
+                    category: "dictation",
+                    event: "stopped_before_capture",
+                    details: ["sequence": String(dictationSequence ?? readyDictationSequence ?? 0)]
+                )
                 previewSession?.cancel()
                 realtimeSession?.cancel()
                 if let mediaToken {
@@ -2901,6 +2971,16 @@ final class DictationController: ObservableObject {
                     await applyDeferredRebuildIfNeeded()
                     return
                 }
+                VoceDiagnosticStore.shared.record(
+                    category: "dictation",
+                    event: "transcription_failed",
+                    details: [
+                        "sequence": String(dictationSequence),
+                        "capture_ms": String(captureDurationMS),
+                        "error": Self.diagnosticErrorKind(error),
+                    ]
+                )
+                handleAccessSessionRejectedIfNeeded(error, source: "transcription")
                 if preferences.usesCloudDictationConfiguration {
                     refreshCloudValidationIfNeeded(force: true)
                 }
@@ -3653,14 +3733,27 @@ final class DictationController: ObservableObject {
     private func canStartRecordingNow() -> Bool {
         switch voceProEntitlementStatus {
         case .entitled:
+            if let expiresAt = accessSessionExpiresAt, expiresAt <= Date() {
+                // The server would refuse this session. Confirm with it (a
+                // skewed clock must not lock anyone out) and say why now,
+                // instead of letting the dictation start and fail.
+                VoceDiagnosticStore.shared.record(category: "access", event: "session_expired_locally")
+                scheduleVoceProEntitlementRefresh(immediate: true)
+                status = "Your Voce sign-in expired. Verify your email to keep dictating."
+                lastError = status
+                presentStartBlocked(message: status, reason: "session_expired")
+                return false
+            }
             return true
         case .missingEmail:
             status = "Enter your email in Settings to start Voce."
             lastError = status
+            presentStartBlocked(message: status, reason: "missing_email")
             return false
         case .needsVerification:
             status = "Verify your email to start Voce."
             lastError = status
+            presentStartBlocked(message: status, reason: "needs_verification")
             return false
         case .checking:
             status = "Checking Voce access..."
@@ -3668,13 +3761,137 @@ final class DictationController: ObservableObject {
         case .notEntitled:
             status = "Monthly free time is used. Subscribe to keep using Voce."
             lastError = status
+            presentStartBlocked(message: status, reason: "not_entitled")
             return false
         case .failed:
             status = "Could not check Voce access."
             lastError = voceProEntitlementStatus.message
+            presentStartBlocked(message: status, reason: "access_check_failed")
             scheduleVoceProEntitlementRefresh(immediate: true)
             return false
         }
+    }
+
+    /// A refused start used to change only the menu bar status, which nobody
+    /// looks at mid-sentence. Show the reason where the dictation would have
+    /// appeared.
+    private func presentStartBlocked(message: String, reason: String) {
+        VoceDiagnosticStore.shared.record(
+            category: "dictation",
+            event: "start_blocked",
+            details: ["reason": reason]
+        )
+        cancelPendingOverlayDismissal()
+        overlay.setAnchorSnapshot(overlay.captureAnchorSnapshot())
+        overlay.show(state: .failure(message: message))
+        dismissOverlaySoon(delayNanoseconds: 6_000_000_000)
+    }
+
+    // MARK: - Access session
+
+    private func refreshAccessSessionExpiry() {
+        let email = normalizedSubscriberEmail
+        accessSessionExpiresAt = email.isEmpty
+            ? nil
+            : VoceAccessSessionStore.shared.sessionExpiry(for: email)
+    }
+
+    /// Shown in Settings when the access session is close to expiring. Using
+    /// Voce extends the session, so this only appears after long disuse or
+    /// when the server could not be reached to extend it.
+    var accessSessionExpiryWarning: String? {
+        guard voceProEntitlementStatus.isEntitled, let expiresAt = accessSessionExpiresAt else { return nil }
+        let remaining = expiresAt.timeIntervalSinceNow
+        guard remaining < Self.accessSessionExpiryWarningInterval else { return nil }
+        if remaining <= 0 {
+            return "Your Voce sign-in has expired. Verify your email to keep dictating."
+        }
+        let date = expiresAt.formatted(date: .abbreviated, time: .shortened)
+        return "Your Voce sign-in expires \(date). Click Check to renew it."
+    }
+
+    var accessDiagnosticsText: String {
+        let state: String
+        switch voceProEntitlementStatus {
+        case .missingEmail: state = "missing_email"
+        case .needsVerification: state = "needs_verification"
+        case .checking: state = "checking"
+        case .entitled(let entitlement): state = "entitled_\(entitlement.planTier?.rawValue ?? "unknown")"
+        case .notEntitled: state = "not_entitled"
+        case .failed: state = "failed"
+        }
+        let expiry = accessSessionExpiresAt.map { $0.ISO8601Format() } ?? "unknown"
+        return "access_status=\(state)\naccess_session_expires=\(expiry)"
+    }
+
+    /// The server refused this Mac's access session (expired, revoked, or
+    /// signed out elsewhere). Switch to the verify-email state so the app,
+    /// the menu bar and the next hotkey press all ask for verification,
+    /// instead of every dictation failing on its own.
+    private func handleAccessSessionRejected(source: String) {
+        let email = normalizedSubscriberEmail
+        guard !email.isEmpty else { return }
+        VoceDiagnosticStore.shared.record(
+            category: "access",
+            event: "session_rejected",
+            details: ["source": source]
+        )
+        if case .needsVerification = voceProEntitlementStatus { return }
+        voceProEntitlementStatus = .needsVerification(email: email)
+    }
+
+    private func handleAccessSessionRejectedIfNeeded(_ error: Error, source: String) {
+        if case CloudDictationError.authenticationRequired = error {
+            handleAccessSessionRejected(source: source)
+        }
+    }
+
+    /// A Mac can sleep through its session's expiry, or be signed out
+    /// elsewhere meanwhile. Re-check on wake so the next dictation is not the
+    /// first to find out. Unlike a full refresh this never passes through
+    /// `.checking` and ignores network errors, so a Mac that wakes offline
+    /// keeps dictating locally.
+    private func revalidateAccessQuietly() {
+        let email = normalizedSubscriberEmail
+        guard hasBootstrapped, !hasTornDown, !email.isEmpty else { return }
+        if case .failed = voceProEntitlementStatus {
+            // Already blocked on an unreachable backend; a full retry is fine.
+            scheduleVoceProEntitlementRefresh(immediate: false)
+            return
+        }
+        guard voceProEntitlementStatus.isEntitled else { return }
+        accessRevalidationTask?.cancel()
+        accessRevalidationTask = Task { [weak self, entitlementService] in
+            // The network usually comes back a few seconds after wake.
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let entitlement = try await entitlementService.check(email: email)
+                guard let self, self.normalizedSubscriberEmail == email,
+                      self.voceProEntitlementStatus.isEntitled
+                else { return }
+                self.refreshAccessSessionExpiry()
+                self.voceProEntitlementStatus = entitlement.entitled
+                    ? .entitled(entitlement)
+                    : .notEntitled(email: email)
+            } catch VoceProEntitlementError.authenticationRequired {
+                guard let self, self.normalizedSubscriberEmail == email else { return }
+                self.handleAccessSessionRejected(source: "wake_check")
+            } catch {
+                // Offline or the backend is unreachable: keep current access.
+            }
+        }
+    }
+
+    /// A support-safe name for an error: its type and case, or its domain and
+    /// code. Never the message, which can carry provider text.
+    private static func diagnosticErrorKind(_ error: Error) -> String {
+        if Mirror(reflecting: error).displayStyle == .enum {
+            let caseName = String(describing: error).prefix { $0 != "(" }
+            return "\(type(of: error)).\(caseName)"
+        }
+        let nsError = error as NSError
+        return "\(nsError.domain)#\(nsError.code)"
     }
 
     /// Whether the active capture has used `limitSeconds`, measured the way
@@ -3706,6 +3923,7 @@ final class DictationController: ObservableObject {
             return
         }
 
+        VoceDiagnosticStore.shared.record(category: "dictation", event: "usage_limit_stop", details: ["limit": "free"])
         status = "Monthly free time reached."
         stopActiveRecording()
     }
@@ -3719,6 +3937,7 @@ final class DictationController: ObservableObject {
             return
         }
 
+        VoceDiagnosticStore.shared.record(category: "dictation", event: "usage_limit_stop", details: ["limit": "hosted_cloud"])
         status = "Voce Cloud monthly minutes reached."
         stopActiveRecording()
     }
@@ -3753,6 +3972,7 @@ final class DictationController: ObservableObject {
                     // earlier report could not deliver.
                     self?.flushPendingUsageReports()
                     guard self?.normalizedSubscriberEmail == email else { return }
+                    self?.refreshAccessSessionExpiry()
                     self?.voceProEntitlementStatus = entitlement.entitled
                         ? .entitled(entitlement)
                         : .notEntitled(email: email)
@@ -3763,6 +3983,11 @@ final class DictationController: ObservableObject {
                 await MainActor.run {
                     guard self?.normalizedSubscriberEmail == email else { return }
                     if case VoceProEntitlementError.authenticationRequired = error {
+                        VoceDiagnosticStore.shared.record(
+                            category: "access",
+                            event: "session_rejected",
+                            details: ["source": "entitlement_check"]
+                        )
                         self?.voceProEntitlementStatus = .needsVerification(email: email)
                     } else {
                         self?.voceProEntitlementStatus = .failed(email: email, message: message)
@@ -3917,7 +4142,7 @@ final class DictationController: ObservableObject {
                     case VoceProEntitlementError.authenticationRequired:
                         httpStatus = 401
                         if normalizedSubscriberEmail == report.email {
-                            voceProEntitlementStatus = .needsVerification(email: report.email)
+                            handleAccessSessionRejected(source: "usage_report")
                         }
                     case VoceProEntitlementError.server(let status):
                         httpStatus = status
@@ -3960,6 +4185,7 @@ final class DictationController: ObservableObject {
         feature: VoceEntitlementFeature
     ) {
         guard normalizedSubscriberEmail == email else { return }
+        refreshAccessSessionExpiry()
         switch feature {
         case .appAccess:
             voceProEntitlementStatus = entitlement.entitled
@@ -4089,6 +4315,11 @@ final class DictationController: ObservableObject {
     }
 
     private func handleShortSilentCapture(dictationSequence: UInt64) {
+        VoceDiagnosticStore.shared.record(
+            category: "dictation",
+            event: "short_capture_skipped",
+            details: ["sequence": String(dictationSequence)]
+        )
         markRecordingFinished(owner: dictationSequence)
         // A newer dictation owns the overlay and status once it has started.
         guard latestDictationSequence == dictationSequence else { return }

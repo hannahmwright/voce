@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.65] - 2026-10-16
+
+### Fixed
+- Fixed dictation silently starting and ending once the Voce sign-in session expired. Sessions now extend while Voce is in use, the app tracks when its session expires, switches to "Verify your email" as soon as the server refuses it (at start, mid-dictation, on wake, or while warming up cloud dictation), and shows why a dictation could not start instead of hiding the bubble.
+
+### Added
+- Settings warns when the Voce sign-in is close to expiring.
+- Support diagnostics now include access status, session expiry, and dictation start, capture, and transcription failures.
+
 ## [0.4.52] - 2026-07-01
 
 ### Fixed
