@@ -3,6 +3,28 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.65</title>
+      <sparkle:version>68</sparkle:version>
+      <sparkle:shortVersionString>0.4.65</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.65</h2>
+        <ul>
+          <li>Fixes dictation starting and immediately ending, without recording, once your Voce sign-in had expired</li>
+          <li>Your sign-in now stays active as long as you keep using Voce</li>
+          <li>When Voce needs you to verify your email again, it tells you right away instead of failing quietly</li>
+          <li>When a dictation can't start, Voce now shows why</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 16 Oct 2026 04:20:29 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.65/Voce-0.4.65.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="BiD7ihmb+Wdf6Qbi2+ufuDQJM7Ipn32hB/wL+l5x+c3rN+ErzyxYneUrbaXiX0dR59uu4oJ6pko7lB5ZqHsDAQ=="
+        length="20788786"
+      />
+    </item>
+    <item>
       <title>Version 0.4.64</title>
       <sparkle:version>67</sparkle:version>
       <sparkle:shortVersionString>0.4.64</sparkle:shortVersionString>
